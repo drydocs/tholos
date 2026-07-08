@@ -33,6 +33,11 @@ pub struct Resolved {
     pub outcome: bool,
 }
 
+#[contractevent]
+pub struct ResolversUpdated {
+    pub resolvers: Vec<Address>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Status {
@@ -124,6 +129,32 @@ impl Tholos {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
+    /// Replaces the resolver committee. Only callable by the admin set at
+    /// initialization. `new_resolvers` must have an odd length so a simple
+    /// majority vote can never tie.
+    pub fn update_resolvers(env: Env, new_resolvers: Vec<Address>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if new_resolvers.is_empty() || new_resolvers.len().is_multiple_of(2) {
+            return Err(Error::InvalidResolverCount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Resolvers, &new_resolvers);
+        ResolversUpdated {
+            resolvers: new_resolvers,
+        }
+        .publish(&env);
 
         Ok(())
     }

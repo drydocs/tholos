@@ -285,6 +285,82 @@ fn test_split_resolver_vote_does_not_finalize() {
 }
 
 #[test]
+fn test_admin_can_update_resolvers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_token_admin, token_id, token, resolvers) = setup(&env);
+    let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    token_asset_client.mint(&asserter, &1_000);
+    token_asset_client.mint(&disputer, &1_000);
+    client.initialize(&admin, &token_id, &100, &3600, &resolvers);
+
+    let new_resolvers = Vec::from_array(
+        &env,
+        [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ],
+    );
+    client.update_resolvers(&new_resolvers);
+
+    // The old committee can no longer vote.
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+    let result = client.try_resolve(&resolvers.get(0).unwrap(), &id, &true);
+    assert_eq!(result, Err(Ok(Error::NotAResolver)));
+
+    // The new committee can.
+    client.resolve(&new_resolvers.get(0).unwrap(), &id, &false);
+    client.resolve(&new_resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_cannot_update_resolvers_to_even_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_token_admin, token_id, _token, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &token_id, &100, &3600, &resolvers);
+
+    let even_resolvers = Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
+    let result = client.try_update_resolvers(&even_resolvers);
+    assert_eq!(result, Err(Ok(Error::InvalidResolverCount)));
+}
+
+#[test]
+fn test_cannot_update_resolvers_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let resolvers = Vec::from_array(
+        &env,
+        [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ],
+    );
+    let result = client.try_update_resolvers(&resolvers);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
 fn test_operations_on_unknown_assertion_fail() {
     let env = Env::default();
     env.mock_all_auths();
