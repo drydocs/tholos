@@ -85,17 +85,17 @@ repo's docs as a site, deployed automatically from `main` by
 `.github/workflows/docs.yml`. Where a given doc's real content lives depends on
 whether GitHub treats it specially:
 
-- `README.md`, `CONTRIBUTING.md` (this file), `SECURITY.md`, and `CHANGELOG.md`
-  stay at the repo root, because GitHub does something with them there (README
-  renders on the repo homepage, CONTRIBUTING is linked when opening an issue/PR,
-  SECURITY.md powers the Security tab, and CHANGELOG.md is close enough to a
-  universal convention to keep at root regardless). Their `docs/src/` copies are
-  one-line `\{{#include ../../X.md}}` stubs; edit the root file, not the stub.
-- `ARCHITECTURE.md`, `CONTRACT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, and
-  `INTEGRATION.md` get no special treatment from GitHub at root, so their real
-  content lives directly under `docs/src/`, with no root duplicate. Edit them
-  there; they're still normal markdown files GitHub renders fine if you click into
-  `docs/src/CONTRACT.md` directly, they just aren't at the repo's top level.
+- `README.md`, `CONTRIBUTING.md` (this file), and `SECURITY.md` stay at the repo
+  root, because GitHub does something with them there (README renders on the repo
+  homepage, CONTRIBUTING is linked when opening an issue/PR, SECURITY.md powers
+  the Security tab). Their `docs/src/` copies are one-line
+  `\{{#include ../../X.md}}` stubs; edit the root file, not the stub.
+- `ARCHITECTURE.md`, `CHANGELOG.md`, `CONTRACT.md`, `DEPLOYMENT.md`,
+  `GLOSSARY.md`, and `INTEGRATION.md` get no special treatment from GitHub at
+  root, so their real content lives directly under `docs/src/`, with no root
+  duplicate. Edit them there; they're still normal markdown files GitHub renders
+  fine if you click into `docs/src/CONTRACT.md` directly, they just aren't at the
+  repo's top level.
 
 Preview locally with `mdbook serve docs` (requires `cargo install mdbook`).
 

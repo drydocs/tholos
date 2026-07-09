@@ -8,7 +8,6 @@ on:
       - "README.md"
       - "CONTRIBUTING.md"
       - "SECURITY.md"
-      - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
