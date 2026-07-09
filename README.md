@@ -2,6 +2,8 @@
 
 Bonded assertion and dispute oracle for resolving real world outcomes. Resolution infra for prediction markets and anything else that needs a trustworthy yes/no.
 
+Docs: [drydocs.github.io/tholos](https://drydocs.github.io/tholos/)
+
 ## Status
 
 The assertion and dispute contract (`contracts/tholos`) is implemented, tested, and has been deployed and exercised on Stellar testnet.
