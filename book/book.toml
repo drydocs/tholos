@@ -1,0 +1,10 @@
+[book]
+title = "Tholos"
+description = "Bonded assertion and dispute oracle for resolving real world outcomes"
+authors = ["drydocs"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/drydocs/tholos"
+edit-url-template = "https://github.com/drydocs/tholos/edit/main/book/{path}"

@@ -78,6 +78,17 @@ There are two layers, and they catch different things:
   a storage key without either handling the "missing" case explicitly or having a
   preceding check in the same function that guarantees it exists.
 
+## Docs site
+
+`book/` is an [mdBook](https://rust-lang.github.io/mdBook/) that publishes this
+repo's markdown docs as a site, deployed automatically from `main` by
+`.github/workflows/docs.yml`. It does not contain its own content: `book/src/*.md`
+files are one-line `{{#include}}`s pointing at the real files at the repo root
+(`README.md`, `CONTRACT.md`, `INTEGRATION.md`, this file), so there's a single
+source of truth. Edit the root file, not the file under `book/src/`.
+
+Preview locally with `mdbook serve book` (requires `cargo install mdbook`).
+
 ## Before opening a PR
 
 Run the same checks CI runs, in this order (see the note above on why the wasm
