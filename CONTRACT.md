@@ -5,21 +5,13 @@ document should be updated alongside any change to the public interface.
 
 ## Lifecycle
 
-```text
-                assert_outcome
-                      |
-                      v
-                  [Pending] --- dispute ---> [Disputed]
-                      |                          |
-                 challenge window            resolve (majority)
-                 elapses, no dispute             |
-                      |                          v
-                      v                     [Resolved]
-                  finalize                  (winner paid
-                (bond returned)              both bonds)
-                      |
-                      v
-                 [Resolved]
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: assert_outcome
+    Pending --> Disputed: dispute
+    Pending --> Resolved: finalize\n(challenge window elapsed,\nbond returned)
+    Disputed --> Resolved: resolve\n(majority reached,\nwinner paid both bonds)
+    Resolved --> [*]
 ```
 
 Every assertion ends in `Resolved`, reached one of two ways: uncontested (`finalize`

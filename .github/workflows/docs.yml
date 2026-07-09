@@ -9,6 +9,11 @@ on:
       - "CONTRACT.md"
       - "INTEGRATION.md"
       - "CONTRIBUTING.md"
+      - "ARCHITECTURE.md"
+      - "DEPLOYMENT.md"
+      - "GLOSSARY.md"
+      - "SECURITY.md"
+      - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -31,6 +36,13 @@ jobs:
         uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: "latest"
+
+      - name: Install mdbook-mermaid
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.0/mdbook-mermaid-v0.17.0-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build book
         run: mdbook build book

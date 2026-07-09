@@ -1,5 +1,9 @@
 # Tholos
 
+[![CI](https://github.com/drydocs/tholos/actions/workflows/ci.yml/badge.svg)](https://github.com/drydocs/tholos/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://drydocs.github.io/tholos/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Bonded assertion and dispute oracle for resolving real world outcomes. Resolution infra for prediction markets and anything else that needs a trustworthy yes/no.
 
 Docs: [drydocs.github.io/tholos](https://drydocs.github.io/tholos/)
@@ -15,9 +19,11 @@ The assertion and dispute contract (`contracts/tholos`) is implemented, tested, 
 - CI (fmt, clippy, tests, wasm build): done
 - Fee-funded reward for uncontested finalizes: not yet (no fee-generating market layer exists to fund it)
 
-See [CONTRACT.md](CONTRACT.md) for the full interface and known gaps, or
+See [CONTRACT.md](CONTRACT.md) for the full interface and known gaps,
+[ARCHITECTURE.md](ARCHITECTURE.md) for design rationale, or
 [INTEGRATION.md](INTEGRATION.md) if you're building a contract that wants to call
-into Tholos.
+into Tholos. Deploying your own instance: see [DEPLOYMENT.md](DEPLOYMENT.md).
+New to the terminology: see [GLOSSARY.md](GLOSSARY.md).
 
 ## Why
 
@@ -27,23 +33,16 @@ Tholos is a bonded assertion and dispute contract: anyone can propose an outcome
 
 ## How it works
 
-```text
-assert_outcome                     resolve (majority)
-      |                                   ^
-      v                                   |
-  [Pending] -------- dispute -------> [Disputed]
-      |
- challenge window elapses, no dispute
-      |
-      v
-   finalize
-      |
-      v
-  [Resolved]  (winner paid both bonds if contested,
-               asserter's bond returned if not)
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: assert_outcome
+    Pending --> Disputed: dispute
+    Pending --> Resolved: finalize
+    Disputed --> Resolved: resolve (majority)
+    Resolved --> [*]
 ```
 
-A bond gets posted, a window gives anyone the chance to dispute it, and if disputed, a resolver committee votes to decide who was right. See [CONTRACT.md](CONTRACT.md) for the full state diagram, function reference, and events.
+A bond gets posted, a window gives anyone the chance to dispute it, and if disputed, a resolver committee votes to decide who was right. See [CONTRACT.md](CONTRACT.md) for the function reference and events, or [ARCHITECTURE.md](ARCHITECTURE.md) for sequence diagrams of each flow.
 
 ## Tech stack
 
