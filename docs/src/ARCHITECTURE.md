@@ -20,6 +20,19 @@ callers are expected to handle that.
 committee, a strict majority (`len / 2 + 1`) is always reachable and never
 ambiguous. No tie-handling logic exists because none is needed.
 
+## Challenge window is capped at 7 days
+
+`initialize` rejects any `challenge_window_secs` over 7 days, not just zero. This
+isn't arbitrary: persistent `Assertion` storage gets a 30-day TTL bump on every
+write (see "Persistent storage TTL" in [CONTRACT.md](CONTRACT.md)), and a window
+close to that 30-day ceiling would leave little to no time after the window closes
+for `finalize` to actually be called, or for a dispute opened right before the
+window closes to get resolved, before the entry risks archival. 7 days keeps a
+wide margin. Bond amount deliberately has no upper bound: unlike the window, there
+is no protocol-level quantity to cap it against, since a "sane" bond ceiling
+depends on the configured token's decimals and intended use, which the contract
+has no way to judge. That's left to whoever configures a deployment.
+
 ## Resolver committee is snapshotted per dispute
 
 `dispute` copies the current resolver committee onto the assertion

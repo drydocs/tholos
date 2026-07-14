@@ -5,6 +5,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Persistent `Assertion` storage now has its TTL extended by 30 days on every
+  write (`assert_outcome`, `dispute`, `finalize`, `resolve`), through a shared
+  `set_assertion` helper. Previously only instance storage got a TTL bump, so a
+  long-lived `Pending` or `Disputed` assertion could have its ledger entry
+  archived before anyone acted on it. Closes #1.
+- `initialize` now rejects `challenge_window_secs` over 7 days, not just zero.
+  A window close to the 30-day TTL bump left little margin for `finalize` or
+  `resolve` to actually be called before the entry risked archival. Closes #2.
+
 ## [0.2.0] - 2026-07-10
 
 ### Added

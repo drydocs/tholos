@@ -54,7 +54,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `AlreadyVoted` | Resolver already voted on this assertion |
 | `Paused` | Called `assert_outcome`, `dispute`, or `resolve` while paused |
 | `InvalidBondAmount` | `bond_amount` is zero or negative |
-| `InvalidChallengeWindow` | `challenge_window_secs` is zero |
+| `InvalidChallengeWindow` | `challenge_window_secs` is zero or greater than 7 days |
 
 ## Functions
 
@@ -62,8 +62,8 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 
 One-time setup. `resolvers` must have an odd, non-zero length so a majority vote can
 never tie. `bond_amount` must be positive and `challenge_window_secs` must be
-non-zero. Requires `admin`'s signature. Fails with `AlreadyInitialized` if called
-twice.
+non-zero and at most 7 days (see "Persistent storage TTL" below for why). Requires
+`admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
 ### `update_resolvers(new_resolvers)`
 
@@ -129,6 +129,17 @@ and observe stale state (e.g. an assertion still `Pending` when it's actually
 already being finalized), enabling a double payout drawn from the pooled bonds of
 unrelated assertions. `contracts/tholos/src/test.rs::test_finalize_is_not_reentrant`
 exercises this directly against a token that attempts exactly that reentrant call.
+
+### Persistent storage TTL
+
+Every write to an assertion's persistent storage entry (in `assert_outcome`,
+`dispute`, `finalize`, and `resolve`) extends its TTL by 30 days
+(`ASSERTION_BUMP_AMOUNT`), via the shared `set_assertion` helper. This is why
+`challenge_window_secs` is capped at 7 days: it leaves comfortable headroom within
+that 30-day bump for the window to elapse and for `finalize`, `dispute`, or a
+resolver's `resolve` to actually be called afterward, without the ledger entry
+being archived first. `contracts/tholos/src/test.rs::test_assertion_storage_ttl_is_extended_on_every_write`
+verifies the TTL is actually extended on write, not just claimed in a comment.
 
 ## Events
 
