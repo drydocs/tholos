@@ -498,25 +498,46 @@ fn test_operations_on_unknown_assertion_fail() {
     );
 }
 
-/// A minimal token that reenters Tholos's `finalize` from inside its own
+/// A minimal token that reenters a Tholos call from inside its own
 /// `transfer`, before doing its own balance bookkeeping. Models a malicious
 /// or merely non-standard (e.g. hook-bearing) SEP-41 token, to prove state is
 /// written before the external transfer rather than after it.
+///
+/// `finalize` requires no auth, so it's the one function a hostile token can
+/// realistically reenter on its own; the reentrancy tests for the other,
+/// auth-gated functions (`assert_outcome`, `dispute`, `resolve`) mainly
+/// confirm Soroban's own auth model rejects a dynamically-triggered nested
+/// `require_auth`, with the state-before-transfer ordering as a second layer
+/// of defense in case a colluding, pre-authorized signer ever got one through.
 mod evil_token {
-    use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Map};
+    use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Map};
+
+    /// Which Tholos call to attempt reentrantly, and with what arguments.
+    /// `transfer` disarms this (sets it back to `None`) before acting on it,
+    /// so a reentrant call that itself triggers another `transfer` (e.g. a
+    /// successful reentrant `assert_outcome`) doesn't recurse indefinitely.
+    #[contracttype]
+    #[derive(Clone)]
+    pub enum Reentry {
+        None,
+        AssertOutcome(Address, bool),
+        Dispute(Address, u64),
+        Resolve(Address, u64, bool),
+        Finalize(u64),
+    }
 
     #[contract]
     pub struct EvilToken;
 
     #[contractimpl]
     impl EvilToken {
-        pub fn configure(env: Env, tholos_id: Address, target_id: u64) {
+        pub fn configure(env: Env, tholos_id: Address, reentry: Reentry) {
             env.storage()
                 .instance()
                 .set(&symbol_short!("tholos"), &tholos_id);
             env.storage()
                 .instance()
-                .set(&symbol_short!("target"), &target_id);
+                .set(&symbol_short!("reentry"), &reentry);
         }
 
         pub fn credit(env: Env, addr: Address, amount: i128) {
@@ -547,16 +568,34 @@ mod evil_token {
                 .instance()
                 .get::<_, Address>(&symbol_short!("tholos"))
             {
-                let target_id: u64 = env
+                let reentry: Reentry = env
                     .storage()
                     .instance()
-                    .get(&symbol_short!("target"))
-                    .unwrap();
+                    .get(&symbol_short!("reentry"))
+                    .unwrap_or(Reentry::None);
+                env.storage()
+                    .instance()
+                    .set(&symbol_short!("reentry"), &Reentry::None);
+
                 let client = super::TholosClient::new(&env, &tholos_id);
                 // A well-behaved caller would fail cleanly here if Tholos has
-                // already written its state; that's exactly what this test
-                // verifies. Ignore the result either way.
-                let _ = client.try_finalize(&target_id);
+                // already written its state; that's exactly what these tests
+                // verify. Ignore the result either way.
+                match reentry {
+                    Reentry::None => {}
+                    Reentry::AssertOutcome(asserter, outcome) => {
+                        let _ = client.try_assert_outcome(&asserter, &outcome);
+                    }
+                    Reentry::Dispute(disputer, id) => {
+                        let _ = client.try_dispute(&disputer, &id);
+                    }
+                    Reentry::Resolve(resolver, id, agrees_with_asserter) => {
+                        let _ = client.try_resolve(&resolver, &id, &agrees_with_asserter);
+                    }
+                    Reentry::Finalize(id) => {
+                        let _ = client.try_finalize(&id);
+                    }
+                }
             }
 
             let mut balances: Map<Address, i128> = env
@@ -575,30 +614,35 @@ mod evil_token {
     }
 }
 
-#[test]
-fn test_finalize_is_not_reentrant() {
-    use evil_token::{EvilToken, EvilTokenClient};
-
-    let env = Env::default();
-    env.mock_all_auths();
+/// Shared setup for the reentrancy tests below: a Tholos instance backed by
+/// `EvilToken` instead of a real SAC, so each test can arm a specific
+/// reentrant call and verify Tholos's state-before-transfer ordering holds
+/// for it.
+fn evil_fixture(
+    env: &Env,
+) -> (
+    evil_token::EvilTokenClient<'static>,
+    TholosClient<'static>,
+    Address,
+    Vec<Address>,
+) {
+    use evil_token::EvilToken;
 
     let evil_token_id = env.register(EvilToken, ());
-    let evil_token = EvilTokenClient::new(&env, &evil_token_id);
+    let evil_token = evil_token::EvilTokenClient::new(env, &evil_token_id);
 
     let resolvers = Vec::from_array(
-        &env,
+        env,
         [
-            Address::generate(&env),
-            Address::generate(&env),
-            Address::generate(&env),
+            Address::generate(env),
+            Address::generate(env),
+            Address::generate(env),
         ],
     );
     let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
+    let client = TholosClient::new(env, &contract_id);
 
-    let admin = Address::generate(&env);
-    let asserter = Address::generate(&env);
-    evil_token.credit(&asserter, &1_000);
+    let admin = Address::generate(env);
     client.initialize(
         &admin,
         &evil_token_id,
@@ -606,6 +650,126 @@ fn test_finalize_is_not_reentrant() {
         &DEFAULT_WINDOW,
         &resolvers,
     );
+
+    (evil_token, client, contract_id, resolvers)
+}
+
+#[test]
+fn test_assert_outcome_is_not_reentrant() {
+    use evil_token::Reentry;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (evil_token, client, contract_id, _resolvers) = evil_fixture(&env);
+
+    let asserter = Address::generate(&env);
+    let reentrant_asserter = Address::generate(&env);
+    evil_token.credit(&asserter, &1_000);
+    evil_token.credit(&reentrant_asserter, &1_000);
+
+    // Arm the trap before the only externally triggered assert_outcome call:
+    // EvilToken.transfer will try to reenter assert_outcome with a different
+    // asserter, before this call's own transfer even returns. Soroban's auth
+    // model itself rejects a dynamically-triggered nested `require_auth`
+    // like this one, regardless of which address it's for, so the reentrant
+    // call never gets far enough to matter. This still guards against a
+    // regression: if it ever did get through (e.g. via a colluding signer
+    // who pre-authorized the whole call tree), the id-reservation-before-
+    // transfer ordering in `assert_outcome` is what would stop it from
+    // colliding with the outer call's id.
+    evil_token.configure(
+        &contract_id,
+        &Reentry::AssertOutcome(reentrant_asserter.clone(), true),
+    );
+
+    let id = client.assert_outcome(&asserter, &true);
+
+    // No second assertion was created, and the reentrant asserter was never
+    // charged.
+    let original = client.get_assertion_state(&id);
+    assert_eq!(original.asserter, asserter);
+    assert_eq!(evil_token.balance(&asserter), 900);
+    assert_eq!(evil_token.balance(&reentrant_asserter), 1_000);
+}
+
+#[test]
+fn test_dispute_is_not_reentrant() {
+    use evil_token::Reentry;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (evil_token, client, contract_id, _resolvers) = evil_fixture(&env);
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let second_disputer = Address::generate(&env);
+    evil_token.credit(&asserter, &1_000);
+    evil_token.credit(&disputer, &1_000);
+    evil_token.credit(&second_disputer, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+
+    // Arm the trap: EvilToken.transfer will try to reenter dispute(id) with
+    // a different disputer, before this dispute call's own transfer returns.
+    // As with assert_outcome, Soroban's auth model rejects this nested
+    // require_auth on its own; this guards against a regression in the
+    // state-before-transfer ordering for the case where it didn't.
+    evil_token.configure(&contract_id, &Reentry::Dispute(second_disputer.clone(), id));
+
+    client.dispute(&disputer, &id);
+
+    // The reentrant dispute did not happen: the second disputer was never
+    // charged, and the assertion still records the original disputer.
+    assert_eq!(evil_token.balance(&disputer), 900);
+    assert_eq!(evil_token.balance(&second_disputer), 1_000);
+    let state = client.get_assertion_state(&id);
+    assert_eq!(state.disputer, Some(disputer));
+}
+
+#[test]
+fn test_resolve_is_not_reentrant() {
+    use evil_token::Reentry;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (evil_token, client, contract_id, resolvers) = evil_fixture(&env);
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    evil_token.credit(&asserter, &1_000);
+    evil_token.credit(&disputer, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+    client.resolve(&resolvers.get(0).unwrap(), &id, &false);
+
+    // Arm the trap right before the majority-triggering vote: EvilToken.transfer
+    // will try to reenter resolve() with the third, not-yet-voted resolver,
+    // during the payout transfer of this second, majority-triggering vote.
+    // As with the other auth-gated functions, Soroban's auth model rejects
+    // this nested require_auth on its own; this guards against a regression
+    // in the state-before-transfer ordering for the case where it didn't.
+    evil_token.configure(
+        &contract_id,
+        &Reentry::Resolve(resolvers.get(2).unwrap(), id, false),
+    );
+
+    client.resolve(&resolvers.get(1).unwrap(), &id, &false);
+
+    // Exactly one payout (both bonds) went to the disputer, not two.
+    assert_eq!(evil_token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_finalize_is_not_reentrant() {
+    use evil_token::Reentry;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (evil_token, client, contract_id, _resolvers) = evil_fixture(&env);
+
+    let asserter = Address::generate(&env);
+    evil_token.credit(&asserter, &1_000);
 
     // The reentrancy trap isn't armed yet, so this assert_outcome call's own
     // transfer doesn't try to reenter anything.
@@ -616,7 +780,7 @@ fn test_finalize_is_not_reentrant() {
 
     // Arm the trap: EvilToken.transfer will now try to reenter finalize(id)
     // on itself, before finalize's own transfer call even returns.
-    evil_token.configure(&contract_id, &id);
+    evil_token.configure(&contract_id, &Reentry::Finalize(id));
 
     let outcome = client.finalize(&id);
     assert!(outcome);
