@@ -99,6 +99,7 @@ pub enum Error {
     Paused = 11,
     InvalidBondAmount = 12,
     InvalidChallengeWindow = 13,
+    TooManyResolvers = 14,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -113,6 +114,11 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const ASSERTION_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const ASSERTION_LIFETIME_THRESHOLD: u32 = ASSERTION_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// A resolver committee larger than this gets copied in full onto every
+/// disputed assertion (see `Assertion.resolvers`), so an unbounded size
+/// would grow the storage and iteration cost of every future dispute.
+const MAX_RESOLVERS: u32 = 21;
 
 #[contract]
 pub struct Tholos;
@@ -134,6 +140,9 @@ impl Tholos {
         }
         if resolvers.is_empty() || resolvers.len().is_multiple_of(2) {
             return Err(Error::InvalidResolverCount);
+        }
+        if resolvers.len() > MAX_RESOLVERS {
+            return Err(Error::TooManyResolvers);
         }
         if bond_amount <= 0 {
             return Err(Error::InvalidBondAmount);
@@ -178,6 +187,9 @@ impl Tholos {
 
         if new_resolvers.is_empty() || new_resolvers.len().is_multiple_of(2) {
             return Err(Error::InvalidResolverCount);
+        }
+        if new_resolvers.len() > MAX_RESOLVERS {
+            return Err(Error::TooManyResolvers);
         }
 
         env.storage()
@@ -231,7 +243,7 @@ impl Tholos {
         // The new id is reserved and the assertion written before the
         // external token transfer below, so a reentrant call during the
         // transfer can't be allocated the same not-yet-incremented id.
-        let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(0);
+        let id: u64 = Self::get(&env, &DataKey::NextId)?;
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
         let assertion = Assertion {
             asserter: asserter.clone(),

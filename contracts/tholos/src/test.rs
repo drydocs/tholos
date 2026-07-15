@@ -173,6 +173,28 @@ fn test_cannot_initialize_with_even_resolver_count() {
 }
 
 #[test]
+fn test_cannot_initialize_with_too_many_resolvers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, _resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    // +2, not +1: must stay odd (MAX_RESOLVERS is odd) so this isolates the
+    // TooManyResolvers check rather than tripping InvalidResolverCount first.
+    let mut too_many = Vec::new(&env);
+    for _ in 0..(MAX_RESOLVERS + 2) {
+        too_many.push_back(Address::generate(&env));
+    }
+
+    let result =
+        client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &DEFAULT_WINDOW, &too_many);
+    assert_eq!(result, Err(Ok(Error::TooManyResolvers)));
+}
+
+#[test]
 fn test_cannot_initialize_with_zero_bond_amount() {
     let env = Env::default();
     env.mock_all_auths();
@@ -452,6 +474,19 @@ fn test_cannot_update_resolvers_to_even_count() {
     let even_resolvers = Vec::from_array(&f.env, [f.generate(), f.generate()]);
     let result = f.client.try_update_resolvers(&even_resolvers);
     assert_eq!(result, Err(Ok(Error::InvalidResolverCount)));
+}
+
+#[test]
+fn test_cannot_update_resolvers_to_too_many() {
+    let f = Fixture::new();
+
+    let mut too_many = Vec::new(&f.env);
+    for _ in 0..(MAX_RESOLVERS + 2) {
+        too_many.push_back(f.generate());
+    }
+
+    let result = f.client.try_update_resolvers(&too_many);
+    assert_eq!(result, Err(Ok(Error::TooManyResolvers)));
 }
 
 #[test]
