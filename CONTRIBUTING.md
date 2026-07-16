@@ -109,7 +109,8 @@ description`:
 | Prefix | When to use |
 | --- | --- |
 | `[Bug]` | Something in a contract, script, or CI is broken or behaving incorrectly. Use the Bug Report template. |
-| `[Feature]` | A new capability, a test, a docs task, or a chore. Use the Feature Request template for all of these. |
+| `[Feature]` | A new capability or a test that exercises new behavior. Use the Feature Request template. |
+| `[Chore]` | Dependency bumps, CI/tooling tweaks, docs-only changes, or cleanup that isn't a new capability. Also uses the Feature Request template. |
 
 If you think you've found a security vulnerability rather than a functional bug,
 don't open an issue at all; see [SECURITY.md](SECURITY.md) instead.
