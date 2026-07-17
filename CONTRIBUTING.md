@@ -5,7 +5,14 @@
 - Rust toolchain (stable) with the `wasm32v1-none` target: `rustup target add wasm32v1-none`
 - [Stellar CLI](https://developers.stellar.org/docs/tools/cli/install-cli), for building and deploying the contract
 
-Clone the repo, then build Tholos's wasm once before anything else:
+Clone the repo, then build Tholos's wasm once before anything else. You can use the Makefile shortcut:
+
+```sh
+make build-wasm
+make test
+```
+
+Or run the raw commands directly:
 
 ```sh
 cargo build -p tholos --target wasm32v1-none --release
@@ -118,7 +125,13 @@ don't open an issue at all; see [SECURITY.md](SECURITY.md) instead.
 ## Before opening a PR
 
 Run the same checks CI runs, in this order (see the note above on why the wasm
-build has to come first):
+build has to come first). You can use the Makefile shortcut:
+
+```sh
+make check
+```
+
+Or run the raw commands directly:
 
 ```sh
 cargo fmt --check

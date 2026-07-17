@@ -71,6 +71,24 @@ scripts/
 
 Requires the Rust toolchain with the `wasm32v1-none` target, plus the [Stellar CLI](https://developers.stellar.org/docs/tools/cli/install-cli) for building and deploying the contract.
 
+You can use the Makefile shortcut:
+
+```sh
+# Build tholos's wasm first (required by workspace)
+make build-wasm
+
+# Run unit tests
+make test
+
+# Check formatting and lints
+make check
+
+# Build the optimized, deployable contract wasm
+make build-optimized
+```
+
+Or run the raw commands directly:
+
 ```sh
 # Build tholos's wasm first: demo-consumer imports it at compile time, so this
 # has to exist before anything below touches the rest of the workspace.
