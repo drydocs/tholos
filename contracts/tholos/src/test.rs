@@ -816,3 +816,237 @@ fn test_finalize_is_not_reentrant() {
     // would have seen the assertion as still `Pending` and paid out again.
     assert_eq!(evil_token.balance(&asserter), 1_000);
 }
+
+// ---------------------------------------------------------------------------
+// Property-based tests for resolver vote counting and majority logic
+// ---------------------------------------------------------------------------
+//
+// These tests complement the hand-written scenarios above by generating random
+// odd-length resolver committees and random vote sequences, then asserting the
+// invariant: resolution happens if and only if one side has reached a strict
+// majority at that step. This guards against off-by-one errors in the
+// `(resolvers.len() / 2) + 1` majority formula across all valid committee sizes.
+//
+// Because Soroban's `Env` and `Address::generate` are not `Send`, the proptest
+// tests run in-process (no forking).  `proptest!` is configured with
+// `fork = false` for that reason.
+
+mod proptest_vote_counting {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Use the standard-library vec for test-side bookkeeping to avoid
+    // confusion with soroban_sdk::Vec (which is in scope from `super::*`
+    // via the wildcard import of the contract types).
+    extern crate alloc;
+    use alloc::vec::Vec as StdVec;
+
+    // Odd committee sizes from 1 to MAX_RESOLVERS (1, 3, 5, … 21).
+    fn odd_committee_size() -> impl Strategy<Value = usize> {
+        (0u32..=(MAX_RESOLVERS / 2)).prop_map(|n| (2 * n + 1) as usize)
+    }
+
+    // A sequence of boolean votes, length 0 to `max_len`.
+    fn vote_sequence(max_len: usize) -> impl Strategy<Value = StdVec<bool>> {
+        proptest::collection::vec(any::<bool>(), 0..=max_len)
+    }
+
+    /// Core fixture builder that accepts an arbitrary committee size rather
+    /// than the default three resolvers.  Returns a tuple of
+    /// `(Fixture, resolvers)` where `resolvers` is a plain `StdVec<Address>`
+    /// for easy indexed access inside proptest closures.
+    fn fixture_with_committee(committee_size: usize) -> (Fixture, StdVec<Address>) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        // Build both a Soroban Vec (for the contract call) and a plain
+        // std Vec (for indexed access in tests).
+        let mut resolvers_sdk = soroban_sdk::Vec::new(&env);
+        let mut resolvers_std: StdVec<Address> = StdVec::new();
+        for _ in 0..committee_size {
+            let addr = Address::generate(&env);
+            resolvers_sdk.push_back(addr.clone());
+            resolvers_std.push(addr);
+        }
+
+        let contract_id = env.register(Tholos, ());
+        let client = TholosClient::new(&env, &contract_id);
+        let token = token::Client::new(&env, &token_id);
+        let admin = Address::generate(&env);
+
+        client.initialize(
+            &admin,
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_WINDOW,
+            &resolvers_sdk,
+        );
+
+        let fixture = Fixture {
+            env,
+            client,
+            token,
+            token_id,
+            resolvers: resolvers_sdk,
+        };
+
+        (fixture, resolvers_std)
+    }
+
+    proptest! {
+        // Don't fork: Soroban's Env internals are not Send.
+        #![proptest_config(ProptestConfig {
+            fork: false,
+            cases: 256,
+            ..ProptestConfig::default()
+        })]
+
+        /// For every odd committee size and every vote sequence at most as
+        /// long as the committee, the contract's return value after each cast
+        /// vote matches a manually computed majority check.
+        ///
+        /// Votes are consumed one at a time.  After each vote the test checks
+        /// whether the contract returned `Some(outcome)` (resolution reached)
+        /// or `None` (no majority yet), comparing to the reference.  Once the
+        /// contract resolves (returns `Some`) the assertion is in `Resolved`
+        /// state and no further votes are valid or tested.
+        #[test]
+        fn prop_resolve_iff_majority_reached(
+            committee_size in odd_committee_size(),
+            // Generate up to MAX_RESOLVERS booleans; the test trims to
+            // committee_size so we never exceed the number of resolvers.
+            all_votes in vote_sequence(MAX_RESOLVERS as usize),
+        ) {
+            // Trim to at most committee_size votes (can't exceed # resolvers).
+            let votes: StdVec<bool> = all_votes
+                .into_iter()
+                .take(committee_size)
+                .collect();
+
+            let (f, resolvers) = fixture_with_committee(committee_size);
+
+            let asserter = f.funded_address();
+            let disputer = f.funded_address();
+            let id = f.client.assert_outcome(&asserter, &true);
+            f.client.dispute(&disputer, &id);
+
+            let majority = (committee_size / 2) + 1;
+            let mut for_count: usize = 0;
+            let mut against_count: usize = 0;
+            let mut already_resolved = false;
+
+            for (step, &agrees_with_asserter) in votes.iter().enumerate() {
+                // Once resolved the assertion is closed; stop.
+                if already_resolved {
+                    break;
+                }
+
+                let result = f.client.resolve(&resolvers[step], &id, &agrees_with_asserter);
+
+                if agrees_with_asserter {
+                    for_count += 1;
+                } else {
+                    against_count += 1;
+                }
+
+                // Reference: has either side reached a strict majority?
+                let expected: Option<bool> = if for_count >= majority {
+                    // Asserter wins; contract emits the asserted outcome (true).
+                    Some(true)
+                } else if against_count >= majority {
+                    // Disputer wins; contract emits the negation (!true == false).
+                    Some(false)
+                } else {
+                    None
+                };
+
+                prop_assert_eq!(
+                    result,
+                    expected,
+                    "step {}, committee {}, for {}, against {}, majority {}",
+                    step, committee_size, for_count, against_count, majority
+                );
+
+                if expected.is_some() {
+                    already_resolved = true;
+                }
+            }
+        }
+
+        /// Resolution never occurs with fewer votes than the strict majority
+        /// threshold, regardless of which side they favour.
+        ///
+        /// For every odd committee size N cast exactly `majority - 1` votes
+        /// all for the same side and verify the contract has not resolved.
+        #[test]
+        fn prop_no_resolution_below_majority(
+            committee_size in odd_committee_size(),
+            all_for in any::<bool>(),
+        ) {
+            let majority = (committee_size / 2) + 1;
+            // `majority - 1` votes must never resolve; for size 1 that is 0
+            // votes, so there is nothing to cast and the test trivially passes.
+            let votes_to_cast = majority.saturating_sub(1);
+
+            let (f, resolvers) = fixture_with_committee(committee_size);
+
+            let asserter = f.funded_address();
+            let disputer = f.funded_address();
+            let id = f.client.assert_outcome(&asserter, &true);
+            f.client.dispute(&disputer, &id);
+
+            for (i, resolver) in resolvers.iter().enumerate().take(votes_to_cast) {
+                let result = f.client.resolve(resolver, &id, &all_for);
+                prop_assert_eq!(
+                    result,
+                    None,
+                    "committee {}, majority {}, after {} of {} pre-majority votes",
+                    committee_size, majority, i + 1, votes_to_cast
+                );
+            }
+        }
+
+        /// The majority-triggering vote always resolves the assertion.
+        ///
+        /// For every odd committee size N cast exactly `majority` votes all
+        /// for the same side and verify the final vote returns `Some`.
+        #[test]
+        fn prop_resolution_at_exact_majority(
+            committee_size in odd_committee_size(),
+            all_for in any::<bool>(),
+        ) {
+            let majority = (committee_size / 2) + 1;
+
+            let (f, resolvers) = fixture_with_committee(committee_size);
+
+            let asserter = f.funded_address();
+            let disputer = f.funded_address();
+            let id = f.client.assert_outcome(&asserter, &true);
+            f.client.dispute(&disputer, &id);
+
+            // Cast majority - 1 votes: none must trigger resolution.
+            for (i, resolver) in resolvers.iter().enumerate().take(majority - 1) {
+                let result = f.client.resolve(resolver, &id, &all_for);
+                prop_assert_eq!(
+                    result,
+                    None,
+                    "committee {}, pre-majority vote {} returned Some unexpectedly",
+                    committee_size, i
+                );
+            }
+
+            // The majority-th vote must resolve.
+            let final_result = f.client.resolve(&resolvers[majority - 1], &id, &all_for);
+            prop_assert!(
+                final_result.is_some(),
+                "committee {}, majority {}: the {}-th vote must resolve the assertion",
+                committee_size, majority, majority
+            );
+        }
+    }
+}
