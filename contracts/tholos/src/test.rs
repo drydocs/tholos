@@ -57,6 +57,7 @@ impl Fixture {
             &DEFAULT_BOND,
             &DEFAULT_WINDOW,
             &resolvers,
+            &0u32,
         );
 
         Fixture {
@@ -94,15 +95,23 @@ impl Fixture {
 fn test_uncontested_assertion_finalizes() {
     let f = Fixture::new();
     let asserter = f.funded_address();
+    let caller = f.generate();
 
     let id = f.client.assert_outcome(&asserter, &true);
     assert_eq!(f.token.balance(&asserter), 900);
 
     f.advance_past_window();
 
-    let outcome = f.client.finalize(&id);
+    // Zero reward bps (the default): full bond back to asserter, caller gets
+    // nothing, no auth required.
+    let outcome = f.client.finalize(&caller, &id);
     assert!(outcome);
     assert_eq!(f.token.balance(&asserter), 1_000);
+    assert_eq!(f.token.balance(&caller), 0);
+
+    // Finalizer is recorded on the assertion.
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.finalizer, Some(caller));
 }
 
 #[test]
@@ -168,6 +177,7 @@ fn test_cannot_initialize_with_even_resolver_count() {
         &DEFAULT_BOND,
         &DEFAULT_WINDOW,
         &even_resolvers,
+        &0u32,
     );
     assert!(result.is_err());
 }
@@ -190,7 +200,7 @@ fn test_cannot_initialize_with_too_many_resolvers() {
     }
 
     let result =
-        client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &DEFAULT_WINDOW, &too_many);
+        client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &DEFAULT_WINDOW, &too_many, &0u32);
     assert_eq!(result, Err(Ok(Error::TooManyResolvers)));
 }
 
@@ -204,7 +214,7 @@ fn test_cannot_initialize_with_zero_bond_amount() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &0, &DEFAULT_WINDOW, &resolvers);
+    let result = client.try_initialize(&admin, &token_id, &0, &DEFAULT_WINDOW, &resolvers, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
 
@@ -218,7 +228,7 @@ fn test_cannot_initialize_with_negative_bond_amount() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &-1, &DEFAULT_WINDOW, &resolvers);
+    let result = client.try_initialize(&admin, &token_id, &-1, &DEFAULT_WINDOW, &resolvers, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
 
@@ -232,7 +242,7 @@ fn test_cannot_initialize_with_zero_challenge_window() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &0, &resolvers);
+    let result = client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &0, &resolvers, &0u32);
     assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
 }
 
@@ -252,6 +262,7 @@ fn test_cannot_initialize_with_challenge_window_too_large() {
         &DEFAULT_BOND,
         &(MAX_CHALLENGE_WINDOW_SECS + 1),
         &resolvers,
+        &0u32,
     );
     assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
 }
@@ -267,6 +278,7 @@ fn test_cannot_initialize_twice() {
         &DEFAULT_BOND,
         &DEFAULT_WINDOW,
         &f.resolvers,
+        &0u32,
     );
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
@@ -275,10 +287,11 @@ fn test_cannot_initialize_twice() {
 fn test_cannot_finalize_before_window_closes() {
     let f = Fixture::new();
     let asserter = f.funded_address();
+    let caller = f.generate();
 
     let id = f.client.assert_outcome(&asserter, &true);
 
-    let result = f.client.try_finalize(&id);
+    let result = f.client.try_finalize(&caller, &id);
     assert_eq!(result, Err(Ok(Error::ChallengeWindowOpen)));
 }
 
@@ -442,7 +455,7 @@ fn test_paused_blocks_assert_dispute_and_resolve_but_not_finalize() {
     );
 
     f.advance_past_window();
-    let outcome = f.client.finalize(&pending_id);
+    let outcome = f.client.finalize(&f.generate(), &pending_id);
     assert!(outcome);
     assert_eq!(f.token.balance(&asserter), 1_000);
 
@@ -519,7 +532,7 @@ fn test_operations_on_unknown_assertion_fail() {
         Err(Ok(Error::AssertionNotFound))
     );
     assert_eq!(
-        f.client.try_finalize(&42),
+        f.client.try_finalize(&f.generate(), &42),
         Err(Ok(Error::AssertionNotFound))
     );
     assert_eq!(
@@ -531,6 +544,131 @@ fn test_operations_on_unknown_assertion_fail() {
         f.client.try_get_assertion_state(&42),
         Err(Ok(Error::AssertionNotFound))
     );
+}
+
+// ---------------------------------------------------------------------------
+// Finalize reward tests
+// ---------------------------------------------------------------------------
+
+/// Helper: build a Tholos instance configured with the given reward bps.
+fn fixture_with_reward(bps: u32) -> (Fixture, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let token = token::Client::new(&env, &token_id);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &bps,
+    );
+    let f = Fixture {
+        env,
+        client,
+        token,
+        token_id,
+        resolvers,
+    };
+    let contract_addr = f.client.address.clone();
+    (f, contract_addr)
+}
+
+#[test]
+fn test_finalize_with_reward_pays_caller_and_asserter() {
+    // 500 bps = 5 % of bond (100) = 5 tokens to caller; 95 back to asserter.
+    let (f, _) = fixture_with_reward(500);
+    let asserter = f.funded_address();
+    let caller = f.generate(); // no tokens yet
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    assert_eq!(f.token.balance(&asserter), 900); // bond deducted
+
+    f.advance_past_window();
+    let outcome = f.client.finalize(&caller, &id);
+
+    assert!(outcome);
+    assert_eq!(f.token.balance(&caller), 5);       // 500 bps of 100
+    assert_eq!(f.token.balance(&asserter), 995);   // 900 + 95
+
+    // State reflects finalizer.
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.finalizer, Some(caller));
+    assert_eq!(state.status, Status::Resolved);
+}
+
+#[test]
+fn test_finalize_zero_reward_full_bond_returned() {
+    // Explicit zero bps: full bond back to asserter, caller gets nothing.
+    let (f, _) = fixture_with_reward(0);
+    let asserter = f.funded_address();
+    let caller = f.generate();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.advance_past_window();
+    f.client.finalize(&caller, &id);
+
+    assert_eq!(f.token.balance(&asserter), 1_000);
+    assert_eq!(f.token.balance(&caller), 0);
+}
+
+#[test]
+fn test_finalize_max_reward_bps() {
+    // 1000 bps = 10 % of bond (100) = 10 tokens to caller; 90 to asserter.
+    let (f, _) = fixture_with_reward(MAX_FINALIZE_REWARD_BPS);
+    let asserter = f.funded_address();
+    let caller = f.generate();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.advance_past_window();
+    f.client.finalize(&caller, &id);
+
+    assert_eq!(f.token.balance(&caller), 10);
+    assert_eq!(f.token.balance(&asserter), 990);
+}
+
+#[test]
+fn test_cannot_initialize_with_reward_bps_over_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &(MAX_FINALIZE_REWARD_BPS + 1),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidFinalizeReward)));
+}
+
+#[test]
+fn test_finalize_with_reward_works_while_paused() {
+    // Finalize is deliberately exempt from the pause; reward payout must also
+    // work when the contract is paused.
+    let (f, _) = fixture_with_reward(200); // 2 % = 2 tokens
+    let asserter = f.funded_address();
+    let caller = f.generate();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.set_paused(&true);
+    f.advance_past_window();
+
+    let outcome = f.client.finalize(&caller, &id);
+    assert!(outcome);
+    assert_eq!(f.token.balance(&caller), 2);
+    assert_eq!(f.token.balance(&asserter), 998);
 }
 
 /// A minimal token that reenters a Tholos call from inside its own
@@ -558,7 +696,7 @@ mod evil_token {
         AssertOutcome(Address, bool),
         Dispute(Address, u64),
         Resolve(Address, u64, bool),
-        Finalize(u64),
+        Finalize(Address, u64),
     }
 
     /// Storage keys for `EvilToken`, mirroring the `DataKey` pattern used by
@@ -617,8 +755,8 @@ mod evil_token {
                     Reentry::Resolve(resolver, id, agrees_with_asserter) => {
                         let _ = client.try_resolve(&resolver, &id, &agrees_with_asserter);
                     }
-                    Reentry::Finalize(id) => {
-                        let _ = client.try_finalize(&id);
+                    Reentry::Finalize(caller, id) => {
+                        let _ = client.try_finalize(&caller, &id);
                     }
                 }
             }
@@ -675,6 +813,7 @@ fn evil_fixture(
         &DEFAULT_BOND,
         &DEFAULT_WINDOW,
         &resolvers,
+        &0u32,
     );
 
     (evil_token, client, contract_id, resolvers)
@@ -795,6 +934,7 @@ fn test_finalize_is_not_reentrant() {
     let (evil_token, client, contract_id, _resolvers) = evil_fixture(&env);
 
     let asserter = Address::generate(&env);
+    let caller = Address::generate(&env);
     evil_token.credit(&asserter, &1_000);
 
     // The reentrancy trap isn't armed yet, so this assert_outcome call's own
@@ -806,9 +946,9 @@ fn test_finalize_is_not_reentrant() {
 
     // Arm the trap: EvilToken.transfer will now try to reenter finalize(id)
     // on itself, before finalize's own transfer call even returns.
-    evil_token.configure(&contract_id, &Reentry::Finalize(id));
+    evil_token.configure(&contract_id, &Reentry::Finalize(caller.clone(), id));
 
-    let outcome = client.finalize(&id);
+    let outcome = client.finalize(&caller, &id);
     assert!(outcome);
 
     // Exactly one bond's worth was returned, not two. If Tholos wrote state
@@ -885,6 +1025,7 @@ mod proptest_vote_counting {
             &DEFAULT_BOND,
             &DEFAULT_WINDOW,
             &resolvers_sdk,
+            &0u32,
         );
 
         let fixture = Fixture {

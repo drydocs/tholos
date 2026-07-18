@@ -9,7 +9,7 @@ document should be updated alongside any change to the public interface.
 stateDiagram-v2
     [*] --> Pending: assert_outcome
     Pending --> Disputed: dispute
-    Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>bond returned)
+    Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>bond split between asserter and finalizer)
     Disputed --> Resolved: resolve<br/>(majority reached,<br/>winner paid both bonds)
     Resolved --> [*]
 ```
@@ -37,6 +37,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `votes_for_outcome` / `votes_against_outcome` | `u32` | Resolver vote tally |
 | `voted` | `Vec<Address>` | Resolvers who have already voted, to prevent double-voting |
 | `resolvers` | `Vec<Address>` | The resolver committee snapshotted at dispute time; empty until `dispute` is called. See `resolve` below. |
+| `finalizer` | `Option<Address>` | Who called `finalize`, if the assertion was finalized (not resolved via `resolve`). `None` until `finalize` is called. |
 
 ### `Error`
 
@@ -56,15 +57,19 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `InvalidBondAmount` | `bond_amount` is zero or negative |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or greater than 7 days |
 | `TooManyResolvers` | Resolver list has more than `MAX_RESOLVERS` (21) entries |
+| `InvalidFinalizeReward` | `finalize_reward_bps` is greater than `MAX_FINALIZE_REWARD_BPS` (1000) |
 
 ## Functions
 
-### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers)`
+### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
 
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
 `MAX_RESOLVERS` (21), so a majority vote can never tie and no single dispute
 snapshot grows unbounded. `bond_amount` must be positive and `challenge_window_secs`
 must be non-zero and at most 7 days (see "Persistent storage TTL" below for why).
+`finalize_reward_bps` sets the fraction of the bond (in basis points, 0–1000) paid
+to whoever calls `finalize` as an incentive for prompt finalization; 0 disables the
+reward entirely and the full bond is returned to the asserter.
 Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
 ### `update_resolvers(new_resolvers)`
@@ -98,11 +103,15 @@ Requires `disputer`'s signature. Fails with `Paused` if paused, `NotPending` if 
 assertion isn't pending (including if it's already disputed), or
 `ChallengeWindowClosed` if the window has elapsed. Emits `Disputed`.
 
-### `finalize(id) -> bool`
+### `finalize(caller, id) -> bool`
 
-Callable by anyone once a `Pending` assertion's challenge window has elapsed with no
-dispute. Returns the asserter's bond and returns the asserted outcome. Fails with
-`ChallengeWindowOpen` if called too early. Emits `Finalized`.
+Callable once a `Pending` assertion's challenge window has elapsed with no dispute.
+If `finalize_reward_bps` is non-zero, `caller` must authorize the call and receives
+`bond * finalize_reward_bps / 10_000` tokens as an incentive for prompt
+finalization; the asserter receives the remainder. If `finalize_reward_bps` is zero,
+no auth is required and the full bond is returned to the asserter (original
+behavior). Returns the asserted outcome. Fails with `ChallengeWindowOpen` if called
+too early. Emits `Finalized` with `finalizer` and `reward` fields.
 
 ### `resolve(resolver, id, agrees_with_asserter) -> Option<bool>`
 
@@ -133,12 +142,12 @@ unrelated assertions. All four functions have a regression test in
 `contracts/tholos/src/test.rs` (`test_*_is_not_reentrant`) that exercises this
 directly against a token built to attempt exactly that reentrant call.
 
-Of the four, only `finalize` requires no signature (`require_auth`). For the other
-three, Soroban's own auth model independently rejects a reentrant token's
-dynamically-triggered nested `require_auth` call, so a hostile token acting alone
-cannot actually reach the reentrant call in the first place; the state-before-transfer
-ordering is a second layer of defense for those three, in case a colluding,
-pre-authorized signer ever found a way through the first.
+When `finalize_reward_bps` is non-zero, `finalize` requires `caller`'s auth.
+Soroban's auth model then independently rejects a reentrant token's nested
+`require_auth`, making `finalize` equivalent to the other three auth-gated
+functions in that configuration. When `finalize_reward_bps` is zero, no auth is
+required (original behavior), but the state-before-transfer ordering still
+prevents a double payout via reentrancy.
 
 ### Persistent storage TTL
 
@@ -161,15 +170,18 @@ history without polling `get_assertion_state`:
 | --- | --- | --- |
 | `Asserted` | `assert_outcome` | `id`, `asserter`, `outcome` |
 | `Disputed` | `dispute` | `id`, `disputer` |
-| `Finalized` | `finalize` | `id`, `outcome` |
+| `Finalized` | `finalize` | `id`, `outcome`, `finalizer`, `reward` |
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
 | `ResolversUpdated` | `update_resolvers` | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
 
+`Finalized.finalizer` is the address that called `finalize`. `Finalized.reward` is
+the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
+
 ## Example: calling it with the Stellar CLI
 
-Deploy, initialize with a 3-member resolver committee, and post an assertion (the
-same flow `scripts/testnet-smoke.sh` automates):
+Deploy, initialize with a 3-member resolver committee and a 1 % finalize reward,
+and post an assertion (the same flow `scripts/testnet-smoke.sh` automates):
 
 ```sh
 CONTRACT=$(stellar contract deploy --wasm target/wasm32v1-none/release/tholos.wasm \
@@ -180,11 +192,17 @@ stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- 
   --token "$TOKEN_CONTRACT_ID" \
   --bond_amount 1000000 \
   --challenge_window_secs 3600 \
-  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]"
+  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" \
+  --finalize_reward_bps 100
 
 stellar contract invoke --id "$CONTRACT" --source asserter --network testnet -- assert_outcome \
   --asserter "$ASSERTER_ADDRESS" \
   --outcome true
+
+# After the challenge window elapses:
+stellar contract invoke --id "$CONTRACT" --source finalizer --network testnet -- finalize \
+  --caller "$FINALIZER_ADDRESS" \
+  --id 0
 ```
 
 See `scripts/testnet-smoke.sh` for the full round trip including dispute and
@@ -192,9 +210,6 @@ resolve.
 
 ## Known gaps
 
-- No fee/reward mechanism for uncontested finalizes: the original design called for
-  a small reward funded by market fees, but no fee-generating market layer exists
-  yet, so `finalize` just returns the bond as-is.
 - `set_paused` and `update_resolvers` are both single-admin-key operations, which is a bigger centralization
   point than the resolver committee itself. A resolver self-rotation scheme (the
   committee votes to replace one of its own) was considered but not built for v1.

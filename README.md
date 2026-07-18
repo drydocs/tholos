@@ -17,7 +17,7 @@ The assertion and dispute contract (`contracts/tholos`) is implemented, tested, 
 - Pause / emergency-stop: done
 - Reentrancy hardening (state written before external token transfers): done
 - CI (fmt, clippy, tests, wasm build): done
-- Fee-funded reward for uncontested finalizes: not yet (no fee-generating market layer exists to fund it)
+- Fee-funded reward for uncontested finalizes: done (configurable `finalize_reward_bps`, bond-funded)
 
 See [CONTRACT.md](docs/src/CONTRACT.md) for the full interface and known gaps,
 [ARCHITECTURE.md](docs/src/ARCHITECTURE.md) for design rationale, or
