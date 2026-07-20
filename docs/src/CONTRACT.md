@@ -215,7 +215,7 @@ stellar contract invoke --id "$CONTRACT" --source asserter --network testnet -- 
 # After the challenge window elapses.
 # Auth is required unconditionally: pass the caller's address and sign.
 stellar contract invoke --id "$CONTRACT" --source finalizer --network testnet -- finalize \
-  --caller "\"$FINALIZER_ADDRESS\"" \
+  --caller "$FINALIZER_ADDRESS" \
   --id 0
 ```
 
