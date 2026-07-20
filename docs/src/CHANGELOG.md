@@ -99,6 +99,11 @@ All notable changes to this project are documented here. Format follows
   silently defaulting via `.unwrap_or(0)`. No observable behavior change (the
   pause check already fails first on an uninitialized contract), but removes
   an inconsistent pattern. Closes #5.
+- Added regression tests for `Error::NoRotationProposal`, triggered via both
+  `vote_rotation` and `cancel_rotation` when no proposal is open. This closes the
+  last CONTRIBUTING.md gap where a new `Error` variant introduced by the
+  self-rotation feature lacked a triggering test; every new `Error` variant now
+  has one.
 
 ## [0.2.0] - 2026-07-10
 

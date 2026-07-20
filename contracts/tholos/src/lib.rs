@@ -359,6 +359,10 @@ impl Tholos {
         old_resolver: Address,
         new_resolver: Address,
     ) -> Result<(), Error> {
+        // Audited via: test_cannot_propose_rotation_by_non_resolver (NotAResolver),
+        // test_cannot_propose_rotation_for_non_member (ResolverNotInCommittee),
+        // test_cannot_propose_rotation_with_duplicate_new (DuplicateResolver),
+        // test_rotation_in_progress_blocks_second_proposal (RotationInProgress).
         let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
         resolver.require_auth();
         if !committee.contains(&resolver) {
@@ -407,10 +411,16 @@ impl Tholos {
         resolver: Address,
         approve: bool,
     ) -> Result<Option<bool>, Error> {
+        // Audited via: test_rotation_requires_majority_then_executes (execute path),
+        // test_rotation_vote_twice_fails (AlreadyVoted),
+        // test_non_resolver_cannot_vote_rotation (NotAResolver),
+        // test_deadlock_autocancels_rotation (deadlock guard),
+        // test_cannot_vote_rotation_without_proposal (NoRotationProposal below).
         let mut proposal: RotationProposal = env
             .storage()
             .instance()
             .get(&DataKey::RotationProposal)
+            // NoRotationProposal: triggered by test_cannot_vote_rotation_without_proposal.
             .ok_or(Error::NoRotationProposal)?;
         resolver.require_auth();
 
@@ -486,10 +496,14 @@ impl Tholos {
     /// a majority (deadlock guard), so a lost proposer key can't permanently
     /// block rotation. Emits `RotationCancelled`.
     pub fn cancel_rotation(env: Env, resolver: Address) -> Result<(), Error> {
+        // Audited via: test_proposer_can_cancel_rotation (proposer cancel),
+        // test_non_proposer_cannot_cancel_passable_rotation (NotProposer),
+        // test_cannot_cancel_rotation_without_proposal (NoRotationProposal below).
         let proposal: RotationProposal = env
             .storage()
             .instance()
             .get(&DataKey::RotationProposal)
+            // NoRotationProposal: triggered by test_cannot_cancel_rotation_without_proposal.
             .ok_or(Error::NoRotationProposal)?;
         resolver.require_auth();
 

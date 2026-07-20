@@ -1327,6 +1327,23 @@ fn test_rotation_is_pause_exempt() {
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
 }
+
+#[test]
+fn test_cannot_vote_rotation_without_proposal() {
+    let f = Fixture::new();
+    // Calling vote_rotation without an open proposal returns NoRotationProposal.
+    let result = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(0).unwrap(), &true);
+    assert_eq!(result, Err(Ok(Error::NoRotationProposal)));
+}
+
+#[test]
+fn test_cannot_cancel_rotation_without_proposal() {
+    let f = Fixture::new();
+    // Calling cancel_rotation without an open proposal returns NoRotationProposal.
+    let result = f.client.try_cancel_rotation(&f.resolvers.get(0).unwrap());
+    assert_eq!(result, Err(Ok(Error::NoRotationProposal)));
 }
 
 /// A minimal token that reenters a Tholos call from inside its own

@@ -59,6 +59,9 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                     }
                   ]
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -214,6 +217,18 @@
                       },
                       "val": {
                         "u64": "3600"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "FinalizeRewardBps"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     },
                     {
