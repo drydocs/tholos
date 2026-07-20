@@ -1050,3 +1050,127 @@ mod proptest_vote_counting {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Property-based tests for `initialize`'s bond_amount / challenge_window_secs
+// boundaries
+// ---------------------------------------------------------------------------
+//
+// The hand-written tests above (`test_cannot_initialize_with_zero_bond_amount`
+// and friends) only cover a handful of picked values (0, -1, exactly the max,
+// max+1). These tests fuzz the full `i128` and `u64` domains for those two
+// parameters, with a fixed valid resolver committee, asserting `initialize`
+// never panics (it is called via `try_initialize`, so a panic would surface
+// as a test failure rather than a silently-passed `Result`) and always
+// returns exactly the `Result` predicted by the validation order in
+// `initialize`: `bond_amount` is checked before `challenge_window_secs`, so
+// an invalid bond always yields `InvalidBondAmount` regardless of the window.
+//
+// Same in-process rationale as `proptest_vote_counting`: `fork = false`
+// because Soroban's `Env` is not `Send`.
+mod proptest_initialize_bounds {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Reference implementation of `initialize`'s bond/window validation,
+    /// mirroring the checks in `Tholos::initialize` (resolver count is held
+    /// fixed and valid by every call site here, so it is not modeled).
+    fn expected_result(bond_amount: i128, challenge_window_secs: u64) -> Result<(), Error> {
+        if bond_amount <= 0 {
+            return Err(Error::InvalidBondAmount);
+        }
+        if challenge_window_secs == 0 || challenge_window_secs > MAX_CHALLENGE_WINDOW_SECS {
+            return Err(Error::InvalidChallengeWindow);
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            fork: false,
+            cases: 512,
+            ..ProptestConfig::default()
+        })]
+
+        /// For any `bond_amount` and `challenge_window_secs` drawn from their
+        /// full domains, `initialize` returns exactly what the reference
+        /// validation predicts and never panics.
+        #[test]
+        fn prop_initialize_matches_reference_validation(
+            bond_amount in any::<i128>(),
+            challenge_window_secs in any::<u64>(),
+        ) {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let (token_id, resolvers) = setup(&env);
+            let contract_id = env.register(Tholos, ());
+            let client = TholosClient::new(&env, &contract_id);
+            let admin = Address::generate(&env);
+
+            let result = client.try_initialize(
+                &admin,
+                &token_id,
+                &bond_amount,
+                &challenge_window_secs,
+                &resolvers,
+            );
+
+            match expected_result(bond_amount, challenge_window_secs) {
+                Ok(()) => prop_assert!(
+                    result.is_ok(),
+                    "bond {}, window {}: expected success, got {:?}",
+                    bond_amount, challenge_window_secs, result
+                ),
+                Err(expected_err) => prop_assert_eq!(
+                    result,
+                    Err(Ok(expected_err)),
+                    "bond {}, window {}",
+                    bond_amount, challenge_window_secs
+                ),
+            }
+        }
+
+        /// Values right around the `challenge_window_secs` boundary
+        /// (`MAX_CHALLENGE_WINDOW_SECS` +/- a small delta), combined with a
+        /// fuzzed bond amount, to weight coverage toward the edge the
+        /// hand-written tests already probe at single points.
+        #[test]
+        fn prop_initialize_near_challenge_window_boundary(
+            bond_amount in any::<i128>(),
+            delta in -5i64..=5i64,
+        ) {
+            let challenge_window_secs = MAX_CHALLENGE_WINDOW_SECS.saturating_add_signed(delta);
+
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let (token_id, resolvers) = setup(&env);
+            let contract_id = env.register(Tholos, ());
+            let client = TholosClient::new(&env, &contract_id);
+            let admin = Address::generate(&env);
+
+            let result = client.try_initialize(
+                &admin,
+                &token_id,
+                &bond_amount,
+                &challenge_window_secs,
+                &resolvers,
+            );
+
+            match expected_result(bond_amount, challenge_window_secs) {
+                Ok(()) => prop_assert!(
+                    result.is_ok(),
+                    "bond {}, window {}: expected success, got {:?}",
+                    bond_amount, challenge_window_secs, result
+                ),
+                Err(expected_err) => prop_assert_eq!(
+                    result,
+                    Err(Ok(expected_err)),
+                    "bond {}, window {}",
+                    bond_amount, challenge_window_secs
+                ),
+            }
+        }
+    }
+}
