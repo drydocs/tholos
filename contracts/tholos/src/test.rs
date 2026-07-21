@@ -1299,6 +1299,7 @@ mod proptest_initialize_bounds {
                 &bond_amount,
                 &challenge_window_secs,
                 &resolvers,
+                &0u32,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {
@@ -1341,6 +1342,7 @@ mod proptest_initialize_bounds {
                 &bond_amount,
                 &challenge_window_secs,
                 &resolvers,
+                &0u32,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {
