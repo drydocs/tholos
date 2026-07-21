@@ -97,6 +97,7 @@ pub enum Error {
     NotAResolver = 9,
     AlreadyVoted = 10,
     Paused = 11,
+    /// `bond_amount` was not positive, or exceeded `MAX_BOND_AMOUNT`.
     InvalidBondAmount = 12,
     InvalidChallengeWindow = 13,
     TooManyResolvers = 14,
@@ -119,6 +120,17 @@ const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 /// disputed assertion (see `Assertion.resolvers`), so an unbounded size
 /// would grow the storage and iteration cost of every future dispute.
 const MAX_RESOLVERS: u32 = 21;
+
+/// The asserter's and disputer's bonds (each `bond_amount`) both land in the
+/// contract's token balance across `assert_outcome` and `dispute`. The SAC
+/// token panics with a balance overflow inside `receive_balance` once that
+/// sum exceeds `i128::MAX`, so it's `dispute` — not `resolve` — where an
+/// oversized bond actually blows up. `resolve`'s own payout multiplication,
+/// `assertion.bond * 2`, computes that same quantity and would overflow
+/// just as readily, but by then `dispute` would already have panicked and
+/// the assertion could never reach resolution. Bounding `bond_amount` to
+/// half of `i128::MAX` keeps `2 * bond_amount` in range for both.
+const MAX_BOND_AMOUNT: i128 = i128::MAX / 2;
 
 #[contract]
 pub struct Tholos;
@@ -144,7 +156,7 @@ impl Tholos {
         if resolvers.len() > MAX_RESOLVERS {
             return Err(Error::TooManyResolvers);
         }
-        if bond_amount <= 0 {
+        if bond_amount <= 0 || bond_amount > MAX_BOND_AMOUNT {
             return Err(Error::InvalidBondAmount);
         }
         if challenge_window_secs == 0 || challenge_window_secs > MAX_CHALLENGE_WINDOW_SECS {
