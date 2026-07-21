@@ -118,6 +118,7 @@ pub enum Error {
     TooManyResolvers = 14,
     /// `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS` (1000).
     InvalidFinalizeReward = 15,
+    DuplicateResolvers = 16,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -172,6 +173,7 @@ impl Tholos {
         if resolvers.len() > MAX_RESOLVERS {
             return Err(Error::TooManyResolvers);
         }
+        Self::assert_unique_resolvers(&resolvers)?;
         if bond_amount <= 0 {
             return Err(Error::InvalidBondAmount);
         }
@@ -225,6 +227,7 @@ impl Tholos {
         if new_resolvers.len() > MAX_RESOLVERS {
             return Err(Error::TooManyResolvers);
         }
+        Self::assert_unique_resolvers(&new_resolvers)?;
 
         env.storage()
             .instance()
@@ -534,6 +537,32 @@ impl Tholos {
             .instance()
             .get(key)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Rejects a resolver committee containing duplicate addresses.
+    ///
+    /// Called from `initialize` and `update_resolvers` to preserve the
+    /// invariant documented on `initialize` (odd length → a simple majority
+    /// can never tie): a committee like `[A, A, B]` passes the odd-length
+    /// check while being an effective electorate of two, silently breaking
+    /// that guarantee. Duplicates also make the majority denominator
+    /// unreachable for cases like `[A, A, A, B, C]` (majority 3, only 3
+    /// distinct voters), which would strand both bonds.
+    ///
+    /// O(n²) pairwise scan, bounded by `MAX_RESOLVERS` (21) → at most ~210
+    /// comparisons, well within budget and cheaper than pulling a hashing
+    /// dependency into `no_std`.
+    fn assert_unique_resolvers(resolvers: &Vec<Address>) -> Result<(), Error> {
+        let len = resolvers.len();
+        for i in 0..len {
+            let a = resolvers.get(i).unwrap();
+            for j in (i + 1)..len {
+                if a == resolvers.get(j).unwrap() {
+                    return Err(Error::DuplicateResolvers);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

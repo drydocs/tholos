@@ -530,6 +530,140 @@ fn test_cannot_update_resolvers_before_initialization() {
 }
 
 #[test]
+fn test_cannot_initialize_with_duplicate_resolvers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, _resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    // The same address twice, plus a third: odd length and within
+    // MAX_RESOLVERS, so this isolates the duplicate check.
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let duplicated = Vec::from_array(&env, [a.clone(), a.clone(), b]);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &duplicated,
+        &0u32,
+    );
+    assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
+}
+
+#[test]
+fn test_initialize_accepts_distinct_committee() {
+    // Sanity check that the duplicate rejection doesn't reject the happy path:
+    // a fully distinct committee still initializes successfully.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_initialize_rejects_duplicate_at_end_of_vector() {
+    // A duplicate at the very end of an otherwise-distinct, odd-length,
+    // within-bounds committee, to prove the inner scan runs to the end.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, _resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let d = Address::generate(&env);
+    let resolvers = Vec::from_array(
+        &env,
+        [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            d.clone(),
+            d.clone(),
+        ],
+    );
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+    assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
+}
+
+#[test]
+fn test_initialize_reports_invalid_count_before_duplicates() {
+    // `[A, A]` is both even-length and duplicate-heavy. The even-length check
+    // runs first, so InvalidResolverCount is reported, not DuplicateResolvers.
+    // Documents the precedence of the cheaper check over the O(n²) scan.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, _resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let even_and_duplicated = Vec::from_array(&env, [a.clone(), a.clone()]);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &even_and_duplicated,
+        &0u32,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidResolverCount)));
+}
+
+#[test]
+fn test_cannot_update_resolvers_to_duplicates() {
+    let f = Fixture::new();
+
+    let a = f.generate();
+    let d = f.generate();
+    let duplicated = Vec::from_array(&f.env, [a.clone(), a.clone(), d]);
+
+    let result = f.client.try_update_resolvers(&duplicated);
+    assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
+
+    // The rejected update must not have overwritten the stored committee: a
+    // member of the original committee can still be looked up as a resolver.
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &false);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
 fn test_operations_on_unknown_assertion_fail() {
     let f = Fixture::new();
     let disputer = f.generate();
