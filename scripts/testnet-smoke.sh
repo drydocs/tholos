@@ -49,7 +49,8 @@ stellar contract invoke --id "$CONTRACT" --source deployer --network "$NETWORK" 
   --token "$TOKEN" \
   --bond_amount "$BOND_AMOUNT" \
   --challenge_window_secs "$CHALLENGE_WINDOW_SECS" \
-  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" >/dev/null
+  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" \
+  --finalize_reward_bps 0 >/dev/null
 
 log "Posting assertion (outcome = true)"
 ID=$(stellar contract invoke --id "$CONTRACT" --source asserter --network "$NETWORK" -- assert_outcome \

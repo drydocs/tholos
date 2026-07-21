@@ -87,8 +87,16 @@ requirement, not a default choice.
 
 ## Lifecycle from an integrator's perspective
 
-`finalize` and `resolve` are both permissionless: anyone (a keeper, a bot, an end
-user, your own contract) can call them once the preconditions are met. Tholos does
+`finalize` requires `caller`'s authorization unconditionally — even when
+`finalize_reward_bps` is 0 (the default). This ensures the address written into
+`Assertion.finalizer` and the `Finalized` event is always a verified caller, not an
+arbitrary address someone passed in. No funds are at risk (the caller only ever
+receives its own reward), but without enforced auth the on-chain finalizer of record
+could be spoofed. Pass `caller = some_address` and authorize the call regardless of
+whether a reward is configured. When `finalize_reward_bps` is non-zero the caller
+additionally receives `bond * bps / 10_000` tokens as an incentive and
+`Assertion.finalizer` is set to that verified address. `resolve` is always
+permissionless for members of the resolver committee. Tholos does
 not push a callback to your contract when an assertion resolves. If you need to
 react automatically, two options:
 
@@ -131,13 +139,18 @@ event carries, not `get_assertion_state(id).outcome`.
 | `bond_amount` | High enough to deter spam/bad-faith assertions, low enough that legitimate use isn't priced out. Fixed per instance, see above. |
 | `challenge_window_secs` | Longer windows give more time to catch bad assertions but delay uncontested finalization. |
 | `resolvers` | Must be odd-length. See [CONTRACT.md](CONTRACT.md) for what `update_resolvers` can and can't change mid-dispute. |
+| `finalize_reward_bps` | 0–1000 basis points of the bond paid to whoever calls `finalize`. Auth is always required from the caller, regardless of this value. 0 (default) returns the full bond to the asserter with no reward; non-zero values incentivize prompt finalization. |
 
 ## Known caveats for integrators
 
-- No reward beyond bond-return for uncontested finalizes: there's currently no fee
-  mechanism, so integrators who want to incentivize keepers to call `finalize`
-  promptly need to handle that themselves (e.g. your own contract pays a small
-  bounty to whoever triggers your callback).
+- Finalize always requires caller's authorization: `caller.require_auth()` is
+  called unconditionally, regardless of `finalize_reward_bps`. Pass a real
+  address and sign the call. When `finalize_reward_bps` is non-zero (0–1000
+  basis points of the bond, set once at `initialize` time), the caller also
+  receives `bond * bps / 10_000` tokens as an incentive for prompt
+  finalization. When it is 0 (the default), no reward is paid and the full
+  bond is returned to the asserter, but auth is still required to keep the
+  recorded finalizer trustworthy.
 - The admin can pause `assert_outcome`, `dispute`, and `resolve` at any time via
   `set_paused`. Your integration should treat a `Paused` error as a distinct,
   expected failure mode (surface it to the user as "resolution temporarily

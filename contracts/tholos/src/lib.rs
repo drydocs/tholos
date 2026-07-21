@@ -24,6 +24,13 @@ pub struct Finalized {
     #[topic]
     pub id: u64,
     pub outcome: bool,
+    /// Who called `finalize`. Always a verified address — `finalize` requires
+    /// the caller's auth unconditionally, so this value is trustworthy
+    /// regardless of whether a reward was configured.
+    pub finalizer: Address,
+    /// How many tokens were paid to the finalizer as a reward (0 when
+    /// `finalize_reward_bps` was configured as 0).
+    pub reward: i128,
 }
 
 #[contractevent]
@@ -69,6 +76,11 @@ pub struct Assertion {
     /// `update_resolvers` call mid-dispute can't change who gets to decide
     /// an already-disputed assertion.
     pub resolvers: Vec<Address>,
+    /// Who called `finalize`. `None` until the assertion is finalized via
+    /// `finalize` (never set for assertions resolved via `resolve`). Always
+    /// `Some` after `finalize` completes — the caller must authorize the call
+    /// unconditionally, so this is always a verified address.
+    pub finalizer: Option<Address>,
 }
 
 #[contracttype]
@@ -81,6 +93,10 @@ pub enum DataKey {
     Assertion(u64),
     NextId,
     Paused,
+    /// Basis points (0–1000) of the bond paid to whoever calls `finalize` as
+    /// an incentive for prompt finalization. 0 means no reward is taken; the
+    /// full bond is returned to the asserter (original behavior).
+    FinalizeRewardBps,
 }
 
 #[contracterror]
@@ -100,6 +116,8 @@ pub enum Error {
     InvalidBondAmount = 12,
     InvalidChallengeWindow = 13,
     TooManyResolvers = 14,
+    /// `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS` (1000).
+    InvalidFinalizeReward = 15,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -120,13 +138,22 @@ const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 /// would grow the storage and iteration cost of every future dispute.
 const MAX_RESOLVERS: u32 = 21;
 
+/// The reward is expressed in basis points of the bond. Capping at 1000 bps
+/// (10 %) keeps the incentive meaningful without allowing a deployment to
+/// accidentally haircut the asserter's bond by more than a tenth.
+pub const MAX_FINALIZE_REWARD_BPS: u32 = 1_000;
+
 #[contract]
 pub struct Tholos;
 
 #[contractimpl]
 impl Tholos {
     /// Initializes the contract. `resolvers` must have an odd length so a
-    /// simple majority vote can never tie.
+    /// simple majority vote can never tie. `finalize_reward_bps` sets the
+    /// fraction of the bond (in basis points, 0–1000) paid to whoever calls
+    /// `finalize` as an incentive for prompt finalization; 0 disables the
+    /// reward entirely and preserves the original behavior where the full
+    /// bond is returned to the asserter.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -134,6 +161,7 @@ impl Tholos {
         bond_amount: i128,
         challenge_window_secs: u64,
         resolvers: Vec<Address>,
+        finalize_reward_bps: u32,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -149,6 +177,9 @@ impl Tholos {
         }
         if challenge_window_secs == 0 || challenge_window_secs > MAX_CHALLENGE_WINDOW_SECS {
             return Err(Error::InvalidChallengeWindow);
+        }
+        if finalize_reward_bps > MAX_FINALIZE_REWARD_BPS {
+            return Err(Error::InvalidFinalizeReward);
         }
 
         admin.require_auth();
@@ -166,6 +197,9 @@ impl Tholos {
             .set(&DataKey::Resolvers, &resolvers);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::FinalizeRewardBps, &finalize_reward_bps);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -256,6 +290,7 @@ impl Tholos {
             votes_against_outcome: 0,
             voted: Vec::new(&env),
             resolvers: Vec::new(&env),
+            finalizer: None,
         };
         Self::set_assertion(&env, id, &assertion);
 
@@ -316,9 +351,23 @@ impl Tholos {
         Ok(())
     }
 
-    /// Anyone can finalize a pending assertion once its challenge window has
-    /// elapsed with no dispute. The asserter's bond is simply returned.
-    pub fn finalize(env: Env, id: u64) -> Result<bool, Error> {
+    /// Finalizes a pending assertion once its challenge window has elapsed
+    /// with no dispute. `caller` must authorize the call unconditionally —
+    /// regardless of whether `finalize_reward_bps` is zero — so the address
+    /// recorded in `Assertion.finalizer` and the `Finalized` event is always
+    /// a verified caller and cannot be spoofed. When `finalize_reward_bps` is
+    /// non-zero, `caller` also receives `bond * finalize_reward_bps / 10_000`
+    /// tokens as an incentive for prompt finalization and the asserter
+    /// receives the remainder; when it is zero the full bond is returned to
+    /// the asserter and no reward is paid. Returns the asserted outcome.
+    pub fn finalize(env: Env, caller: Address, id: u64) -> Result<bool, Error> {
+        // Auth is required unconditionally: even when finalize_reward_bps is
+        // zero and no reward is paid, the caller's address is written into
+        // Assertion.finalizer and the Finalized event as the finalizer of
+        // record. Requiring auth here ensures that value is always a verified
+        // address, not an arbitrary one anyone could have passed in.
+        caller.require_auth();
+
         let mut assertion = Self::get_assertion(&env, id)?;
         if assertion.status != Status::Pending {
             return Err(Error::NotPending);
@@ -329,22 +378,42 @@ impl Tholos {
             return Err(Error::ChallengeWindowOpen);
         }
 
-        // State is written before the external token transfer below so that
+        let reward_bps: u32 = Self::get(&env, &DataKey::FinalizeRewardBps)?;
+        let reward = if reward_bps > 0 {
+            assertion.bond * (reward_bps as i128) / 10_000
+        } else {
+            0
+        };
+
+        // State is written before the external token transfers below so that
         // a reentrant call from a non-standard token sees this assertion as
         // already resolved, rather than still `Pending`.
         assertion.status = Status::Resolved;
+        assertion.finalizer = Some(caller.clone());
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
+        let token_client = token::Client::new(&env, &token_id);
+
+        if reward > 0 {
+            // Pay the caller their reward first, then pay the asserter the
+            // remainder. Both transfers happen after the state write above, so
+            // a reentrant token can't trigger a second finalize on the same id.
+            token_client.transfer(&env.current_contract_address(), &caller, &reward);
+        }
+
+        let asserter_payout = assertion.bond - reward;
+        token_client.transfer(
             &env.current_contract_address(),
             &assertion.asserter,
-            &assertion.bond,
+            &asserter_payout,
         );
 
         Finalized {
             id,
             outcome: assertion.outcome,
+            finalizer: caller,
+            reward,
         }
         .publish(&env);
 

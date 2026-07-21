@@ -40,6 +40,9 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     }
                   ]
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -253,6 +256,12 @@
                   },
                   {
                     "key": {
+                      "symbol": "finalizer"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "opened_at"
                     },
                     "val": {
@@ -378,6 +387,18 @@
                       },
                       "val": {
                         "u64": "3600"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "FinalizeRewardBps"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     },
                     {

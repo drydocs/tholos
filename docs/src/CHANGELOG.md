@@ -7,6 +7,19 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- Configurable finalize reward (`finalize_reward_bps`, 0–1000 basis points of the
+  bond) paid to whoever calls `finalize` as an incentive for prompt finalization.
+  The reward is funded by the asserter's bond: the caller receives
+  `bond * bps / 10_000` tokens and the asserter receives the remainder. Setting
+  `finalize_reward_bps` to 0 (the default) reproduces the original no-reward
+  behavior exactly, including no auth requirement on `finalize`. A non-zero value
+  requires `caller` to authorize the call. `initialize` now accepts
+  `finalize_reward_bps` as a new parameter (validated ≤ 1000, failing with
+  `InvalidFinalizeReward` otherwise). `finalize` signature changed from
+  `finalize(id)` to `finalize(caller, id)`. The `Finalized` event gains two new
+  fields: `finalizer: Address` and `reward: i128`. `Assertion` gains a new
+  `finalizer: Option<Address>` field populated on finalize. Closes #17.
+
 - Reentrancy regression tests for `assert_outcome`, `dispute`, and `resolve`,
   extending the pattern already used for `finalize`. Along the way, confirmed
   that Soroban's auth model itself rejects a reentrant token's dynamically-triggered

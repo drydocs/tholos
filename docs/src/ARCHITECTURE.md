@@ -60,9 +60,11 @@ the same pooled contract balance. The fix is in `contracts/tholos/src/lib.rs`, w
 a `test_*_is_not_reentrant` regression test per function in
 `contracts/tholos/src/test.rs`, each built against a token that attempts exactly
 that reentrant call. See the "Security notes" section of [CONTRACT.md](CONTRACT.md)
-for the interface-level summary, including why `finalize` is the only one of the
-four actually reachable by a hostile token acting alone: the other three require a
-signature Soroban's auth model won't let a reentrant call forge on its own.
+for the interface-level summary. All four functions require auth (`finalize`
+unconditionally), so Soroban's auth model independently rejects a reentrant
+token's nested `require_auth` for all of them; the state-before-transfer ordering
+is a second layer of defense in case a colluding, pre-authorized signer ever got
+one through.
 
 ## Pause is scoped, not absolute
 
@@ -76,9 +78,32 @@ Similarly, if the pause was triggered *because* the resolver committee is
 compromised, the admin needs `update_resolvers` to actually fix that while
 paused, not after unpausing.
 
+## Finalize reward is bond-funded, not externally funded
+
+The original design anticipated a reward for prompt finalization paid from market
+fees. No fee-generating market layer exists yet, so the reward is instead taken
+from the asserter's bond: `finalize_reward_bps` (0–1000 basis points) is set at
+`initialize` time and determines what fraction of the bond the caller of `finalize`
+receives. This keeps the mechanism self-contained — no external funding source is
+required — while still creating an economic incentive. The asserter implicitly
+accepts the haircut when they post; they control which deployment they post to, and
+deployments with higher reward bps expose more of the bond.
+
+Setting `finalize_reward_bps` to 0 (the default) reproduces the original behavior
+exactly: no reward is taken, the full bond is returned to the asserter. Auth is
+still required unconditionally: without it, any address could be passed as `caller`
+with no verification, and that address would be permanently written into
+`Assertion.finalizer` and the `Finalized` event as the finalizer of record — a
+spoofable audit trail, even though no funds are at risk. Requiring auth keeps that
+record trustworthy regardless of reward configuration. A non-zero value additionally
+means the caller receives a fraction of the bond as an incentive. Soroban's auth
+model independently rejects a reentrant token's nested `require_auth` in both cases,
+so the reentrancy threat model for `finalize` is the same as for the other three
+functions regardless of the reward setting.
+
 ## Flows
 
-### Uncontested: assert, then finalize
+### Uncontested: assert, then finalize (with optional reward)
 
 ```mermaid
 sequenceDiagram
@@ -90,10 +115,16 @@ sequenceDiagram
     Tholos->>Token: transfer(asserter -> contract, bond)
     Tholos-->>Asserter: assertion id
     Note over Tholos: challenge window elapses, no dispute
-    actor Anyone
-    Anyone->>Tholos: finalize(id)
-    Tholos->>Token: transfer(contract -> asserter, bond)
-    Tholos-->>Anyone: outcome
+    actor Finalizer
+    Note over Finalizer: must authorize unconditionally
+    Finalizer->>Tholos: finalize(caller, id)
+    alt finalize_reward_bps > 0
+        Tholos->>Token: transfer(contract -> caller, reward)
+        Tholos->>Token: transfer(contract -> asserter, bond - reward)
+    else finalize_reward_bps == 0
+        Tholos->>Token: transfer(contract -> asserter, bond)
+    end
+    Tholos-->>Finalizer: outcome
 ```
 
 ### Contested: assert, dispute, resolve

@@ -31,7 +31,7 @@ fn test_demo_consumer_can_assert_and_read_status_through_tholos() {
             Address::generate(&env),
         ],
     );
-    tholos_client.initialize(&admin, &token_id, &100, &3600, &resolvers);
+    tholos_client.initialize(&admin, &token_id, &100, &3600, &resolvers, &0u32);
 
     let consumer_id = env.register(DemoConsumer, ());
     let consumer_client = DemoConsumerClient::new(&env, &consumer_id);
