@@ -178,7 +178,9 @@ const MAX_BOND_AMOUNT: i128 = {
 // Compile-time guard: if a future change to either constant ever makes
 // `MAX_BOND_AMOUNT * MAX_FINALIZE_REWARD_BPS` overflow again, fail the build
 // instead of silently reintroducing the finalize reward-multiply overflow.
-const _: () = assert!(MAX_BOND_AMOUNT.checked_mul(MAX_FINALIZE_REWARD_BPS as i128).is_some());
+const _: () = assert!(MAX_BOND_AMOUNT
+    .checked_mul(MAX_FINALIZE_REWARD_BPS as i128)
+    .is_some());
 
 #[contract]
 pub struct Tholos;

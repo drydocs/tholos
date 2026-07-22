@@ -54,7 +54,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `NotAResolver` | Caller isn't in the current resolver committee |
 | `AlreadyVoted` | Resolver already voted on this assertion |
 | `Paused` | Called `assert_outcome`, `dispute`, or `resolve` while paused |
-| `InvalidBondAmount` | `bond_amount` is zero or negative |
+| `InvalidBondAmount` | `bond_amount` is zero, negative, or greater than `MAX_BOND_AMOUNT` |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or greater than 7 days |
 | `TooManyResolvers` | Resolver list has more than `MAX_RESOLVERS` (21) entries |
 | `InvalidFinalizeReward` | `finalize_reward_bps` is greater than `MAX_FINALIZE_REWARD_BPS` (1000) |
@@ -66,7 +66,9 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
 `MAX_RESOLVERS` (21), so a majority vote can never tie and no single dispute
-snapshot grows unbounded. `bond_amount` must be positive and `challenge_window_secs`
+snapshot grows unbounded. `bond_amount` must be positive and no greater than
+`MAX_BOND_AMOUNT` — the largest bond that can't overflow the token balance or
+`finalize`'s reward-multiply arithmetic — and `challenge_window_secs`
 must be non-zero and at most 7 days (see "Persistent storage TTL" below for why).
 `finalize_reward_bps` sets the fraction of the bond (in basis points, 0–1000) paid
 to whoever calls `finalize` as an incentive for prompt finalization; 0 disables the
