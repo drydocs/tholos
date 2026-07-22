@@ -28,15 +28,15 @@ via `resolve`.
 
 **Resolver committee**
 The full set of resolvers for a contract instance, set at `initialize` and
-replaceable via `update_resolvers`. Must have an odd, non-zero length. Addresses
-must also be operationally distinct: v1 does not enforce uniqueness, and duplicate
-entries can make a majority unreachable.
+replaceable via `update_resolvers`. It must be non-empty, have an odd number of
+members, contain distinct addresses, and have no more than `MAX_RESOLVERS` (21)
+members. Duplicate addresses are rejected with `DuplicateResolvers`.
 
 **Majority**
 `resolvers.len() / 2 + 1`. The number of matching votes needed to resolve a
-disputed assertion. An odd-length committee makes the numeric threshold
-unambiguous; reaching it also requires enough distinct, available resolver
-addresses.
+disputed assertion, calculated against the resolver committee snapshotted when
+the dispute opens. An odd-length committee makes the numeric threshold
+unambiguous; reaching it still requires enough available resolver addresses.
 
 **Finalize**
 Closing out a `Pending` assertion after its challenge window has elapsed with no

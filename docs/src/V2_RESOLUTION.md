@@ -572,8 +572,10 @@ For each open assertion, reconcile expected liability:
 Audit whether every relevant committee has distinct, available addresses and a
 reachable majority. V1 does not reject duplicate resolver addresses, while one
 address can vote only once; a duplicate-filled snapshot can make its numeric
-majority unreachable. Also verify `2 * bond` is representable, because v1 has no
-upper bond bound but multiplies a disputed payout by two.
+majority unreachable. For deployed v1 WASM that predates `MAX_BOND_AMOUNT`, also
+verify that its bond-derived arithmetic is representable. Current v1 enforces
+`MAX_BOND_AMOUNT` at initialization, but that source change does not alter older
+deployed bytecode.
 
 Archived assertion entries, instance storage, or contract code may need ledger
 restoration before settlement, especially for deployments predating the current

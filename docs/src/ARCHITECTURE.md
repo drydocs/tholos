@@ -20,13 +20,12 @@ callers are expected to handle that.
 
 ## Odd-length resolver committee, simple majority
 
-`resolvers` must have an odd, non-zero length, enforced in both `initialize` and
-`update_resolvers`. With distinct resolver addresses, an odd committee makes the
-strict-majority threshold (`len / 2 + 1`) unambiguous and eliminates an arithmetic
-tie. V1 does not currently reject duplicate addresses, however: duplicate entries
-increase `len` while one address can still vote only once, potentially making the
-threshold unreachable. Operators must provide distinct resolver addresses. No
-separate tie-handling or timeout logic exists.
+`resolvers` must be non-empty, have an odd number of members, contain distinct
+addresses, and have no more than `MAX_RESOLVERS` (21) members. Both `initialize`
+and `update_resolvers` enforce these constraints; duplicate addresses fail with
+`DuplicateResolvers`. An odd committee makes the strict-majority threshold
+(`len / 2 + 1`) unambiguous and eliminates an arithmetic tie. No separate
+tie-handling or timeout logic exists.
 
 ## Challenge window is capped at 7 days
 
