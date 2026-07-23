@@ -50,6 +50,43 @@ pub struct PauseUpdated {
     pub paused: bool,
 }
 
+#[contractevent]
+pub struct RotationProposed {
+    pub old_resolver: Address,
+    pub new_resolver: Address,
+    pub proposed_by: Address,
+}
+
+#[contractevent]
+pub struct RotationExecuted {
+    pub old_resolver: Address,
+    pub new_resolver: Address,
+}
+
+#[contractevent]
+pub struct RotationCancelled {
+    pub old_resolver: Address,
+    pub new_resolver: Address,
+}
+
+/// An in-flight single-slot committee rotation proposed by a current resolver.
+/// Decided by a strict majority of the live committee via `vote_rotation`. Only
+/// one may be open at a time. See `docs/src/ROTATION_DESIGN.md`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RotationProposal {
+    /// The current resolver to remove. Must be on the committee when proposed.
+    pub old_resolver: Address,
+    /// The new resolver to add. Must not already be on the committee.
+    pub new_resolver: Address,
+    /// The resolver who opened the proposal.
+    pub proposed_by: Address,
+    /// Resolvers who voted yes, to prevent double-voting.
+    pub yes: Vec<Address>,
+    /// Resolvers who voted no, to prevent double-voting and detect deadlock.
+    pub no: Vec<Address>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Status {
@@ -97,6 +134,7 @@ pub enum DataKey {
     /// an incentive for prompt finalization. 0 means no reward is taken; the
     /// full bond is returned to the asserter (original behavior).
     FinalizeRewardBps,
+    RotationProposal,
 }
 
 #[contracterror]
@@ -120,6 +158,11 @@ pub enum Error {
     /// `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS` (1000).
     InvalidFinalizeReward = 15,
     DuplicateResolvers = 16,
+    RotationInProgress = 17,
+    NoRotationProposal = 18,
+    ResolverNotInCommittee = 19,
+    DuplicateResolver = 20,
+    NotProposer = 21,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -251,6 +294,12 @@ impl Tholos {
     /// initialization. `new_resolvers` must have an odd length so a simple
     /// majority vote can never tie. Callable even while paused, so a
     /// compromised committee can be replaced without waiting to unpause.
+    ///
+    /// This is the emergency override path. It supersedes any in-flight
+    /// self-rotation vote: an open `RotationProposal` is cleared (emitting
+    /// `RotationCancelled` when one was present), so a proposal can never
+    /// execute against a committee it wasn't built for. Day-to-day committee
+    /// changes go through `propose_rotation` / `vote_rotation` instead.
     pub fn update_resolvers(env: Env, new_resolvers: Vec<Address>) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -267,11 +316,218 @@ impl Tholos {
         }
         Self::assert_unique_resolvers(&new_resolvers)?;
 
+        // Admin override cancels any committee-driven rotation in flight. The
+        // only other way the committee changes is rotation execution, which
+        // also clears the proposal, so a live proposal always matches the
+        // current committee it was validated against.
+        if let Some(proposal) = env
+            .storage()
+            .instance()
+            .get::<_, RotationProposal>(&DataKey::RotationProposal)
+        {
+            env.storage().instance().remove(&DataKey::RotationProposal);
+            RotationCancelled {
+                old_resolver: proposal.old_resolver,
+                new_resolver: proposal.new_resolver,
+            }
+            .publish(&env);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::Resolvers, &new_resolvers);
         ResolversUpdated {
             resolvers: new_resolvers,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Proposes a single-slot committee rotation: remove `old_resolver` (must be
+    /// a current resolver) and add `new_resolver` (must not already be one). Only
+    /// a current resolver may propose, and only one rotation may be open at a
+    /// time. The proposal is decided by a strict majority of the live committee
+    /// (the same threshold used to resolve disputes) via `vote_rotation`. The
+    /// committee written on execution is the same `Resolvers` slot `update_resolvers`
+    /// writes, so a rotation has no effect on disputes already open (their
+    /// committee was snapshotted at `dispute` time). Pause-exempt, like
+    /// `update_resolvers`.
+    pub fn propose_rotation(
+        env: Env,
+        resolver: Address,
+        old_resolver: Address,
+        new_resolver: Address,
+    ) -> Result<(), Error> {
+        // Audited via: test_cannot_propose_rotation_by_non_resolver (NotAResolver),
+        // test_cannot_propose_rotation_for_non_member (ResolverNotInCommittee),
+        // test_cannot_propose_rotation_with_duplicate_new (DuplicateResolver),
+        // test_rotation_in_progress_blocks_second_proposal (RotationInProgress).
+        let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
+        resolver.require_auth();
+        if !committee.contains(&resolver) {
+            return Err(Error::NotAResolver);
+        }
+        if env.storage().instance().has(&DataKey::RotationProposal) {
+            return Err(Error::RotationInProgress);
+        }
+        if !committee.contains(&old_resolver) {
+            return Err(Error::ResolverNotInCommittee);
+        }
+        if committee.contains(&new_resolver) || old_resolver == new_resolver {
+            return Err(Error::DuplicateResolver);
+        }
+
+        let proposal = RotationProposal {
+            old_resolver: old_resolver.clone(),
+            new_resolver: new_resolver.clone(),
+            proposed_by: resolver.clone(),
+            yes: Vec::new(&env),
+            no: Vec::new(&env),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::RotationProposal, &proposal);
+        RotationProposed {
+            old_resolver,
+            new_resolver,
+            proposed_by: resolver,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// A resolver votes on the open rotation proposal. `approve` records a yes or
+    /// no (both prevent re-voting). Once yes-votes reach a strict majority of the
+    /// live committee, the rotation executes immediately: `old_resolver` is swapped
+    /// for `new_resolver` in the live committee, and the proposal is cleared.
+    /// If the remaining unvoted resolvers can no longer supply enough yes-votes to
+    /// reach a majority, the proposal is cancelled automatically (deadlock guard).
+    /// Returns `Some(true)` if the rotation executed, `Some(false)` if it was
+    /// auto-cancelled as dead, and `None` if the proposal remains open.
+    pub fn vote_rotation(
+        env: Env,
+        resolver: Address,
+        approve: bool,
+    ) -> Result<Option<bool>, Error> {
+        // Audited via: test_rotation_requires_majority_then_executes (execute path),
+        // test_rotation_vote_twice_fails (AlreadyVoted),
+        // test_non_resolver_cannot_vote_rotation (NotAResolver),
+        // test_deadlock_autocancels_rotation (deadlock guard),
+        // test_cannot_vote_rotation_without_proposal (NoRotationProposal below).
+        let mut proposal: RotationProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationProposal)
+            // NoRotationProposal: triggered by test_cannot_vote_rotation_without_proposal.
+            .ok_or(Error::NoRotationProposal)?;
+        resolver.require_auth();
+
+        let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
+        if !committee.contains(&resolver) {
+            return Err(Error::NotAResolver);
+        }
+        if proposal.yes.contains(&resolver) || proposal.no.contains(&resolver) {
+            return Err(Error::AlreadyVoted);
+        }
+
+        if approve {
+            proposal.yes.push_back(resolver);
+        } else {
+            proposal.no.push_back(resolver);
+        }
+
+        let n = committee.len();
+        let majority = (n / 2) + 1;
+
+        if proposal.yes.len() >= majority {
+            // Execute: swap old -> new in the live committee. The proposal is
+            // the only live reference to the old/new pair, and the committee
+            // has not changed since the proposal was validated (update_resolvers
+            // and rotation execution both clear the proposal), so the swap is
+            // always well-formed.
+            let mut new_committee = Vec::new(&env);
+            for addr in committee.iter() {
+                if addr == proposal.old_resolver {
+                    new_committee.push_back(proposal.new_resolver.clone());
+                } else {
+                    new_committee.push_back(addr);
+                }
+            }
+
+            env.storage()
+                .instance()
+                .set(&DataKey::Resolvers, &new_committee);
+            env.storage().instance().remove(&DataKey::RotationProposal);
+            RotationExecuted {
+                old_resolver: proposal.old_resolver.clone(),
+                new_resolver: proposal.new_resolver.clone(),
+            }
+            .publish(&env);
+            ResolversUpdated {
+                resolvers: new_committee,
+            }
+            .publish(&env);
+            return Ok(Some(true));
+        }
+
+        // Deadlock guard: yes-votes cast plus every still-unvoted resolver still
+        // can't reach a majority, so the proposal can never pass. Cancel it.
+        let remaining = n - proposal.yes.len() - proposal.no.len();
+        if proposal.yes.len() + remaining < majority {
+            env.storage().instance().remove(&DataKey::RotationProposal);
+            RotationCancelled {
+                old_resolver: proposal.old_resolver.clone(),
+                new_resolver: proposal.new_resolver.clone(),
+            }
+            .publish(&env);
+            return Ok(Some(false));
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RotationProposal, &proposal);
+        Ok(None)
+    }
+
+    /// Cancels the open rotation proposal. The proposer may cancel at any time.
+    /// Any current resolver may also cancel once the proposal can no longer reach
+    /// a majority (deadlock guard), so a lost proposer key can't permanently
+    /// block rotation. Emits `RotationCancelled`.
+    pub fn cancel_rotation(env: Env, resolver: Address) -> Result<(), Error> {
+        // Audited via: test_proposer_can_cancel_rotation (proposer cancel),
+        // test_non_proposer_cannot_cancel_passable_rotation (NotProposer),
+        // test_cannot_cancel_rotation_without_proposal (NoRotationProposal below).
+        let proposal: RotationProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::RotationProposal)
+            // NoRotationProposal: triggered by test_cannot_cancel_rotation_without_proposal.
+            .ok_or(Error::NoRotationProposal)?;
+        resolver.require_auth();
+
+        let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
+        if !committee.contains(&resolver) {
+            return Err(Error::NotAResolver);
+        }
+
+        // Proposer may always cancel; anyone may cancel a proposal that can no
+        // longer pass. Otherwise a non-proposer touching a still-passable
+        // proposal is rejected.
+        let n = committee.len();
+        let majority = (n / 2) + 1;
+        let remaining = n - proposal.yes.len() - proposal.no.len();
+        let can_cancel =
+            resolver == proposal.proposed_by || proposal.yes.len() + remaining < majority;
+        if !can_cancel {
+            return Err(Error::NotProposer);
+        }
+
+        env.storage().instance().remove(&DataKey::RotationProposal);
+        RotationCancelled {
+            old_resolver: proposal.old_resolver,
+            new_resolver: proposal.new_resolver,
         }
         .publish(&env);
 

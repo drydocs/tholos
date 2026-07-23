@@ -1044,6 +1044,308 @@ fn test_finalize_with_reward_works_while_paused() {
     assert_eq!(f.token.balance(&asserter), 998);
 }
 
+// ---- Resolver self-rotation ----
+
+#[test]
+fn test_cannot_propose_rotation_by_non_resolver() {
+    let f = Fixture::new();
+    let outsider = f.generate();
+
+    let result =
+        f.client
+            .try_propose_rotation(&outsider, &f.resolvers.get(0).unwrap(), &f.generate());
+    assert_eq!(result, Err(Ok(Error::NotAResolver)));
+}
+
+#[test]
+fn test_cannot_propose_rotation_for_non_member() {
+    let f = Fixture::new();
+    let outsider = f.generate();
+
+    let result = f.client.try_propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &outsider, // not on the committee
+        &f.generate(),
+    );
+    assert_eq!(result, Err(Ok(Error::ResolverNotInCommittee)));
+}
+
+#[test]
+fn test_cannot_propose_rotation_with_duplicate_new() {
+    let f = Fixture::new();
+
+    let result = f.client.try_propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(1).unwrap(),
+        &f.resolvers.get(2).unwrap(), // already on the committee
+    );
+    assert_eq!(result, Err(Ok(Error::DuplicateResolver)));
+}
+
+#[test]
+fn test_rotation_in_progress_blocks_second_proposal() {
+    let f = Fixture::new();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    let result = f.client.try_propose_rotation(
+        &f.resolvers.get(1).unwrap(),
+        &f.resolvers.get(1).unwrap(),
+        &f.generate(),
+    );
+    assert_eq!(result, Err(Ok(Error::RotationInProgress)));
+}
+
+#[test]
+fn test_rotation_requires_majority_then_executes() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let new_resolver = f.generate();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(), // rotate R1 out
+        &new_resolver,
+    );
+
+    // One yes of three: not yet a majority, proposal stays open.
+    let r = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(1).unwrap(), &true);
+    assert_eq!(r, Ok(Ok(None)));
+
+    // A second yes reaches the 2/3 majority and executes the rotation.
+    let r = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(2).unwrap(), &true);
+    assert_eq!(r, Ok(Ok(Some(true))));
+
+    // The rotated-out member can no longer vote on a fresh dispute...
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+    assert_eq!(
+        f.client
+            .try_resolve(&f.resolvers.get(0).unwrap(), &id, &true),
+        Err(Ok(Error::NotAResolver))
+    );
+
+    // ...and the new member, with one holdover, can decide it.
+    f.client.resolve(&new_resolver, &id, &false);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_rotation_vote_twice_fails() {
+    let f = Fixture::new();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    let voter = f.resolvers.get(1).unwrap();
+    f.client.vote_rotation(&voter, &true);
+
+    let result = f.client.try_vote_rotation(&voter, &true);
+    assert_eq!(result, Err(Ok(Error::AlreadyVoted)));
+}
+
+#[test]
+fn test_non_resolver_cannot_vote_rotation() {
+    let f = Fixture::new();
+    let outsider = f.generate();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    let result = f.client.try_vote_rotation(&outsider, &true);
+    assert_eq!(result, Err(Ok(Error::NotAResolver)));
+}
+
+#[test]
+fn test_rotation_does_not_affect_in_flight_dispute() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let new_resolver = f.generate();
+
+    // Open a dispute, snapshotting the original committee, before rotating.
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    // Self-rotate R1 -> new_resolver via the other two members.
+    f.client.propose_rotation(
+        &f.resolvers.get(1).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &new_resolver,
+    );
+    f.client.vote_rotation(&f.resolvers.get(1).unwrap(), &true);
+    f.client.vote_rotation(&f.resolvers.get(2).unwrap(), &true);
+
+    // The new member is NOT on this dispute's snapshot, so can't vote on it...
+    assert_eq!(
+        f.client.try_resolve(&new_resolver, &id, &true),
+        Err(Ok(Error::NotAResolver))
+    );
+
+    // ...but R1, though rotated out of the live committee, is still on the
+    // snapshot and can help decide this in-flight dispute.
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &false);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_admin_update_resolvers_cancels_open_rotation() {
+    let f = Fixture::new();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    // Admin override supersedes the in-flight rotation: the proposal is cleared.
+    let replacement = Vec::from_array(&f.env, [f.generate(), f.generate(), f.generate()]);
+    f.client.update_resolvers(&replacement);
+
+    // A fresh proposal is now allowed (the old one was cancelled, not still open).
+    let r = f.client.try_propose_rotation(
+        &replacement.get(0).unwrap(),
+        &replacement.get(0).unwrap(),
+        &f.generate(),
+    );
+    assert_eq!(r, Ok(Ok(())));
+}
+
+#[test]
+fn test_proposer_can_cancel_rotation() {
+    let f = Fixture::new();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+    f.client.cancel_rotation(&f.resolvers.get(0).unwrap());
+
+    // Proposal gone: a new one can be opened.
+    let r = f.client.try_propose_rotation(
+        &f.resolvers.get(1).unwrap(),
+        &f.resolvers.get(1).unwrap(),
+        &f.generate(),
+    );
+    assert_eq!(r, Ok(Ok(())));
+}
+
+#[test]
+fn test_non_proposer_cannot_cancel_passable_rotation() {
+    let f = Fixture::new();
+
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+    // One yes, no nos: 1 + 1 remaining = 2 = majority, so still passable.
+    f.client.vote_rotation(&f.resolvers.get(1).unwrap(), &true);
+
+    // A non-proposer may not cancel a still-passable proposal.
+    let result = f.client.try_cancel_rotation(&f.resolvers.get(2).unwrap());
+    assert_eq!(result, Err(Ok(Error::NotProposer)));
+}
+
+#[test]
+fn test_deadlock_autocancels_rotation() {
+    let f = Fixture::new();
+
+    // Proposing doesn't cast a vote, so in a 3-member committee the first no
+    // leaves yes(0) + remaining(2) = 2 = majority: still passable, stays open.
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+    let r = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(1).unwrap(), &false);
+    assert_eq!(r, Ok(Ok(None)));
+
+    // A second no makes it mathematically dead: yes(0) + remaining(1, the
+    // proposer) = 1 < majority(2), so this vote auto-cancels the proposal.
+    let r = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(2).unwrap(), &false);
+    assert_eq!(r, Ok(Ok(Some(false))));
+
+    // Proposal cleared: a new one can be opened.
+    let r = f.client.try_propose_rotation(
+        &f.resolvers.get(2).unwrap(),
+        &f.resolvers.get(2).unwrap(),
+        &f.generate(),
+    );
+    assert_eq!(r, Ok(Ok(())));
+}
+
+#[test]
+fn test_rotation_is_pause_exempt() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let new_resolver = f.generate();
+
+    f.client.set_paused(&true);
+
+    // Propose and vote to execute even while paused: no Paused error.
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &new_resolver,
+    );
+    f.client.vote_rotation(&f.resolvers.get(1).unwrap(), &true);
+    let r = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(2).unwrap(), &true);
+    assert_eq!(r, Ok(Ok(Some(true))));
+
+    f.client.set_paused(&false);
+
+    // The rotated committee works on a fresh dispute.
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+    f.client.resolve(&new_resolver, &id, &false);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_cannot_vote_rotation_without_proposal() {
+    let f = Fixture::new();
+    // Calling vote_rotation without an open proposal returns NoRotationProposal.
+    let result = f
+        .client
+        .try_vote_rotation(&f.resolvers.get(0).unwrap(), &true);
+    assert_eq!(result, Err(Ok(Error::NoRotationProposal)));
+}
+
+#[test]
+fn test_cannot_cancel_rotation_without_proposal() {
+    let f = Fixture::new();
+    // Calling cancel_rotation without an open proposal returns NoRotationProposal.
+    let result = f.client.try_cancel_rotation(&f.resolvers.get(0).unwrap());
+    assert_eq!(result, Err(Ok(Error::NoRotationProposal)));
+}
+
 /// A minimal token that reenters a Tholos call from inside its own
 /// `transfer`, before doing its own balance bookkeeping. Models a malicious
 /// or merely non-standard (e.g. hook-bearing) SEP-41 token, to prove state is

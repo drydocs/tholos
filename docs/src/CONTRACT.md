@@ -59,6 +59,11 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `TooManyResolvers` | Resolver list has more than `MAX_RESOLVERS` (21) entries |
 | `InvalidFinalizeReward` | `finalize_reward_bps` is greater than `MAX_FINALIZE_REWARD_BPS` (1000) |
 | `DuplicateResolvers` | Resolver list contains the same address more than once |
+| `RotationInProgress` | A rotation proposal is already open; only one may be open at a time |
+| `NoRotationProposal` | No open rotation proposal to vote on or cancel |
+| `ResolverNotInCommittee` | The `old_resolver` named for removal isn't a current resolver |
+| `DuplicateResolver` | The `new_resolver` named for addition is already on the committee (or equals `old_resolver`) |
+| `NotProposer` | Caller isn't the proposer and the proposal can still reach a majority, so can't cancel it |
 
 ## Functions
 
@@ -84,6 +89,47 @@ Requires the stored admin's signature. Same odd-length and `MAX_RESOLVERS` cap a
 `resolvers` field on `Assertion`), and voting for that dispute is decided against
 that snapshot for its whole lifetime, not the live committee. A resolver removed
 after a dispute was opened can still vote on it; a resolver added after can't.
+
+This is the emergency override path. It supersedes any in-flight self-rotation vote:
+an open `RotationProposal` is cleared (emitting `RotationCancelled` when one was
+present), so a committee-driven rotation can never execute against a committee it
+wasn't built for. Day-to-day committee changes go through `propose_rotation` /
+`vote_rotation` instead.
+
+### `propose_rotation(resolver, old_resolver, new_resolver)`
+
+Proposes a single-slot committee rotation: remove `old_resolver` (must be a current
+resolver) and add `new_resolver` (must not already be one). Only a current resolver
+may propose, and only one rotation may be open at a time. `old_resolver` must be on
+the committee; `new_resolver` must not be (and not equal `old_resolver`). Emits
+`RotationProposed`. Pause-exempt, like `update_resolvers`.
+
+The proposal is decided by a strict majority of the *live* committee (the same
+`len / 2 + 1` threshold used to resolve disputes) via `vote_rotation`. On execution
+it writes the same `Resolvers` slot `update_resolvers` writes, so it has no effect on
+disputes already open: their committee was snapshotted at `dispute` time. See
+`docs/src/ROTATION_DESIGN.md`.
+
+### `vote_rotation(resolver, approve) -> Option<bool>`
+
+A resolver votes on the open rotation proposal. `approve` records a yes or no (both
+prevent re-voting). Once yes-votes reach a strict majority of the live committee, the
+rotation executes immediately: `old_resolver` is swapped for `new_resolver` in the
+live committee, the proposal is cleared, `RotationExecuted` and `ResolversUpdated`
+are emitted, and the function returns `Some(true)`. If the remaining unvoted
+resolvers can no longer supply enough yes-votes to reach a majority, the proposal is
+cancelled automatically (deadlock guard), `RotationCancelled` is emitted, and the
+function returns `Some(false)`. Otherwise the vote is recorded and the proposal stays
+open, returning `None`. Fails with `NoRotationProposal`, `NotAResolver`, or
+`AlreadyVoted` as appropriate. Pause-exempt.
+
+### `cancel_rotation(resolver)`
+
+Cancels the open rotation proposal. The proposer may cancel at any time. Any current
+resolver may also cancel once the proposal can no longer reach a majority (deadlock
+guard), so a lost proposer key can't permanently block rotation. Emits
+`RotationCancelled`. Fails with `NoRotationProposal`, `NotAResolver`, or
+`NotProposer` as appropriate.
 
 ### `set_paused(paused)`
 
@@ -189,8 +235,11 @@ history without polling `get_assertion_state`:
 | `Disputed` | `dispute` | `id`, `disputer` |
 | `Finalized` | `finalize` | `id`, `outcome`, `finalizer` (`Address`), `reward` |
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
-| `ResolversUpdated` | `update_resolvers` | `resolvers` (the new committee) |
+| `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
+| `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
+| `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
+| `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
 
 `Finalized.finalizer` is always the address that called `finalize` — auth is required unconditionally, so this value is always verified regardless of whether `finalize_reward_bps` is non-zero. `Finalized.reward` is the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
 
@@ -227,6 +276,12 @@ resolve.
 
 ## Known gaps
 
-- `set_paused` and `update_resolvers` are both single-admin-key operations, which is a bigger centralization
-  point than the resolver committee itself. A resolver self-rotation scheme (the
-  committee votes to replace one of its own) was considered but not built for v1.
+- No fee/reward mechanism for uncontested finalizes: the original design called for
+  a small reward funded by market fees, but no fee-generating market layer exists
+  yet, so `finalize` just returns the bond as-is.
+- `set_paused` is still a single-admin-key operation. `update_resolvers` is too,
+  but it's now an *emergency override*: a resolver self-rotation scheme
+  (`propose_rotation` / `vote_rotation` / `cancel_rotation`) lets the committee vote
+  to replace one of its own by a strict majority, removing the admin as the only path
+  to committee membership. `update_resolvers` stays as the break-glass for a
+  compromised or deadlocked committee. See `docs/src/ROTATION_DESIGN.md`.

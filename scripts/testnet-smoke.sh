@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for the Tholos assertion contract against Stellar testnet.
 # Deploys a fresh instance, then walks it through: initialize, assert, dispute,
-# resolve (majority vote), asserting on the token balance movement at each step.
+# resolve (majority vote), and a committee self-rotation (propose + majority vote),
+# asserting on the token balance movement and post-rotation membership at each step.
 set -euo pipefail
 
 NETWORK=testnet
@@ -87,3 +88,34 @@ if ! echo "$STATE" | grep -q '"Resolved"'; then
 fi
 
 log "PASS: dispute resolved correctly, disputer paid both bonds"
+
+log "Generating a 4th identity to rotate into the committee"
+R4=$(gen_key resolver4)
+
+log "Self-rotating R3 out, R4 in (strict-majority committee vote, no admin key)"
+stellar contract invoke --id "$CONTRACT" --source resolver3 --network "$NETWORK" -- \
+  propose_rotation --resolver "$R3" --old_resolver "$R3" --new_resolver "$R4" >/dev/null
+stellar contract invoke --id "$CONTRACT" --source resolver1 --network "$NETWORK" -- \
+  vote_rotation --resolver "$R1" --approve true >/dev/null
+stellar contract invoke --id "$CONTRACT" --source resolver2 --network "$NETWORK" -- \
+  vote_rotation --resolver "$R2" --approve true >/dev/null
+
+log "Post-rotation: R4 is now a resolver; proving it by resolving a fresh dispute"
+ID2=$(stellar contract invoke --id "$CONTRACT" --source asserter --network "$NETWORK" -- assert_outcome \
+  --asserter "$ASSERTER" --outcome true 2>/dev/null | tail -1)
+log "Second assertion id: $ID2"
+stellar contract invoke --id "$CONTRACT" --source disputer --network "$NETWORK" -- dispute \
+  --disputer "$DISPUTER" --id "$ID2" >/dev/null
+stellar contract invoke --id "$CONTRACT" --source resolver4 --network "$NETWORK" -- resolve \
+  --resolver "$R4" --id "$ID2" --agrees_with_asserter false >/dev/null
+stellar contract invoke --id "$CONTRACT" --source resolver1 --network "$NETWORK" -- resolve \
+  --resolver "$R1" --id "$ID2" --agrees_with_asserter false >/dev/null
+
+STATE2=$(stellar contract invoke --id "$CONTRACT" --source deployer --network "$NETWORK" -- get_assertion_state --id "$ID2")
+if ! echo "$STATE2" | grep -q '"Resolved"'; then
+  echo "FAIL: expected second assertion status Resolved, got: $STATE2"
+  exit 1
+fi
+
+log "PASS: self-rotation executed; R4 (the new resolver) helped resolve a dispute"
+

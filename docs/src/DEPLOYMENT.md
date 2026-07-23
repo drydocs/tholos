@@ -63,18 +63,35 @@ the issue is resolved.
 
 ### Rotating the resolver committee
 
-Works whether paused or not, so a compromised committee can be replaced without
-waiting to unpause:
+There are two paths. `update_resolvers` is the admin emergency override; it works
+whether paused or not, so a compromised committee can be replaced without waiting to
+unpause:
 
 ```sh
 stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- update_resolvers \
   --new_resolvers "[\"$NEW_R1\",\"$NEW_R2\",\"$NEW_R3\"]"
 ```
 
-The new committee must be odd-length. Resolvers removed mid-dispute simply lose
-the ability to cast further votes on assertions already in flight; resolvers added
-mid-dispute *can* vote on assertions that were disputed before they joined. See
-[CONTRACT.md](CONTRACT.md) for the full detail.
+Day to day, the committee rotates itself by a strict majority vote, with no admin
+key involved. A resolver proposes a single-slot swap, and the rest vote:
+
+```sh
+# R1 (a current resolver) proposes replacing themselves with R4.
+stellar contract invoke --id "$CONTRACT" --source resolver1 --network testnet -- \
+  propose_rotation --resolver "$R1" --old_resolver "$R1" --new_resolver "$R4"
+
+# Two more resolvers vote yes; with a 3-member committee that's the majority,
+# so the rotation executes as soon as the second yes lands.
+stellar contract invoke --id "$CONTRACT" --source resolver2 --network testnet -- \
+  vote_rotation --resolver "$R2" --approve true
+stellar contract invoke --id "$CONTRACT" --source resolver3 --network testnet -- \
+  vote_rotation --resolver "$R3" --approve true
+```
+
+Either path writes the same committee; both emit `ResolversUpdated`. A rotation has
+no effect on disputes already open, because each dispute snapshots the committee at
+`dispute` time. See [CONTRACT.md](CONTRACT.md) and
+`docs/src/ROTATION_DESIGN.md` for the full detail.
 
 ### Checking state
 

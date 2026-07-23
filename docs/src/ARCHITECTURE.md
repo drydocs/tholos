@@ -101,6 +101,45 @@ model independently rejects a reentrant token's nested `require_auth` in both ca
 so the reentrancy threat model for `finalize` is the same as for the other three
 functions regardless of the reward setting.
 
+## Resolver self-rotation
+
+The committee can replace one of its own by vote (`propose_rotation` /
+`vote_rotation` / `cancel_rotation`), removing the admin as the only path to
+committee membership. Design record: `docs/src/ROTATION_DESIGN.md`. Three decisions
+the scheme rests on:
+
+- **Strict majority of the live committee, same formula as a dispute.** The
+  threshold is `len / 2 + 1`, the only majority rule in the contract. A colluding
+  majority already decides every dispute, so rotation-by-majority adds no new attack
+  surface beyond what that majority already has; it just routes the membership change
+  through the contract instead of the admin key.
+- **No interaction with the per-dispute snapshot, by construction.** Self-rotation
+  writes the same `Resolvers` instance-storage slot `update_resolvers` writes. Because
+  a dispute snapshots the live committee at `dispute` time (`Assertion.resolvers`), a
+  rotation completing after a dispute is open has exactly the behavior `update_resolvers`
+  already has: no effect on that dispute. The new committee governs only disputes
+  opened afterward. No change to `Assertion`, `dispute`, or `resolve` was needed; the
+  existing snapshot invariant carries the rotation for free.
+- **Coexists with `update_resolvers`, doesn't replace it.** Self-rotation is the
+  day-to-day path; admin `update_resolvers` stays as the emergency override for a
+  compromised or deadlocked committee (the one case self-rotation can't solve: a
+  committee can't vote to heal itself when it's the problem). Both paths emit
+  `ResolversUpdated`, so the "committee changed" signal stays unified; rotation adds
+  `RotationProposed` / `RotationExecuted` / `RotationCancelled` for the governance
+  trail.
+
+Liveness: only one rotation may be open at a time, and it's resolved by execution
+(majority reached), proposer cancel, or a deterministic deadlock guard (if yes-votes
+cast plus every unvoted resolver still can't reach a majority, the proposal
+auto-cancels) so a lost proposer key can't permanently block rotation. Pause-exempt,
+like `update_resolvers`: rotation is internal governance, not new exposure.
+
+Admin override wins any race: `update_resolvers` clears an open self-rotation
+proposal. The only ways the committee changes are `update_resolvers` and
+rotation-execution, and both clear the proposal, so a live proposal always matches the
+committee it was validated against — no stale proposal can execute against a committee
+it wasn't built for.
+
 ## Flows
 
 ### Uncontested: assert, then finalize (with optional reward)
