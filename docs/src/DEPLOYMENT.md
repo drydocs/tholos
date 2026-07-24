@@ -18,7 +18,7 @@ can be changed after `initialize`:
 | `token` | Any SEP-41 token your users already hold. No swap step exists, so picking a token nobody has is a dead deployment. |
 | `bond_amount` | High enough to make spam assertions and bad-faith disputes costly, low enough that legitimate use isn't priced out. There's no data-driven formula for this yet; start conservative and watch real usage. Also capped at `MAX_BOND_AMOUNT`, a contract-enforced ceiling well above any realistic bond size — it exists so the bond can never overflow `finalize`'s reward-multiply arithmetic (the binding constraint) or the token balance held across a dispute. |
 | `challenge_window_secs` | Long enough that people who'd actually catch a bad assertion have a realistic chance to see it and act. Short windows finalize faster but catch less. |
-| `resolvers` | Odd-length, non-zero. Pick people who'll actually be reachable to vote within a reasonable time of a dispute; a slow resolver committee stalls every disputed assertion until it acts. |
+| `resolvers` | Odd-length, non-zero, distinct, and at most 21 addresses. `initialize` rejects duplicates with `DuplicateResolvers`. Pick people who'll actually be reachable to vote within a reasonable time of a dispute; a slow resolver committee stalls every disputed assertion until it acts. |
 | `finalize_reward_bps` | Basis points (0–1000) of the bond paid to whoever calls `finalize`. `caller` must authorize the call unconditionally, even at 0. 0 means no reward: the full bond returns to the asserter. A non-zero value creates an economic incentive for prompt finalization at the cost of a small bond haircut the asserter accepts when posting. 100 bps (1 %) is a reasonable starting point; 1000 bps (10 %) is the maximum enforced by the contract. |
 
 ## Deploying
@@ -56,25 +56,27 @@ behavior looks off), pause first and investigate second:
 stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- set_paused --paused true
 ```
 
-This stops new `assert_outcome`, `dispute`, and `resolve` calls immediately.
-Assertions already `Pending` can still `finalize` normally, so you aren't freezing
-funds that were never at risk. Unpause the same way with `--paused false` once
-the issue is resolved.
+This stops `assert_outcome`, `dispute`, and `resolve` immediately, but not
+`finalize`. That asymmetry matters: a `Pending` assertion cannot be challenged
+while paused and may become finalizable if its window expires. Inventory open
+assertions before pausing, minimize pause duration, and unpause with
+`--paused false` as soon as incident handling permits. Do not use pause as a safe
+migration or retirement switch.
 
 ### Rotating the resolver committee
 
-Works whether paused or not, so a compromised committee can be replaced without
-waiting to unpause:
+Works whether paused or not, so a compromised live committee can be replaced for
+future disputes without waiting to unpause:
 
 ```sh
 stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- update_resolvers \
   --new_resolvers "[\"$NEW_R1\",\"$NEW_R2\",\"$NEW_R3\"]"
 ```
 
-The new committee must be odd-length. Resolvers removed mid-dispute simply lose
-the ability to cast further votes on assertions already in flight; resolvers added
-mid-dispute *can* vote on assertions that were disputed before they joined. See
-[CONTRACT.md](CONTRACT.md) for the full detail.
+The new committee must be odd-length. Rotation affects only assertions disputed
+after the update. An already disputed assertion keeps the committee snapshotted
+when its dispute opened: a removed resolver can still vote on it, while a newly
+added resolver cannot. See [CONTRACT.md](CONTRACT.md) for the full detail.
 
 ### Checking state
 

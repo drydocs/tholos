@@ -3,6 +3,11 @@
 This covers *why* Tholos is built the way it is. For *what* each function does,
 see [CONTRACT.md](CONTRACT.md).
 
+The committee described here is the implemented protocol v1 mechanism. A
+stake-weighted, dispute-scoped replacement is under design for protocol v2; see
+[V2_RESOLUTION.md](V2_RESOLUTION.md). That proposal does not describe current
+contract behavior.
+
 ## One instance, one configuration
 
 A Tholos deployment is initialized once with a single token, bond amount,
@@ -15,10 +20,12 @@ callers are expected to handle that.
 
 ## Odd-length resolver committee, simple majority
 
-`resolvers` must have an odd, non-zero length, enforced in both `initialize` and
-`update_resolvers`. This is the whole tie-breaking mechanism: with an odd
-committee, a strict majority (`len / 2 + 1`) is always reachable and never
-ambiguous. No tie-handling logic exists because none is needed.
+`resolvers` must be non-empty, have an odd number of members, contain distinct
+addresses, and have no more than `MAX_RESOLVERS` (21) members. Both `initialize`
+and `update_resolvers` enforce these constraints; duplicate addresses fail with
+`DuplicateResolvers`. An odd committee makes the strict-majority threshold
+(`len / 2 + 1`) unambiguous and eliminates an arithmetic tie. No separate
+tie-handling or timeout logic exists.
 
 ## Challenge window is capped at 7 days
 
@@ -28,10 +35,11 @@ write (see "Persistent storage TTL" in [CONTRACT.md](CONTRACT.md)), and a window
 close to that 30-day ceiling would leave little to no time after the window closes
 for `finalize` to actually be called, or for a dispute opened right before the
 window closes to get resolved, before the entry risks archival. 7 days keeps a
-wide margin. Bond amount deliberately has no upper bound: unlike the window, there
-is no protocol-level quantity to cap it against, since a "sane" bond ceiling
-depends on the configured token's decimals and intended use, which the contract
-has no way to judge. That's left to whoever configures a deployment.
+wide margin. Bond amount deliberately has no economic upper bound: a sensible
+ceiling depends on the configured token's decimals and intended use, which the
+contract cannot judge. There is still an arithmetic limit: `initialize` enforces
+`MAX_BOND_AMOUNT`, the largest bond that cannot overflow `finalize`'s
+reward-multiply arithmetic or the token balance held across a dispute.
 
 ## Resolver committee is snapshotted per dispute
 
@@ -45,6 +53,11 @@ problem independent of whether the update was legitimate or malicious. Snapshott
 at `dispute` time makes a dispute's rules fixed for its whole lifetime: whoever was
 on the committee when it opened decides it, regardless of what the committee looks
 like by the time it closes.
+
+The v2 proposal preserves this immutability rather than the committee itself. It
+pins resolution policy when an assertion opens, then freezes dispute-specific
+bond positions and their aggregate weight before discretionary third-party
+choices are revealed.
 
 ## State before external calls
 
@@ -69,14 +82,17 @@ one through.
 ## Pause is scoped, not absolute
 
 `set_paused` blocks `assert_outcome`, `dispute`, and `resolve`, but deliberately
-*not* `finalize` or `update_resolvers`. The reasoning: a pause exists to stop new
-exposure (new bonds, new disputes, new votes) while an incident is investigated,
-not to freeze funds that are already committed. An assertion that was `Pending`
-before the pause and never gets disputed shouldn't be stuck waiting on the
-incident to resolve; letting `finalize` run means its bond returns normally.
-Similarly, if the pause was triggered *because* the resolver committee is
-compromised, the admin needs `update_resolvers` to actually fix that while
-paused, not after unpausing.
+*not* `finalize` or `update_resolvers`. The intended scope is incident containment:
+stop new bonds, disputes, and votes while still allowing an uncontested pending
+assertion to return its bond through `finalize`. This is not funds-neutral. Open
+disputes cannot progress while paused, and a pending assertion also cannot be
+challenged even though its deadline continues and `finalize` remains available.
+Pause must therefore be short-lived and is not a safe retirement switch.
+
+If the pause was triggered because the live resolver committee is compromised,
+the admin can use `update_resolvers` while paused to protect disputes opened after
+the update. It cannot repair an already open dispute: that assertion keeps its
+snapshotted committee, including a compromised or unavailable member.
 
 ## Finalize reward is bond-funded, not externally funded
 
@@ -149,7 +165,7 @@ sequenceDiagram
     Tholos->>Token: transfer(contract -> winner, bond * 2)
 ```
 
-### Paused: new assertions rejected, existing ones unaffected
+### Paused: selected state changes blocked
 
 ```mermaid
 sequenceDiagram
@@ -160,5 +176,5 @@ sequenceDiagram
     Admin->>Tholos: set_paused(true)
     Asserter->>Tholos: assert_outcome(outcome)
     Tholos-->>Asserter: Error: Paused
-    Note over Tholos: assertions already Pending can still finalize
+    Note over Tholos: Pending can finalize but cannot be disputed;<br/>Disputed cannot receive votes
 ```

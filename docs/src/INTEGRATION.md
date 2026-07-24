@@ -95,8 +95,9 @@ receives its own reward), but without enforced auth the on-chain finalizer of re
 could be spoofed. Pass `caller = some_address` and authorize the call regardless of
 whether a reward is configured. When `finalize_reward_bps` is non-zero the caller
 additionally receives `bond * bps / 10_000` tokens as an incentive and
-`Assertion.finalizer` is set to that verified address. `resolve` is always
-permissionless for members of the resolver committee. Tholos does
+`Assertion.finalizer` is set to that verified address. `resolve` requires
+authorization from a member of the resolver committee snapshotted for the
+dispute. Tholos does
 not push a callback to your contract when an assertion resolves. If you need to
 react automatically, two options:
 
@@ -138,7 +139,7 @@ event carries, not `get_assertion_state(id).outcome`.
 | `token` | Any SEP-41 token. Must be a token your users already hold or can acquire; bonds are paid in it directly, there's no swap step. |
 | `bond_amount` | High enough to deter spam/bad-faith assertions, low enough that legitimate use isn't priced out. Fixed per instance, see above. |
 | `challenge_window_secs` | Longer windows give more time to catch bad assertions but delay uncontested finalization. |
-| `resolvers` | Must be odd-length. See [CONTRACT.md](CONTRACT.md) for what `update_resolvers` can and can't change mid-dispute. |
+| `resolvers` | Must be odd-length, non-zero, distinct, and at most 21 addresses; v1 rejects duplicates with `DuplicateResolvers`. See [CONTRACT.md](CONTRACT.md) for what `update_resolvers` can and can't change mid-dispute. |
 | `finalize_reward_bps` | 0–1000 basis points of the bond paid to whoever calls `finalize`. Auth is always required from the caller, regardless of this value. 0 (default) returns the full bond to the asserter with no reward; non-zero values incentivize prompt finalization. |
 
 ## Known caveats for integrators
@@ -155,5 +156,6 @@ event carries, not `get_assertion_state(id).outcome`.
   `set_paused`. Your integration should treat a `Paused` error as a distinct,
   expected failure mode (surface it to the user as "resolution temporarily
   unavailable") rather than an unexpected error. `finalize` and
-  `update_resolvers` stay callable while paused, so assertions already `Pending`
-  before a pause can still resolve uncontested.
+  `update_resolvers` stay callable while paused. A pending assertion can therefore
+  become finalizable while `dispute` is blocked; do not assume a pause also freezes
+  its challenge deadline.

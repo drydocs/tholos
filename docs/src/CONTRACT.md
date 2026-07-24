@@ -51,7 +51,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `NotDisputed` | Action requires `Status::Disputed` but the assertion isn't |
 | `ChallengeWindowClosed` | Tried to dispute after the challenge window elapsed |
 | `ChallengeWindowOpen` | Tried to finalize before the challenge window elapsed |
-| `NotAResolver` | Caller isn't in the current resolver committee |
+| `NotAResolver` | Caller isn't in the committee snapshotted for this dispute |
 | `AlreadyVoted` | Resolver already voted on this assertion |
 | `Paused` | Called `assert_outcome`, `dispute`, or `resolve` while paused |
 | `InvalidBondAmount` | `bond_amount` is zero, negative, or greater than `MAX_BOND_AMOUNT` |
@@ -65,7 +65,8 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 ### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
 
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
-`MAX_RESOLVERS` (21), so a majority vote can never tie and no single dispute
+`MAX_RESOLVERS` (21), with no duplicate addresses, so a majority vote can never
+tie and no single dispute
 snapshot grows unbounded. `bond_amount` must be positive and no greater than
 `MAX_BOND_AMOUNT` — the largest bond that can't overflow the token balance or
 `finalize`'s reward-multiply arithmetic — and `challenge_window_secs`
@@ -91,7 +92,12 @@ Pauses or unpauses `assert_outcome`, `dispute`, and `resolve`. Requires the stor
 admin's signature. `finalize` is deliberately exempt: assertions already `Pending`
 before a pause can still be finalized while paused, so an uncontested claim isn't
 stuck waiting on an unpause. `update_resolvers` is also exempt, so a compromised
-committee can be replaced without unpausing first. Emits `PauseUpdated`.
+live committee can be replaced for future disputes without unpausing first; an
+already disputed assertion keeps its snapshot. Emits `PauseUpdated`.
+
+Because `dispute` is blocked while `finalize` is not, leaving the contract paused
+through a pending assertion's challenge deadline can make that assertion
+uncontestable. Pause is an incident-control tool, not an atomic retirement gate.
 
 ### `assert_outcome(asserter, outcome) -> u64`
 

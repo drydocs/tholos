@@ -40,6 +40,10 @@ All notable changes to this project are documented here. Format follows
   CI could previously pass without ever building, testing, or linting it.
   Closes #43.
 
+- A design-only protocol v2 proposal for stake-weighted voting by bond posters,
+  including eligibility and weight snapshots, settlement, threat analysis, and a
+  blue/green migration path for existing v1 deployments. No contract behavior or
+  public interface changed. Refs #19.
 - Reentrancy regression tests for `assert_outcome`, `dispute`, and `resolve`,
   extending the pattern already used for `finalize`. Along the way, confirmed
   that Soroban's auth model itself rejects a reentrant token's dynamically-triggered
@@ -75,7 +79,6 @@ All notable changes to this project are documented here. Format follows
 - Corrected stale documentation in DEPLOYMENT.md and GLOSSARY.md that still
   described `finalize` as callable without authorization; `caller` has
   required auth unconditionally since the `finalize_reward_bps` change above.
-
 - Persistent `Assertion` storage now has its TTL extended by 30 days on every
   write (`assert_outcome`, `dispute`, `finalize`, `resolve`), through a shared
   `set_assertion` helper. Previously only instance storage got a TTL bump, so a
