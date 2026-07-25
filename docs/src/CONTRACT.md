@@ -9,7 +9,7 @@ document should be updated alongside any change to the public interface.
 stateDiagram-v2
     [*] --> Pending: assert_outcome
     Pending --> Disputed: dispute
-    Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>bond returned)
+    Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>bond split between asserter and finalizer)
     Disputed --> Resolved: resolve<br/>(majority reached,<br/>winner paid both bonds)
     Resolved --> [*]
 ```
@@ -37,6 +37,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `votes_for_outcome` / `votes_against_outcome` | `u32` | Resolver vote tally |
 | `voted` | `Vec<Address>` | Resolvers who have already voted, to prevent double-voting |
 | `resolvers` | `Vec<Address>` | The resolver committee snapshotted at dispute time; empty until `dispute` is called. See `resolve` below. |
+| `finalizer` | `Option<Address>` | Who called `finalize`, if the assertion was finalized (not resolved via `resolve`). `None` until `finalize` is called; always `Some(caller)` after — the caller must authorize unconditionally, so this is always a verified address once set. |
 
 ### `Error`
 
@@ -50,21 +51,34 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `NotDisputed` | Action requires `Status::Disputed` but the assertion isn't |
 | `ChallengeWindowClosed` | Tried to dispute after the challenge window elapsed |
 | `ChallengeWindowOpen` | Tried to finalize before the challenge window elapsed |
-| `NotAResolver` | Caller isn't in the current resolver committee |
+| `NotAResolver` | Caller isn't in the committee snapshotted for this dispute |
 | `AlreadyVoted` | Resolver already voted on this assertion |
 | `Paused` | Called `assert_outcome`, `dispute`, or `resolve` while paused |
-| `InvalidBondAmount` | `bond_amount` is zero or negative |
+| `InvalidBondAmount` | `bond_amount` is zero, negative, or greater than `MAX_BOND_AMOUNT` |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or greater than 7 days |
 | `TooManyResolvers` | Resolver list has more than `MAX_RESOLVERS` (21) entries |
+| `InvalidFinalizeReward` | `finalize_reward_bps` is greater than `MAX_FINALIZE_REWARD_BPS` (1000) |
+| `DuplicateResolvers` | Resolver list contains the same address more than once |
+| `RotationInProgress` | A rotation proposal is already open; only one may be open at a time |
+| `NoRotationProposal` | No open rotation proposal to vote on or cancel |
+| `ResolverNotInCommittee` | The `old_resolver` named for removal isn't a current resolver |
+| `RotationTargetAlreadyResolver` | The `new_resolver` named for addition is already on the committee (or equals `old_resolver`) |
+| `NotProposer` | Caller isn't the proposer and the proposal can still reach a majority, so can't cancel it |
 
 ## Functions
 
-### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers)`
+### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
 
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
-`MAX_RESOLVERS` (21), so a majority vote can never tie and no single dispute
-snapshot grows unbounded. `bond_amount` must be positive and `challenge_window_secs`
+`MAX_RESOLVERS` (21), with no duplicate addresses, so a majority vote can never
+tie and no single dispute
+snapshot grows unbounded. `bond_amount` must be positive and no greater than
+`MAX_BOND_AMOUNT` — the largest bond that can't overflow the token balance or
+`finalize`'s reward-multiply arithmetic — and `challenge_window_secs`
 must be non-zero and at most 7 days (see "Persistent storage TTL" below for why).
+`finalize_reward_bps` sets the fraction of the bond (in basis points, 0–1000) paid
+to whoever calls `finalize` as an incentive for prompt finalization; 0 disables the
+reward entirely and the full bond is returned to the asserter.
 Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
 ### `update_resolvers(new_resolvers)`
@@ -77,13 +91,59 @@ Requires the stored admin's signature. Same odd-length and `MAX_RESOLVERS` cap a
 that snapshot for its whole lifetime, not the live committee. A resolver removed
 after a dispute was opened can still vote on it; a resolver added after can't.
 
+This is the emergency override path. It supersedes any in-flight self-rotation vote:
+an open `RotationProposal` is cleared (emitting `RotationCancelled` when one was
+present), so a committee-driven rotation can never execute against a committee it
+wasn't built for. Day-to-day committee changes go through `propose_rotation` /
+`vote_rotation` instead.
+
+### `propose_rotation(resolver, old_resolver, new_resolver)`
+
+Proposes a single-slot committee rotation: remove `old_resolver` (must be a current
+resolver) and add `new_resolver` (must not already be one). Only a current resolver
+may propose, and only one rotation may be open at a time. `old_resolver` must be on
+the committee; `new_resolver` must not be (and not equal `old_resolver`). Emits
+`RotationProposed`. Pause-exempt, like `update_resolvers`.
+
+The proposal is decided by a strict majority of the *live* committee (the same
+`len / 2 + 1` threshold used to resolve disputes) via `vote_rotation`. On execution
+it writes the same `Resolvers` slot `update_resolvers` writes, so it has no effect on
+disputes already open: their committee was snapshotted at `dispute` time. See
+`docs/src/ROTATION_DESIGN.md`.
+
+### `vote_rotation(resolver, approve) -> Option<bool>`
+
+A resolver votes on the open rotation proposal. `approve` records a yes or no (both
+prevent re-voting). Once yes-votes reach a strict majority of the live committee, the
+rotation executes immediately: `old_resolver` is swapped for `new_resolver` in the
+live committee, the proposal is cleared, `RotationExecuted` and `ResolversUpdated`
+are emitted, and the function returns `Some(true)`. If the remaining unvoted
+resolvers can no longer supply enough yes-votes to reach a majority, the proposal is
+cancelled automatically (deadlock guard), `RotationCancelled` is emitted, and the
+function returns `Some(false)`. Otherwise the vote is recorded and the proposal stays
+open, returning `None`. Fails with `NoRotationProposal`, `NotAResolver`, or
+`AlreadyVoted` as appropriate. Pause-exempt.
+
+### `cancel_rotation(resolver)`
+
+Cancels the open rotation proposal. The proposer may cancel at any time. Any current
+resolver may also cancel once the proposal can no longer reach a majority (deadlock
+guard), so a lost proposer key can't permanently block rotation. Emits
+`RotationCancelled`. Fails with `NoRotationProposal`, `NotAResolver`, or
+`NotProposer` as appropriate.
+
 ### `set_paused(paused)`
 
 Pauses or unpauses `assert_outcome`, `dispute`, and `resolve`. Requires the stored
 admin's signature. `finalize` is deliberately exempt: assertions already `Pending`
 before a pause can still be finalized while paused, so an uncontested claim isn't
 stuck waiting on an unpause. `update_resolvers` is also exempt, so a compromised
-committee can be replaced without unpausing first. Emits `PauseUpdated`.
+live committee can be replaced for future disputes without unpausing first; an
+already disputed assertion keeps its snapshot. Emits `PauseUpdated`.
+
+Because `dispute` is blocked while `finalize` is not, leaving the contract paused
+through a pending assertion's challenge deadline can make that assertion
+uncontestable. Pause is an incident-control tool, not an atomic retirement gate.
 
 ### `assert_outcome(asserter, outcome) -> u64`
 
@@ -98,11 +158,25 @@ Requires `disputer`'s signature. Fails with `Paused` if paused, `NotPending` if 
 assertion isn't pending (including if it's already disputed), or
 `ChallengeWindowClosed` if the window has elapsed. Emits `Disputed`.
 
-### `finalize(id) -> bool`
+### `finalize(caller, id) -> bool`
 
-Callable by anyone once a `Pending` assertion's challenge window has elapsed with no
-dispute. Returns the asserter's bond and returns the asserted outcome. Fails with
-`ChallengeWindowOpen` if called too early. Emits `Finalized`.
+Callable once a `Pending` assertion's challenge window has elapsed with no dispute.
+`caller` must authorize the call unconditionally — regardless of whether
+`finalize_reward_bps` is zero — so the address recorded in `Assertion.finalizer`
+and the `Finalized` event is always a verified caller and cannot be spoofed. This
+applies even when no reward is being paid: without enforced auth, any address could
+be passed as `caller`, permanently writing an unverifiable identity into the
+on-chain record.
+
+- When `finalize_reward_bps` is **non-zero**, `caller` also receives
+  `bond * finalize_reward_bps / 10_000` tokens as an incentive for prompt
+  finalization; the asserter receives the remainder.
+- When `finalize_reward_bps` is **zero** (the default), no reward is paid and the
+  full bond is returned to the asserter. Auth is still required.
+
+In both cases `Assertion.finalizer` is set to `Some(caller)`.
+
+Returns the asserted outcome. Fails with `ChallengeWindowOpen` if called too early. Emits `Finalized` with `finalizer` (`Address`) and `reward` fields.
 
 ### `resolve(resolver, id, agrees_with_asserter) -> Option<bool>`
 
@@ -133,12 +207,16 @@ unrelated assertions. All four functions have a regression test in
 `contracts/tholos/src/test.rs` (`test_*_is_not_reentrant`) that exercises this
 directly against a token built to attempt exactly that reentrant call.
 
-Of the four, only `finalize` requires no signature (`require_auth`). For the other
-three, Soroban's own auth model independently rejects a reentrant token's
-dynamically-triggered nested `require_auth` call, so a hostile token acting alone
-cannot actually reach the reentrant call in the first place; the state-before-transfer
-ordering is a second layer of defense for those three, in case a colluding,
-pre-authorized signer ever found a way through the first.
+`finalize` requires `caller.require_auth()` unconditionally — regardless of whether
+`finalize_reward_bps` is zero. Without this, a zero-bps deployment would accept any
+address as `caller` with no authorization, permanently writing an unverifiable
+identity into `Assertion.finalizer` and the `Finalized` event as the "finalizer of
+record." No funds are at risk (the caller only ever receives its own reward), but the
+audit trail would be spoofable. Requiring auth unconditionally ensures the recorded
+finalizer is always a verified address. Soroban's auth model also independently
+rejects a reentrant token's nested `require_auth`, giving `finalize` the same
+first-layer reentrancy protection as `assert_outcome`, `dispute`, and `resolve`.
+The state-before-transfer ordering is a second layer of defense in both cases.
 
 ### Persistent storage TTL
 
@@ -161,15 +239,20 @@ history without polling `get_assertion_state`:
 | --- | --- | --- |
 | `Asserted` | `assert_outcome` | `id`, `asserter`, `outcome` |
 | `Disputed` | `dispute` | `id`, `disputer` |
-| `Finalized` | `finalize` | `id`, `outcome` |
+| `Finalized` | `finalize` | `id`, `outcome`, `finalizer` (`Address`), `reward` |
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
-| `ResolversUpdated` | `update_resolvers` | `resolvers` (the new committee) |
+| `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
+| `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
+| `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
+| `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
+
+`Finalized.finalizer` is always the address that called `finalize` — auth is required unconditionally, so this value is always verified regardless of whether `finalize_reward_bps` is non-zero. `Finalized.reward` is the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
 
 ## Example: calling it with the Stellar CLI
 
-Deploy, initialize with a 3-member resolver committee, and post an assertion (the
-same flow `scripts/testnet-smoke.sh` automates):
+Deploy, initialize with a 3-member resolver committee and a 1 % finalize reward,
+and post an assertion (the same flow `scripts/testnet-smoke.sh` automates):
 
 ```sh
 CONTRACT=$(stellar contract deploy --wasm target/wasm32v1-none/release/tholos.wasm \
@@ -180,11 +263,18 @@ stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- 
   --token "$TOKEN_CONTRACT_ID" \
   --bond_amount 1000000 \
   --challenge_window_secs 3600 \
-  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]"
+  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" \
+  --finalize_reward_bps 100
 
 stellar contract invoke --id "$CONTRACT" --source asserter --network testnet -- assert_outcome \
   --asserter "$ASSERTER_ADDRESS" \
   --outcome true
+
+# After the challenge window elapses.
+# Auth is required unconditionally: pass the caller's address and sign.
+stellar contract invoke --id "$CONTRACT" --source finalizer --network testnet -- finalize \
+  --caller "$FINALIZER_ADDRESS" \
+  --id 0
 ```
 
 See `scripts/testnet-smoke.sh` for the full round trip including dispute and
@@ -195,6 +285,9 @@ resolve.
 - No fee/reward mechanism for uncontested finalizes: the original design called for
   a small reward funded by market fees, but no fee-generating market layer exists
   yet, so `finalize` just returns the bond as-is.
-- `set_paused` and `update_resolvers` are both single-admin-key operations, which is a bigger centralization
-  point than the resolver committee itself. A resolver self-rotation scheme (the
-  committee votes to replace one of its own) was considered but not built for v1.
+- `set_paused` is still a single-admin-key operation. `update_resolvers` is too,
+  but it's now an *emergency override*: a resolver self-rotation scheme
+  (`propose_rotation` / `vote_rotation` / `cancel_rotation`) lets the committee vote
+  to replace one of its own by a strict majority, removing the admin as the only path
+  to committee membership. `update_resolvers` stays as the break-glass for a
+  compromised or deadlocked committee. See `docs/src/ROTATION_DESIGN.md`.

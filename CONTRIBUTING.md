@@ -60,6 +60,17 @@ There are two layers, and they catch different things:
   against a real signature). Run it before opening a PR that changes contract
   behavior in a way that affects the deployed flow, not for every change.
 
+Property-based testing, via the [`proptest`](https://docs.rs/proptest) crate, is
+used within the unit-test layer where hand-picked boundary values aren't enough to
+be confident an invariant holds across a whole input space (e.g. numeric parameter
+validation, or a vote-counting formula that must hold for every committee size).
+`cargo-fuzz` isn't used: it needs the `wasm32` target and a libFuzzer-driven
+executable, which doesn't fit Soroban's native, mocked-`Env` test profile that these
+contracts' unit tests run against; `proptest` runs as ordinary `#[test]`s in that
+same profile. Proptest-based tests live in their own `mod proptest_*` inside
+`test.rs`, next to the hand-written tests they complement, and set
+`fork = false` in their `ProptestConfig` because Soroban's `Env` isn't `Send`.
+
 ## Code standards
 
 - **Naming:** `snake_case` for functions and variables, `PascalCase` for types

@@ -17,10 +17,13 @@ The assertion and dispute contract (`contracts/tholos`) is implemented, tested, 
 - Pause / emergency-stop: done
 - Reentrancy hardening (state written before external token transfers): done
 - CI (fmt, clippy, tests, wasm build): done
-- Fee-funded reward for uncontested finalizes: not yet (no fee-generating market layer exists to fund it)
+- Fee-funded reward for uncontested finalizes: done (configurable `finalize_reward_bps`, bond-funded)
+- Stake-weighted bond-poster resolution (protocol v2): design proposed, not implemented
 
 See [CONTRACT.md](docs/src/CONTRACT.md) for the full interface and known gaps,
 [ARCHITECTURE.md](docs/src/ARCHITECTURE.md) for design rationale, or
+[V2_RESOLUTION.md](docs/src/V2_RESOLUTION.md) for the proposed, design-only
+stake-weighted resolution mechanism. See
 [INTEGRATION.md](docs/src/INTEGRATION.md) if you're building a contract that wants
 to call into Tholos. Deploying your own instance: see
 [DEPLOYMENT.md](docs/src/DEPLOYMENT.md). New to the terminology: see

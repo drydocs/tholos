@@ -23,6 +23,21 @@ jobs:
             exit 1
           fi
 
+      - name: Verify workspace membership
+        run: |
+          # A crate that exists on disk but isn't in the root [workspace]
+          # members list is invisible to `cargo build/test/clippy --workspace`,
+          # so CI can pass while never touching it (see #43).
+          missing=0
+          for manifest in contracts/*/Cargo.toml; do
+            dir=$(dirname "$manifest")
+            if ! grep -qF "\"$dir\"" Cargo.toml; then
+              echo "::error::$dir has a Cargo.toml but is not listed in the root Cargo.toml's [workspace] members. Add it there before this crate can be built, tested, or linted by CI."
+              missing=1
+            fi
+          done
+          exit $missing
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
