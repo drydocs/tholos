@@ -136,6 +136,7 @@
       ]
     ],
     [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
@@ -158,6 +159,7 @@
         }
       ]
     ],
+    [],
     [],
     [],
     []
@@ -274,6 +276,14 @@
                       "symbol": "disputer"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": {
+                      "bool": true
+                    }
                   },
                   {
                     "key": {

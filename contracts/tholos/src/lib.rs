@@ -99,6 +99,9 @@ pub enum Status {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Assertion {
     pub asserter: Address,
+    /// The authoritative outcome once the assertion is resolved. `None` while
+    /// the assertion is still pending or disputed.
+    pub final_outcome: Option<bool>,
     pub outcome: bool,
     pub bond: i128,
     pub opened_at: u64,
@@ -578,6 +581,7 @@ impl Tholos {
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
         let assertion = Assertion {
             asserter: asserter.clone(),
+            final_outcome: None,
             outcome,
             bond: bond_amount,
             opened_at: env.ledger().timestamp(),
@@ -686,6 +690,7 @@ impl Tholos {
         // a reentrant call from a non-standard token sees this assertion as
         // already resolved, rather than still `Pending`.
         assertion.status = Status::Resolved;
+        assertion.final_outcome = Some(assertion.outcome);
         assertion.finalizer = Some(caller.clone());
         Self::set_assertion(&env, id, &assertion);
 
@@ -781,6 +786,7 @@ impl Tholos {
         // already resolved (and this resolver as already voted), rather than
         // still open for further votes.
         assertion.status = Status::Resolved;
+        assertion.final_outcome = Some(final_outcome);
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
