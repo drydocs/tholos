@@ -28,16 +28,38 @@ via `resolve`.
 
 **Resolver committee**
 The full set of resolvers for a contract instance, set at `initialize` and
-replaceable via `update_resolvers`. Must have an odd, non-zero length.
+replaceable via `update_resolvers` (admin emergency override) or a self-rotation vote
+(`propose_rotation` / `vote_rotation`, a strict majority of the live committee). It
+must be non-empty, have an odd number of members, contain distinct addresses, and
+have no more than `MAX_RESOLVERS` (21) members. Duplicate addresses are rejected
+with `DuplicateResolvers`.
+
+**Rotation**
+A committee-driven, single-slot replacement of one resolver with another, decided by
+a strict majority of the live committee. The day-to-day alternative to admin
+`update_resolvers`; does not affect disputes already open (their committee was
+snapshotted at `dispute` time). See `docs/src/ROTATION_DESIGN.md`.
 
 **Majority**
 `resolvers.len() / 2 + 1`. The number of matching votes needed to resolve a
-disputed assertion. Always achievable and never ambiguous because the committee
-is odd-length.
+disputed assertion, calculated against the resolver committee snapshotted when
+the dispute opens. An odd-length committee makes the numeric threshold
+unambiguous; reaching it still requires enough available resolver addresses.
 
 **Finalize**
 Closing out a `Pending` assertion after its challenge window has elapsed with no
-dispute. Callable by anyone. Returns the asserter's bond.
+dispute. `caller` must authorize the call. Returns the asserter's bond, minus an
+optional reward paid to `caller` if `finalize_reward_bps` is non-zero.
+
+**Finalizer**
+The address that called `finalize` on an assertion. Recorded in
+`Assertion.finalizer` and the `Finalized` event. Auth is required unconditionally,
+so this is always a verified address.
+
+**Finalize reward**
+The optional cut of the bond (`finalize_reward_bps`, 0–1000 basis points, set at
+`initialize`) paid to whoever calls `finalize`, as an incentive for prompt
+finalization. 0 disables it entirely.
 
 **Resolve**
 Casting one resolver's vote on a `Disputed` assertion. Once a majority agrees,

@@ -3,6 +3,11 @@
 This covers *why* Tholos is built the way it is. For *what* each function does,
 see [CONTRACT.md](CONTRACT.md).
 
+The committee described here is the implemented protocol v1 mechanism. A
+stake-weighted, dispute-scoped replacement is under design for protocol v2; see
+[V2_RESOLUTION.md](V2_RESOLUTION.md). That proposal does not describe current
+contract behavior.
+
 ## One instance, one configuration
 
 A Tholos deployment is initialized once with a single token, bond amount,
@@ -15,10 +20,12 @@ callers are expected to handle that.
 
 ## Odd-length resolver committee, simple majority
 
-`resolvers` must have an odd, non-zero length, enforced in both `initialize` and
-`update_resolvers`. This is the whole tie-breaking mechanism: with an odd
-committee, a strict majority (`len / 2 + 1`) is always reachable and never
-ambiguous. No tie-handling logic exists because none is needed.
+`resolvers` must be non-empty, have an odd number of members, contain distinct
+addresses, and have no more than `MAX_RESOLVERS` (21) members. Both `initialize`
+and `update_resolvers` enforce these constraints; duplicate addresses fail with
+`DuplicateResolvers`. An odd committee makes the strict-majority threshold
+(`len / 2 + 1`) unambiguous and eliminates an arithmetic tie. No separate
+tie-handling or timeout logic exists.
 
 ## Challenge window is capped at 7 days
 
@@ -28,10 +35,11 @@ write (see "Persistent storage TTL" in [CONTRACT.md](CONTRACT.md)), and a window
 close to that 30-day ceiling would leave little to no time after the window closes
 for `finalize` to actually be called, or for a dispute opened right before the
 window closes to get resolved, before the entry risks archival. 7 days keeps a
-wide margin. Bond amount deliberately has no upper bound: unlike the window, there
-is no protocol-level quantity to cap it against, since a "sane" bond ceiling
-depends on the configured token's decimals and intended use, which the contract
-has no way to judge. That's left to whoever configures a deployment.
+wide margin. Bond amount deliberately has no economic upper bound: a sensible
+ceiling depends on the configured token's decimals and intended use, which the
+contract cannot judge. There is still an arithmetic limit: `initialize` enforces
+`MAX_BOND_AMOUNT`, the largest bond that cannot overflow `finalize`'s
+reward-multiply arithmetic or the token balance held across a dispute.
 
 ## Resolver committee is snapshotted per dispute
 
@@ -45,6 +53,11 @@ problem independent of whether the update was legitimate or malicious. Snapshott
 at `dispute` time makes a dispute's rules fixed for its whole lifetime: whoever was
 on the committee when it opened decides it, regardless of what the committee looks
 like by the time it closes.
+
+The v2 proposal preserves this immutability rather than the committee itself. It
+pins resolution policy when an assertion opens, then freezes dispute-specific
+bond positions and their aggregate weight before discretionary third-party
+choices are revealed.
 
 ## State before external calls
 
@@ -60,25 +73,92 @@ the same pooled contract balance. The fix is in `contracts/tholos/src/lib.rs`, w
 a `test_*_is_not_reentrant` regression test per function in
 `contracts/tholos/src/test.rs`, each built against a token that attempts exactly
 that reentrant call. See the "Security notes" section of [CONTRACT.md](CONTRACT.md)
-for the interface-level summary, including why `finalize` is the only one of the
-four actually reachable by a hostile token acting alone: the other three require a
-signature Soroban's auth model won't let a reentrant call forge on its own.
+for the interface-level summary. All four functions require auth (`finalize`
+unconditionally), so Soroban's auth model independently rejects a reentrant
+token's nested `require_auth` for all of them; the state-before-transfer ordering
+is a second layer of defense in case a colluding, pre-authorized signer ever got
+one through.
 
 ## Pause is scoped, not absolute
 
 `set_paused` blocks `assert_outcome`, `dispute`, and `resolve`, but deliberately
-*not* `finalize` or `update_resolvers`. The reasoning: a pause exists to stop new
-exposure (new bonds, new disputes, new votes) while an incident is investigated,
-not to freeze funds that are already committed. An assertion that was `Pending`
-before the pause and never gets disputed shouldn't be stuck waiting on the
-incident to resolve; letting `finalize` run means its bond returns normally.
-Similarly, if the pause was triggered *because* the resolver committee is
-compromised, the admin needs `update_resolvers` to actually fix that while
-paused, not after unpausing.
+*not* `finalize` or `update_resolvers`. The intended scope is incident containment:
+stop new bonds, disputes, and votes while still allowing an uncontested pending
+assertion to return its bond through `finalize`. This is not funds-neutral. Open
+disputes cannot progress while paused, and a pending assertion also cannot be
+challenged even though its deadline continues and `finalize` remains available.
+Pause must therefore be short-lived and is not a safe retirement switch.
+
+If the pause was triggered because the live resolver committee is compromised,
+the admin can use `update_resolvers` while paused to protect disputes opened after
+the update. It cannot repair an already open dispute: that assertion keeps its
+snapshotted committee, including a compromised or unavailable member.
+
+## Finalize reward is bond-funded, not externally funded
+
+The original design anticipated a reward for prompt finalization paid from market
+fees. No fee-generating market layer exists yet, so the reward is instead taken
+from the asserter's bond: `finalize_reward_bps` (0–1000 basis points) is set at
+`initialize` time and determines what fraction of the bond the caller of `finalize`
+receives. This keeps the mechanism self-contained — no external funding source is
+required — while still creating an economic incentive. The asserter implicitly
+accepts the haircut when they post; they control which deployment they post to, and
+deployments with higher reward bps expose more of the bond.
+
+Setting `finalize_reward_bps` to 0 (the default) reproduces the original behavior
+exactly: no reward is taken, the full bond is returned to the asserter. Auth is
+still required unconditionally: without it, any address could be passed as `caller`
+with no verification, and that address would be permanently written into
+`Assertion.finalizer` and the `Finalized` event as the finalizer of record — a
+spoofable audit trail, even though no funds are at risk. Requiring auth keeps that
+record trustworthy regardless of reward configuration. A non-zero value additionally
+means the caller receives a fraction of the bond as an incentive. Soroban's auth
+model independently rejects a reentrant token's nested `require_auth` in both cases,
+so the reentrancy threat model for `finalize` is the same as for the other three
+functions regardless of the reward setting.
+
+## Resolver self-rotation
+
+The committee can replace one of its own by vote (`propose_rotation` /
+`vote_rotation` / `cancel_rotation`), removing the admin as the only path to
+committee membership. Design record: `docs/src/ROTATION_DESIGN.md`. Three decisions
+the scheme rests on:
+
+- **Strict majority of the live committee, same formula as a dispute.** The
+  threshold is `len / 2 + 1`, the only majority rule in the contract. A colluding
+  majority already decides every dispute, so rotation-by-majority adds no new attack
+  surface beyond what that majority already has; it just routes the membership change
+  through the contract instead of the admin key.
+- **No interaction with the per-dispute snapshot, by construction.** Self-rotation
+  writes the same `Resolvers` instance-storage slot `update_resolvers` writes. Because
+  a dispute snapshots the live committee at `dispute` time (`Assertion.resolvers`), a
+  rotation completing after a dispute is open has exactly the behavior `update_resolvers`
+  already has: no effect on that dispute. The new committee governs only disputes
+  opened afterward. No change to `Assertion`, `dispute`, or `resolve` was needed; the
+  existing snapshot invariant carries the rotation for free.
+- **Coexists with `update_resolvers`, doesn't replace it.** Self-rotation is the
+  day-to-day path; admin `update_resolvers` stays as the emergency override for a
+  compromised or deadlocked committee (the one case self-rotation can't solve: a
+  committee can't vote to heal itself when it's the problem). Both paths emit
+  `ResolversUpdated`, so the "committee changed" signal stays unified; rotation adds
+  `RotationProposed` / `RotationExecuted` / `RotationCancelled` for the governance
+  trail.
+
+Liveness: only one rotation may be open at a time, and it's resolved by execution
+(majority reached), proposer cancel, or a deterministic deadlock guard (if yes-votes
+cast plus every unvoted resolver still can't reach a majority, the proposal
+auto-cancels) so a lost proposer key can't permanently block rotation. Pause-exempt,
+like `update_resolvers`: rotation is internal governance, not new exposure.
+
+Admin override wins any race: `update_resolvers` clears an open self-rotation
+proposal. The only ways the committee changes are `update_resolvers` and
+rotation-execution, and both clear the proposal, so a live proposal always matches the
+committee it was validated against — no stale proposal can execute against a committee
+it wasn't built for.
 
 ## Flows
 
-### Uncontested: assert, then finalize
+### Uncontested: assert, then finalize (with optional reward)
 
 ```mermaid
 sequenceDiagram
@@ -90,10 +170,16 @@ sequenceDiagram
     Tholos->>Token: transfer(asserter -> contract, bond)
     Tholos-->>Asserter: assertion id
     Note over Tholos: challenge window elapses, no dispute
-    actor Anyone
-    Anyone->>Tholos: finalize(id)
-    Tholos->>Token: transfer(contract -> asserter, bond)
-    Tholos-->>Anyone: outcome
+    actor Finalizer
+    Note over Finalizer: must authorize unconditionally
+    Finalizer->>Tholos: finalize(caller, id)
+    alt finalize_reward_bps > 0
+        Tholos->>Token: transfer(contract -> caller, reward)
+        Tholos->>Token: transfer(contract -> asserter, bond - reward)
+    else finalize_reward_bps == 0
+        Tholos->>Token: transfer(contract -> asserter, bond)
+    end
+    Tholos-->>Finalizer: outcome
 ```
 
 ### Contested: assert, dispute, resolve
@@ -118,7 +204,7 @@ sequenceDiagram
     Tholos->>Token: transfer(contract -> winner, bond * 2)
 ```
 
-### Paused: new assertions rejected, existing ones unaffected
+### Paused: selected state changes blocked
 
 ```mermaid
 sequenceDiagram
@@ -129,5 +215,5 @@ sequenceDiagram
     Admin->>Tholos: set_paused(true)
     Asserter->>Tholos: assert_outcome(outcome)
     Tholos-->>Asserter: Error: Paused
-    Note over Tholos: assertions already Pending can still finalize
+    Note over Tholos: Pending can finalize but cannot be disputed;<br/>Disputed cannot receive votes
 ```

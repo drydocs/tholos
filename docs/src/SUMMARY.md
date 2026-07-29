@@ -3,8 +3,11 @@
 [Introduction](README.md)
 
 - [Architecture](ARCHITECTURE.md)
+    - [Resolver Self-Rotation Design](ROTATION_DESIGN.md)
+- [Protocol v2 Resolution Proposal](V2_RESOLUTION.md)
 - [Contract Reference](CONTRACT.md)
 - [Deployment & Operations](DEPLOYMENT.md)
+    - [Bond Sizing Analysis](BOND_SIZING.md)
 - [Integration Guide](INTEGRATION.md)
 - [Glossary](GLOSSARY.md)
 - [Contributing](CONTRIBUTING.md)

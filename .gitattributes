@@ -1,0 +1,16 @@
+# Normalize line endings across all platforms.
+#
+# Without this, contributors on Windows (with core.autocrlf=true) have their
+# checkouts converted to CRLF. Running `cargo test` then rewrites the committed
+# test snapshot JSONs under contracts/*/test_snapshots/ with CRLF endings,
+# making ~30 byte-identical files show up as modified on every local run.
+#
+# Forcing LF keeps the working tree consistent with the repo's existing all-LF
+# convention regardless of each contributor's local git config.
+
+# Auto-detect text files and always check them out with LF endings.
+* text=auto eol=lf
+
+# Be explicit about the test snapshot format so the intent is obvious even if
+# the broad default above is ever narrowed.
+*.json text eol=lf
