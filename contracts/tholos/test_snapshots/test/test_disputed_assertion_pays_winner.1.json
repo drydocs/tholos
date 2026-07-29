@@ -253,6 +253,7 @@
       ]
     ],
     [],
+    [],
     []
   ],
   "ledger": {
@@ -428,6 +429,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {

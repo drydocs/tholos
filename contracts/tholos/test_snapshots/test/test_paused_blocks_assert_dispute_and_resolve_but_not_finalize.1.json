@@ -487,6 +487,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "finalizer"
                     },
                     "val": {
@@ -604,6 +612,12 @@
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": "void"
                   },
                   {
                     "key": {

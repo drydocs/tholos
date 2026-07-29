@@ -335,6 +335,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "finalizer"
                     },
                     "val": "void"
