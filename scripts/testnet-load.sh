@@ -48,7 +48,7 @@ elapsed_time() {
 }
 
 # Use the installed stellar CLI
-STELLAR="/home/femi-john/.cargo/bin/stellar"
+STELLAR="stellar"
 
 gen_key() {
   local name=$1
@@ -226,8 +226,6 @@ log_success "Phase 3 (Resolutions) completed in ${phase3_duration}s."
 # --- PHASE 4: FINALIZATIONS ---
 log "Starting Phase 4: Finalizing uncontested assertions..."
 # Calculate remaining sleep time to satisfy challenge window
-last_assert_time=${assertion_times[-1]}
-now=$(date +%s)
 # Wait until CHALLENGE_WINDOW_SECS seconds have elapsed since phase1_end, plus 5 seconds safety margin
 now_s=$(date +%s)
 phase1_end_s=${phase1_end%.*}
