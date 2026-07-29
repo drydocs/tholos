@@ -30,16 +30,20 @@ contracts/
     src/
       lib.rs             Cross-contract call pattern from docs/src/INTEGRATION.md
       test.rs            Validates that pattern against Tholos's real compiled wasm
+  asserter-consumer/    Example contract using its own address as the asserter
+    src/
+      lib.rs             The authorize_as_current_contract pattern from docs/src/INTEGRATION.md
+      test.rs            Validates that pattern against Tholos's real compiled wasm
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/
   ci.yml                 Runs fmt, clippy, tests, and the wasm build on every push/PR
 ```
 
-`demo-consumer` exists to keep [INTEGRATION.md](docs/src/INTEGRATION.md) honest: it's not a product, it's a
-compiled check that the documented integration pattern actually works. If you
-change Tholos's public interface, update `demo-consumer` too if it uses the
-changed function, and re-run its test.
+`demo-consumer` and `asserter-consumer` exist to keep [INTEGRATION.md](docs/src/INTEGRATION.md)
+honest: they're not products, they're compiled checks that the documented
+integration patterns actually work. If you change Tholos's public interface,
+update whichever of them uses the changed function, and re-run its test.
 
 If a second real contract is added later (e.g. a market factory), it should live as
 its own crate under `contracts/`, added to the `[workspace] members` list in the
