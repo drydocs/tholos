@@ -274,6 +274,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "final_outcome"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "finalizer"
                     },
                     "val": {

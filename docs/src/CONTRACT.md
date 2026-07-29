@@ -30,6 +30,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | --- | --- | --- |
 | `asserter` | `Address` | Who posted the claim |
 | `outcome` | `bool` | The claimed outcome |
+| `final_outcome` | `Option<bool>` | The authoritative resolved outcome; `None` until the assertion reaches `Resolved` |
 | `bond` | `i128` | Bond amount posted (in the configured token) |
 | `opened_at` | `u64` | Ledger timestamp the assertion was posted |
 | `status` | `Status` | Current state |

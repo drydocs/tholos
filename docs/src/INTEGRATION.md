@@ -122,19 +122,16 @@ in slowly.
 let state = client.get_assertion_state(&id);
 match state.status {
     tholos::Status::Resolved => {
-        // state.outcome reflects the *original* asserted outcome, not necessarily
-        // the final one if the assertion was disputed and overturned. Prefer the
-        // Finalized/Resolved event payload (`outcome` field), which is always the
-        // final decided outcome, over re-deriving it from Assertion.outcome.
+        // `final_outcome` is guaranteed to be set when status is Resolved.
+        let final_outcome = state.final_outcome.unwrap();
     }
     _ => { /* not resolved yet */ }
 }
 ```
 
-This is a sharp edge worth calling out explicitly: `Assertion.outcome` is the
-*claimed* outcome at assertion time and is not flipped in storage if a dispute
-overturns it. The authoritative final outcome is what the `Finalized` or `Resolved`
-event carries, not `get_assertion_state(id).outcome`.
+`Assertion.outcome` always remains the claim made at assertion time. Read
+`Assertion.final_outcome` for the authoritative result once the assertion is
+resolved; it is `None` while the assertion is still `Pending` or `Disputed`.
 
 ## Parameters you're choosing when you initialize
 

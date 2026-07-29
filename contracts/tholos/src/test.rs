@@ -99,6 +99,7 @@ fn test_uncontested_assertion_finalizes() {
 
     let id = f.client.assert_outcome(&asserter, &true);
     assert_eq!(f.token.balance(&asserter), 900);
+    assert_eq!(f.client.get_assertion_state(&id).final_outcome, None);
 
     f.advance_past_window();
 
@@ -107,6 +108,7 @@ fn test_uncontested_assertion_finalizes() {
     // finalizer is always a verified address.
     let outcome = f.client.finalize(&caller, &id);
     assert!(outcome);
+    assert_eq!(f.client.get_assertion_state(&id).final_outcome, Some(true));
     assert_eq!(f.token.balance(&asserter), 1_000);
     assert_eq!(f.token.balance(&caller), 0);
 
@@ -156,8 +158,24 @@ fn test_disputed_assertion_pays_winner() {
     f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &false);
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
 
+    assert_eq!(f.client.get_assertion_state(&id).final_outcome, Some(false));
     assert_eq!(f.token.balance(&disputer), 1_100);
     assert_eq!(f.token.balance(&asserter), 900);
+}
+
+#[test]
+fn test_resolve_records_asserted_outcome_when_asserter_wins() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &false);
+    f.client.dispute(&disputer, &id);
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &true);
+    let outcome = f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &true);
+
+    assert_eq!(outcome, Some(false));
+    assert_eq!(f.client.get_assertion_state(&id).final_outcome, Some(false));
 }
 
 #[test]
