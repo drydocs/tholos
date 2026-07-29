@@ -9,13 +9,10 @@ check: fmt shellcheck clippy test
 fmt:
 	cargo fmt --check
 
-# Lint shell scripts (checks for shellcheck tool and warns if missing)
+# Lint shell scripts (fails if shellcheck isn't installed, matching CI)
 shellcheck:
-	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck scripts/*.sh; \
-	else \
-		echo "Warning: shellcheck not installed, skipping shell script linting."; \
-	fi
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not installed; install it before running make check."; exit 1; }
+	shellcheck scripts/*.sh
 
 # Build Tholos WASM first (required by demo-consumer at compile time)
 build-wasm:
