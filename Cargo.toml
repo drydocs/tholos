@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts/tholos", "contracts/demo-consumer"]
+members = ["contracts/tholos", "contracts/demo-consumer", "contracts/asserter-consumer"]
 
 [profile.release]
 opt-level = "z"

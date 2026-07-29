@@ -69,7 +69,11 @@ if you're writing tests against this you need
 (see `demo-consumer/src/test.rs`), and on a real network the transaction needs an
 authorization entry for that address alongside whatever signs the outer call.
 
-**Your contract's own address as asserter.** Bonds pool under your contract's
+**Your contract's own address as asserter.** `contracts/asserter-consumer` is a
+working, tested example of this pattern, the same way `demo-consumer` is for the
+simple one above: its `create_assertion_as_self` function is the pattern below,
+and its test deploys Tholos's actual compiled wasm and calls through it without
+mocking the nested authorization it depends on. Bonds pool under your contract's
 control (e.g. to later distribute pro-rata to your own users) instead of going
 directly to an end user. This is meaningfully harder than it looks: Tholos's
 `assert_outcome` calls the underlying token's `transfer`, which itself calls
