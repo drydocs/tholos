@@ -82,6 +82,16 @@ same profile. Proptest-based tests live in their own `mod proptest_*` inside
 `test.rs`, next to the hand-written tests they complement, and set
 `fork = false` in their `ProptestConfig` because Soroban's `Env` isn't `Send`.
 
+Running `cargo test` writes a `test_snapshots/test/<name>.1.json` file per test,
+a snapshot of the mocked ledger's state at the end of that test. Whether to commit
+one comes down to reproducibility, not what kind of test wrote it: commit it if
+running the test again always produces the same file (every hand-written test so
+far), since it's then a stable, reviewable artifact tied to a specific named
+scenario. Don't commit it if the content changes on every run (any `proptest_*`
+module, since the random seed isn't fixed and nothing in the repo reads these
+files back for comparison anyway); instead add that module's
+`test_snapshots/test/<module>/` path to `.gitignore`.
+
 ## Code standards
 
 - **Naming:** `snake_case` for functions and variables, `PascalCase` for types
