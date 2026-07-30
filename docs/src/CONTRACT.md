@@ -54,7 +54,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `ChallengeWindowOpen` | Tried to finalize before the challenge window elapsed |
 | `NotAResolver` | Caller isn't in the committee snapshotted for this dispute |
 | `AlreadyVoted` | Resolver already voted on this assertion |
-| `Paused` | Called `assert_outcome`, `dispute`, or `resolve` while paused |
+| `Paused` | Called `assert_outcome`, `dispute`, `resolve`, or `finalize` while paused |
 | `InvalidBondAmount` | `bond_amount` is zero, negative, or greater than `MAX_BOND_AMOUNT` |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or greater than 7 days |
 | `TooManyResolvers` | Resolver list has more than `MAX_RESOLVERS` (21) entries |
@@ -135,16 +135,17 @@ guard), so a lost proposer key can't permanently block rotation. Emits
 
 ### `set_paused(paused)`
 
-Pauses or unpauses `assert_outcome`, `dispute`, and `resolve`. Requires the stored
-admin's signature. `finalize` is deliberately exempt: assertions already `Pending`
-before a pause can still be finalized while paused, so an uncontested claim isn't
-stuck waiting on an unpause. `update_resolvers` is also exempt, so a compromised
-live committee can be replaced for future disputes without unpausing first; an
-already disputed assertion keeps its snapshot. Emits `PauseUpdated`.
+Pauses or unpauses `assert_outcome`, `dispute`, `resolve`, and `finalize`. Requires
+the stored admin's signature. `finalize` is blocked alongside `dispute`, not
+exempted: a pending assertion may have had no real opportunity to be disputed
+during a challenge window that overlapped a pause, so it must not finalize
+uncontested until unpaused, it becomes callable again once the contract is
+unpaused. `update_resolvers` is exempt, so a compromised live committee can be
+replaced for future disputes without unpausing first; an already disputed
+assertion keeps its snapshot. Emits `PauseUpdated`.
 
-Because `dispute` is blocked while `finalize` is not, leaving the contract paused
-through a pending assertion's challenge deadline can make that assertion
-uncontestable. Pause is an incident-control tool, not an atomic retirement gate.
+Pause is an incident-control tool, not an atomic retirement gate: it can delay a
+legitimate uncontested claim from finalizing for as long as the pause lasts.
 
 ### `assert_outcome(asserter, outcome) -> u64`
 
@@ -162,9 +163,10 @@ assertion isn't pending (including if it's already disputed), or
 ### `finalize(caller, id) -> bool`
 
 Callable once a `Pending` assertion's challenge window has elapsed with no dispute.
-`caller` must authorize the call unconditionally — regardless of whether
-`finalize_reward_bps` is zero — so the address recorded in `Assertion.finalizer`
-and the `Finalized` event is always a verified caller and cannot be spoofed. This
+Fails with `Paused` if paused. `caller` must authorize the call unconditionally —
+regardless of whether `finalize_reward_bps` is zero — so the address recorded in
+`Assertion.finalizer` and the `Finalized` event is always a verified caller and
+cannot be spoofed. This
 applies even when no reward is being paid: without enforced auth, any address could
 be passed as `caller`, permanently writing an unverifiable identity into the
 on-chain record.

@@ -537,10 +537,12 @@ impl Tholos {
         Ok(())
     }
 
-    /// Pauses or unpauses new assertions, disputes, and resolver votes.
-    /// Assertions already `Pending` can still be `finalize`d while paused,
-    /// so existing uncontested claims aren't stuck waiting on an unpause.
-    /// Only callable by the admin set at initialization.
+    /// Pauses or unpauses new assertions, disputes, resolver votes, and
+    /// finalization. A pending assertion may have had no real opportunity to
+    /// be disputed during its challenge window if that window overlapped a
+    /// pause, so `finalize` is blocked too rather than letting it finalize
+    /// uncontested; it becomes callable again once unpaused. Only callable by
+    /// the admin set at initialization.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -653,15 +655,21 @@ impl Tholos {
     }
 
     /// Finalizes a pending assertion once its challenge window has elapsed
-    /// with no dispute. `caller` must authorize the call unconditionally —
-    /// regardless of whether `finalize_reward_bps` is zero — so the address
-    /// recorded in `Assertion.finalizer` and the `Finalized` event is always
-    /// a verified caller and cannot be spoofed. When `finalize_reward_bps` is
-    /// non-zero, `caller` also receives `bond * finalize_reward_bps / 10_000`
-    /// tokens as an incentive for prompt finalization and the asserter
-    /// receives the remainder; when it is zero the full bond is returned to
-    /// the asserter and no reward is paid. Returns the asserted outcome.
+    /// with no dispute. Fails with `Paused` if paused: a paused assertion may
+    /// have had no real opportunity to be disputed during its challenge
+    /// window (since `dispute` is also blocked while paused), so it must not
+    /// be able to finalize uncontested until unpaused. `caller` must
+    /// authorize the call unconditionally — regardless of whether
+    /// `finalize_reward_bps` is zero — so the address recorded in
+    /// `Assertion.finalizer` and the `Finalized` event is always a verified
+    /// caller and cannot be spoofed. When `finalize_reward_bps` is non-zero,
+    /// `caller` also receives `bond * finalize_reward_bps / 10_000` tokens as
+    /// an incentive for prompt finalization and the asserter receives the
+    /// remainder; when it is zero the full bond is returned to the asserter
+    /// and no reward is paid. Returns the asserted outcome.
     pub fn finalize(env: Env, caller: Address, id: u64) -> Result<bool, Error> {
+        Self::require_not_paused(&env)?;
+
         // Auth is required unconditionally: even when finalize_reward_bps is
         // zero and no reward is paid, the caller's address is written into
         // Assertion.finalizer and the Finalized event as the finalizer of

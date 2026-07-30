@@ -75,6 +75,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `finalize` is now blocked while paused, alongside `assert_outcome`, `dispute`,
+  and `resolve`. Previously a pending assertion could finalize uncontested even if
+  its entire challenge window overlapped a pause, during which `dispute` was
+  blocked, so it had no real opportunity to be challenged. Closes #36.
+
 - `initialize` and `update_resolvers` now reject a resolver committee
   containing duplicate addresses. A committee like `[A, A, B]` previously
   passed the odd-length check while being an effective electorate of two,

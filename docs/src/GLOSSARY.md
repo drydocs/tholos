@@ -67,7 +67,7 @@ the winning side receives both bonds and the assertion moves to `Resolved`.
 
 **Pause**
 An admin-controlled switch (`set_paused`) that blocks new assertions, disputes,
-and resolver votes, without affecting `finalize` or `update_resolvers`. See
+resolver votes, and finalization, without affecting `update_resolvers`. See
 [ARCHITECTURE.md](ARCHITECTURE.md#pause-is-scoped-not-absolute).
 
 **SEP-41**

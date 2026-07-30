@@ -81,13 +81,17 @@ one through.
 
 ## Pause is scoped, not absolute
 
-`set_paused` blocks `assert_outcome`, `dispute`, and `resolve`, but deliberately
-*not* `finalize` or `update_resolvers`. The intended scope is incident containment:
-stop new bonds, disputes, and votes while still allowing an uncontested pending
-assertion to return its bond through `finalize`. This is not funds-neutral. Open
-disputes cannot progress while paused, and a pending assertion also cannot be
-challenged even though its deadline continues and `finalize` remains available.
-Pause must therefore be short-lived and is not a safe retirement switch.
+`set_paused` blocks `assert_outcome`, `dispute`, `resolve`, and `finalize`, but
+deliberately *not* `update_resolvers`. `finalize` is blocked alongside `dispute`
+rather than exempted: a pending assertion may have had no real opportunity to be
+disputed during a challenge window that overlapped a pause, so it must not be able
+to finalize uncontested until unpaused. This is not funds-neutral. Open disputes
+cannot progress while paused, and a pending assertion whose window elapses while
+paused simply waits, it becomes finalizable again once unpaused, rather than
+finalizing uncontested during the pause. Pause must therefore be short-lived and is
+not a safe retirement switch. A future version may extend a pending assertion's
+challenge window deadline by however long a pause overlapped it, so a paused
+incident doesn't cost legitimate disputers their real window; v1 does not do this.
 
 If the pause was triggered because the live resolver committee is compromised,
 the admin can use `update_resolvers` while paused to protect disputes opened after
