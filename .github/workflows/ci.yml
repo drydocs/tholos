@@ -39,7 +39,7 @@ jobs:
           exit $missing
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           targets: wasm32v1-none
           components: rustfmt, clippy
