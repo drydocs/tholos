@@ -153,10 +153,10 @@ resolved; it is `None` while the assertion is still `Pending` or `Disputed`.
   finalization. When it is 0 (the default), no reward is paid and the full
   bond is returned to the asserter, but auth is still required to keep the
   recorded finalizer trustworthy.
-- The admin can pause `assert_outcome`, `dispute`, and `resolve` at any time via
-  `set_paused`. Your integration should treat a `Paused` error as a distinct,
-  expected failure mode (surface it to the user as "resolution temporarily
-  unavailable") rather than an unexpected error. `finalize` and
-  `update_resolvers` stay callable while paused. A pending assertion can therefore
-  become finalizable while `dispute` is blocked; do not assume a pause also freezes
-  its challenge deadline.
+- The admin can pause `assert_outcome`, `dispute`, `resolve`, and `finalize` at
+  any time via `set_paused`. Your integration should treat a `Paused` error as a
+  distinct, expected failure mode (surface it to the user as "resolution
+  temporarily unavailable") rather than an unexpected error. `update_resolvers`
+  stays callable while paused. A pending assertion whose challenge window elapses
+  while paused does not become finalizable until unpaused; do not assume a pause
+  only affects new assertions and disputes.

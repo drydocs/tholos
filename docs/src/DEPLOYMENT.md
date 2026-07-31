@@ -56,12 +56,13 @@ behavior looks off), pause first and investigate second:
 stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- set_paused --paused true
 ```
 
-This stops `assert_outcome`, `dispute`, and `resolve` immediately, but not
-`finalize`. That asymmetry matters: a `Pending` assertion cannot be challenged
-while paused and may become finalizable if its window expires. Inventory open
-assertions before pausing, minimize pause duration, and unpause with
-`--paused false` as soon as incident handling permits. Do not use pause as a safe
-migration or retirement switch.
+This stops `assert_outcome`, `dispute`, `resolve`, and `finalize` immediately. A
+`Pending` assertion whose challenge window elapses while paused simply waits, it
+becomes finalizable once you unpause, rather than finalizing uncontested during
+the incident. Minimize pause duration, since this delays legitimate uncontested
+claims for as long as the pause lasts, and unpause with `--paused false` as soon
+as incident handling permits. Do not use pause as a safe migration or retirement
+switch.
 
 ### Rotating the resolver committee
 

@@ -617,12 +617,11 @@ fn test_resolvers_updated_mid_dispute_do_not_affect_it() {
 }
 
 #[test]
-fn test_paused_blocks_assert_dispute_and_resolve_but_not_finalize() {
+fn test_paused_blocks_assert_dispute_and_finalize() {
     let f = Fixture::new();
     let asserter = f.funded_address();
     let disputer = f.funded_address();
 
-    // An assertion posted before the pause can still finalize normally.
     let pending_id = f.client.assert_outcome(&asserter, &true);
 
     f.client.set_paused(&true);
@@ -636,12 +635,20 @@ fn test_paused_blocks_assert_dispute_and_resolve_but_not_finalize() {
         Err(Ok(Error::Paused))
     );
 
+    // A pending assertion may have had no real opportunity to be disputed
+    // during a challenge window that overlapped a pause (dispute is also
+    // blocked above), so it must not finalize uncontested while still paused.
     f.advance_past_window();
+    assert_eq!(
+        f.client.try_finalize(&asserter, &pending_id),
+        Err(Ok(Error::Paused))
+    );
+
+    f.client.set_paused(&false);
     let outcome = f.client.finalize(&asserter, &pending_id);
     assert!(outcome);
     assert_eq!(f.token.balance(&asserter), 1_000);
 
-    f.client.set_paused(&false);
     let id = f.client.assert_outcome(&asserter, &true);
     f.client.dispute(&disputer, &id);
     assert_eq!(
@@ -1045,9 +1052,9 @@ fn test_finalize_requires_auth_when_reward_bps_is_zero() {
 }
 
 #[test]
-fn test_finalize_with_reward_works_while_paused() {
-    // Finalize is deliberately exempt from the pause; reward payout must also
-    // work when the contract is paused.
+fn test_finalize_with_reward_blocked_while_paused_then_succeeds_after_unpause() {
+    // Finalize is blocked while paused, same as assert_outcome and dispute;
+    // reward payout still works normally once unpaused.
     let (f, _) = fixture_with_reward(200); // 2 % = 2 tokens
     let asserter = f.funded_address();
     let caller = f.generate();
@@ -1056,6 +1063,9 @@ fn test_finalize_with_reward_works_while_paused() {
     f.client.set_paused(&true);
     f.advance_past_window();
 
+    assert_eq!(f.client.try_finalize(&caller, &id), Err(Ok(Error::Paused)));
+
+    f.client.set_paused(&false);
     let outcome = f.client.finalize(&caller, &id);
     assert!(outcome);
     assert_eq!(f.token.balance(&caller), 2);
