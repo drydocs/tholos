@@ -7,6 +7,41 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `Assertion` gains a `final_outcome: Option<bool>` field, set at `finalize` and
+  `resolve`. Previously the authoritative resolved outcome only existed in the
+  `Finalized`/`Resolved` event payload; `Assertion.outcome` always stays the
+  original claim even when a dispute overturns it, which was a sharp edge for
+  integrators reading state after the fact. Closes #37.
+
+- A second integration example, `contracts/asserter-consumer`, demonstrating the
+  "contract-as-asserter" pattern from INTEGRATION.md
+  (`env.authorize_as_current_contract`), alongside `demo-consumer`'s existing
+  end-user-as-asserter example. Closes #14.
+
+- `docs/src/BOND_SIZING.md`: a bond-sizing analysis modeling spam, bad-faith
+  disputes, resolver self-rotation griefing, and `finalize_reward_bps` griefing,
+  with worked formulas for choosing `bond_amount`. `DEPLOYMENT.md` now points to
+  it instead of only qualitative guidance. Closes #50.
+
+- `scripts/testnet-load.sh`: an end-to-end load and volume test scenario against
+  real Stellar testnet infrastructure (sequential assert/dispute/resolve/finalize
+  phases with timing and integrity checks), complementing the single-flow
+  `testnet-smoke.sh`. Closes #13.
+
+- `.github/workflows/docs-check.yml`: builds the mdBook docs site on every PR
+  that touches `docs/**`, `README.md`, `CONTRIBUTING.md`, or `SECURITY.md`, so a
+  broken doc build is caught before merge instead of at deploy time. Closes #16.
+
+- A `Makefile` wrapping the common dev commands (`make check`, `make test`,
+  `make build-wasm`, etc.) documented in CONTRIBUTING.md's "Before opening a PR"
+  section, so contributors don't have to remember the raw `cargo`/`stellar`
+  invocations. Closes #15.
+
+- CONTRIBUTING.md's Testing philosophy section now states the test snapshot
+  commit policy explicitly: commit a `test_snapshots/` file if the test that
+  wrote it is reproducible, `.gitignore` it if it isn't (any `proptest_*`
+  module). Closes #24.
+
 - Configurable finalize reward (`finalize_reward_bps`, 0–1000 basis points of the
   bond) paid to whoever calls `finalize` as an incentive for prompt finalization.
   The reward is funded by the asserter's bond: the caller receives
@@ -68,6 +103,10 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- Removed `PR_DESCRIPTION.md`, a contributor's scratch file that was
+  accidentally committed to the repo root instead of pasted into the PR body.
+  Closes #48.
+
 - The `evil_token` test module (`contracts/tholos/src/test.rs`) now uses a typed
   `DataKey`-style enum for its own storage keys instead of ad hoc `symbol_short!`
   strings, matching the main contract's convention. Test-only, no behavior
@@ -79,6 +118,21 @@ All notable changes to this project are documented here. Format follows
   and `resolve`. Previously a pending assertion could finalize uncontested even if
   its entire challenge window overlapped a pause, during which `dispute` was
   blocked, so it had no real opportunity to be challenged. Closes #36.
+
+- `initialize` now rejects a `bond_amount` above `MAX_BOND_AMOUNT`, the tighter of
+  two independent overflow constraints: the asserter's and disputer's bonds
+  summing past `i128::MAX` in the token balance across a dispute, and
+  `finalize`'s reward-multiply (`bond * finalize_reward_bps`) overflowing before
+  it divides. A compile-time guard fails the build if a future change to either
+  constant reintroduces the overflow. Closes #34.
+
+- Added `rust-toolchain.toml` pinning the exact Rust toolchain version, and fixed
+  CI's install step to actually respect it (`dtolnay/rust-toolchain`'s
+  `toolchain` input turned out to be hard-required with no file-reading
+  fallback, so CI switched to plain `rustup` commands, which auto-detect the
+  pinned version). Previously CI floated on `stable`, so wasm codegen could
+  silently drift between runs with no source change, the root cause of several
+  confusing snapshot diffs this cycle. Closes #38.
 
 - `initialize` and `update_resolvers` now reject a resolver committee
   containing duplicate addresses. A committee like `[A, A, B]` previously
