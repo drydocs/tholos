@@ -38,11 +38,14 @@ jobs:
           done
           exit $missing
 
+      # ubuntu-latest ships rustup preinstalled. Any rustup/cargo/rustc
+      # invocation below auto-installs whatever rust-toolchain.toml pins,
+      # so the version lives in exactly one place instead of being
+      # duplicated into this workflow.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-          components: rustfmt, clippy
+        run: |
+          rustup target add wasm32v1-none
+          rustup component add rustfmt clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
