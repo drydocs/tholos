@@ -18,7 +18,15 @@ jobs:
           # mock addresses from the mocked test environment, not real
           # deployed addresses, and are committed deliberately for
           # reproducibility (see CONTRIBUTING.md's testing section).
-          if grep -rnE --exclude-dir=.git --exclude-dir=target --exclude-dir=test_snapshots '\bC[A-Z2-7]{55}\b' .; then
+          #
+          # docs/src/DEPLOYMENT.md is excluded: its "Canonical testnet
+          # deployment" section deliberately documents the one shared,
+          # long-lived Tholos instance integrators should point at (see
+          # INTEGRATION.md), which is exactly where that address belongs.
+          # This exception is for that one reference table, not a general
+          # license to hardcode addresses elsewhere; application code and
+          # examples must still use placeholder env vars.
+          if grep -rnE --exclude-dir=.git --exclude-dir=target --exclude-dir=test_snapshots --exclude=DEPLOYMENT.md '\bC[A-Z2-7]{55}\b' .; then
             echo "::error::Found what looks like a Stellar contract address committed to the repo. Contract addresses must never be committed, since a deployed address can't be tied to a specific source commit without an independent rebuild. Use placeholder env vars in examples instead (see CONTRIBUTING.md)."
             exit 1
           fi

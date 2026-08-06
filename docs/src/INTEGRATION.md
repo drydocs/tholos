@@ -7,15 +7,21 @@ you're looking for the function-by-function reference instead, see
 
 ## Should you deploy your own instance, or share one?
 
-Each Tholos deployment is initialized once with a single token, bond amount,
-challenge window, and resolver committee (`initialize` in [CONTRACT.md](CONTRACT.md)).
-There's no per-call override. That means:
+Default to sharing the [canonical deployment](DEPLOYMENT.md#canonical-testnet-deployment).
+Tholos is only trustworthy as an oracle if its resolver committee's track
+record accumulates somewhere: one committee, one dispute history, building a
+reputation over time. Fragmenting into a separate deployment per integrator
+throws that away, each new instance starts with zero history and a
+committee nobody's evaluated yet, which is no better than each integrator
+building its own bespoke escrow logic instead of using Tholos at all.
 
-- If your markets all want the same bond size, token, and challenge window, they can
-  share one deployed instance and just track the assertion `id`s that belong to them.
-- If you need different bond sizes per market (a $10 market and a $10,000 market
-  probably shouldn't share a bond amount), deploy a separate instance per
-  configuration, or wait for a future version that supports per-call bonds.
+Each deployment is initialized once with a single token, bond amount,
+challenge window, and resolver committee (`initialize` in [CONTRACT.md](CONTRACT.md)),
+with no per-call override, so a separate deployment is only justified when your
+parameters are genuinely incompatible with the canonical one: a materially
+different bond size for a much higher- or lower-value market, or a token the
+canonical instance doesn't use. If that's not your situation, share the
+canonical instance and just track the assertion `id`s that belong to you.
 
 There is currently no built-in way for a calling contract to distinguish "its"
 assertions from anyone else's within one instance beyond tracking the `id`s it

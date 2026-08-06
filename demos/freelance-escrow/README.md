@@ -42,12 +42,14 @@ client and freelancer actually agreed to pay for the milestone.
 ## Running it
 
 Contract addresses are never committed to source (see CONTRIBUTING.md), so
-point this at a deployed Tholos instance yourself:
+point this at a deployed Tholos instance yourself. The
+[canonical testnet deployment](../../docs/src/DEPLOYMENT.md#canonical-testnet-deployment)
+works for this app out of the box:
 
 ```sh
 cp .env.example .env.local
-# fill in VITE_THOLOS_CONTRACT_ID with a deployed contract id
-# (see docs/src/DEPLOYMENT.md to deploy one)
+# fill in VITE_THOLOS_CONTRACT_ID with the canonical testnet contract id from
+# docs/src/DEPLOYMENT.md (or your own deployment, if you have a reason to need one)
 
 pnpm install
 pnpm dev

@@ -21,6 +21,25 @@ can be changed after `initialize`:
 | `resolvers` | Odd-length, non-zero, distinct, and at most 21 addresses. `initialize` rejects duplicates with `DuplicateResolvers`. Pick people who'll actually be reachable to vote within a reasonable time of a dispute; a slow resolver committee stalls every disputed assertion until it acts. |
 | `finalize_reward_bps` | Basis points (0–1000) of the bond paid to whoever calls `finalize`. `caller` must authorize the call unconditionally, even at 0. 0 means no reward: the full bond returns to the asserter. A non-zero value creates an economic incentive for prompt finalization at the cost of a small bond haircut the asserter accepts when posting. 100 bps (1 %) is a reasonable starting point; 1000 bps (10 %) is the maximum enforced by the contract. |
 
+## Canonical testnet deployment
+
+Before deploying your own instance, check whether this one already fits: it's
+meant to be the shared, long-lived Tholos deployment on testnet, so that trust
+in the resolver committee's track record accumulates in one place instead of
+fragmenting across many one-off deployments. Deploy your own only if you
+genuinely need different parameters (a different bond size or token, for
+example); see [INTEGRATION.md](INTEGRATION.md#should-you-deploy-your-own-instance-or-share-one).
+
+| Field | Value |
+| --- | --- |
+| Network | Stellar testnet |
+| Contract id | `CAOSNC2SKQPGT7WHXKQJQ2RL2J7RECXE5QKZFYIMEHYA3DZTOZG76YYI` |
+| `token` | Native XLM SAC (`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`) |
+| `bond_amount` | `50000000` (5 XLM), per `BOND_SIZING.md`'s public-testnet/low-value profile |
+| `challenge_window_secs` | `21600` (6 hours) |
+| `finalize_reward_bps` | `100` (1%) |
+| `resolvers` | `resolver1`/`resolver2`/`resolver3` test identities from this repo's own testnet workflow, a stopgap: they have no real-world accountability behind them yet. Revisit before treating this instance's dispute history as trustworthy long-term. |
+
 ## Deploying
 
 ```sh
