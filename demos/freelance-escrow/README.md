@@ -11,12 +11,11 @@ is what actually backs the "funds release uncontested or a panel decides"
 guarantee. See [docs/src/INTEGRATION.md](../../docs/src/INTEGRATION.md) for
 the pattern this app follows (end user as asserter).
 
-By default this app talks to a live Tholos instance on Stellar testnet, so
-every action (marking a milestone done, disputing, voting, finalizing) is a
-real signed transaction, not a simulation. You'll need testnet XLM in your
-Freighter wallet to post the bond; get some from
-[Friendbot](https://friendbot.stellar.org/) if you're testing with a fresh
-address.
+This app talks to a live Tholos instance, so every action (marking a milestone
+done, disputing, voting, finalizing) is a real signed transaction, not a
+simulation. You'll need testnet XLM in your Freighter wallet to post the bond;
+get some from [Friendbot](https://friendbot.stellar.org/) if you're testing
+with a fresh address.
 
 ## What maps to what
 
@@ -42,20 +41,20 @@ client and freelancer actually agreed to pay for the milestone.
 
 ## Running it
 
+Contract addresses are never committed to source (see CONTRIBUTING.md), so
+point this at a deployed Tholos instance yourself:
+
 ```sh
+cp .env.example .env.local
+# fill in VITE_THOLOS_CONTRACT_ID with a deployed contract id
+# (see docs/src/DEPLOYMENT.md to deploy one)
+
 pnpm install
 pnpm dev
 ```
 
 Requires the [Freighter](https://www.freighter.app/) browser extension to
 connect a wallet.
-
-To point it at a different Tholos deployment (a future mainnet instance, for
-example), copy `.env.example` to `.env.local` and override the values there:
-
-```sh
-cp .env.example .env.local
-```
 
 There's no role system of its own: Tholos only knows addresses, not "client"
 or "freelancer," so this demo has a role switcher in the header letting the
