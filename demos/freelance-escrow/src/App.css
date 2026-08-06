@@ -1,0 +1,430 @@
+.app {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) 96px;
+  text-align: left;
+  width: 100%;
+}
+
+/* ---------- Header ---------- */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-5);
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand-name {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-h);
+  letter-spacing: -0.2px;
+}
+
+.brand-tagline {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.app-header-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.role-switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.role-switcher select {
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+/* ---------- Wallet button ---------- */
+
+.wallet-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+
+.wallet-button:hover {
+  background: color-mix(in srgb, var(--accent-bg) 70%, var(--accent) 30%);
+}
+
+.wallet-button--connected {
+  cursor: default;
+  color: var(--text-h);
+}
+
+.wallet-button--connected:hover {
+  background: var(--accent-bg);
+}
+
+.wallet-button--warn {
+  border-color: var(--warn-bg);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.wallet-network {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ---------- Job list ---------- */
+
+.jobs-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.jobs-toolbar h1 {
+  font-size: 22px;
+  letter-spacing: -0.3px;
+  margin: 0;
+}
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.job-card {
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.job-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.job-card-header h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.job-total {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.job-description {
+  font-size: 14px;
+  color: var(--text);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.job-parties {
+  display: flex;
+  gap: var(--space-4);
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---------- Milestones ---------- */
+
+.milestone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.milestone {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.milestone:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.milestone-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.milestone-title {
+  font-weight: 500;
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.milestone-amount {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.milestone-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.milestone-assertion {
+  font-family: var(--mono);
+}
+
+.status-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.status-badge--in_progress {
+  background: var(--code-bg);
+  color: var(--text);
+}
+
+.status-badge--submitted {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.status-badge--disputed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.status-badge--released {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.status-badge--returned {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.milestone-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ---------- Buttons ---------- */
+
+.milestone-actions button,
+.resolver-vote button,
+.post-job-actions button,
+.jobs-toolbar button,
+.milestone-fieldset > button {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.milestone-actions button:hover,
+.resolver-vote button:hover,
+.post-job-actions button:hover,
+.jobs-toolbar button:hover,
+.milestone-fieldset > button:hover {
+  background: color-mix(in srgb, var(--accent-bg) 60%, var(--accent) 40%);
+}
+
+.milestone-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button--danger {
+  border-color: var(--danger-border) !important;
+  background: var(--danger-bg) !important;
+  color: var(--danger) !important;
+}
+
+.resolver-vote {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.milestone-error {
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* ---------- Post job form ---------- */
+
+.post-job-form {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.post-job-form h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.post-job-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.post-job-form input,
+.post-job-form textarea {
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.post-job-form input:focus,
+.post-job-form textarea:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  background: var(--bg);
+}
+
+.post-job-form textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.post-job-row {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.post-job-row label {
+  flex: 1;
+}
+
+.milestone-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.milestone-fieldset legend {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 var(--space-1);
+}
+
+.milestone-draft-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.milestone-draft-row input:first-child {
+  flex: 2;
+}
+
+.milestone-draft-row input:last-child {
+  flex: 1;
+}
+
+.milestone-fieldset > button {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+}
+
+.button--icon {
+  border: none !important;
+  background: none !important;
+  color: var(--text) !important;
+  padding: 6px 8px !important;
+  font-size: 12px !important;
+}
+
+.button--icon:hover {
+  color: var(--danger) !important;
+}
+
+.post-job-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.post-job-actions button:first-child {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text);
+}

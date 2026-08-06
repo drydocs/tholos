@@ -64,6 +64,10 @@ contracts/
   tholos/               The assertion and dispute contract
   demo-consumer/        Minimal example contract that calls into Tholos,
                          validating the pattern documented in INTEGRATION.md
+demos/
+  freelance-escrow/     A real freelance milestone-payment app built on
+                         Tholos as its settlement layer, not a UI of buttons
+                         calling contract functions; see its own README
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/

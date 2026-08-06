@@ -41,11 +41,18 @@ contracts/
     src/
       lib.rs             The authorize_as_current_contract pattern from docs/src/INTEGRATION.md
       test.rs            Validates that pattern against Tholos's real compiled wasm
+demos/
+  freelance-escrow/     A real freelance milestone-payment app built on Tholos;
+                         a pnpm/Vite/React project, not part of the Cargo
+                         workspace, see its own README for setup
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/
   ci.yml                 Runs fmt, clippy, tests, and the wasm build on every push/PR
 ```
+
+Additional demo apps should each live as their own directory under `demos/`,
+following the same layout as `demos/freelance-escrow`.
 
 `demo-consumer` and `asserter-consumer` exist to keep [INTEGRATION.md](docs/src/INTEGRATION.md)
 honest: they're not products, they're compiled checks that the documented
