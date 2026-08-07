@@ -8,6 +8,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 soroban-sdk = "26.1.0"
 

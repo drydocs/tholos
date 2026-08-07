@@ -442,7 +442,7 @@ impl Tholos {
         }
 
         let n = committee.len();
-        let majority = (n / 2) + 1;
+        let majority = Self::majority_threshold(n);
 
         if proposal.yes.len() >= majority {
             // Execute: swap old -> new in the live committee. The proposal is
@@ -519,7 +519,7 @@ impl Tholos {
         // longer pass. Otherwise a non-proposer touching a still-passable
         // proposal is rejected.
         let n = committee.len();
-        let majority = (n / 2) + 1;
+        let majority = Self::majority_threshold(n);
         let remaining = n - proposal.yes.len() - proposal.no.len();
         let can_cancel =
             resolver == proposal.proposed_by || proposal.yes.len() + remaining < majority;
@@ -763,7 +763,7 @@ impl Tholos {
             assertion.votes_against_outcome += 1;
         }
 
-        let majority = (assertion.resolvers.len() / 2) + 1;
+        let majority = Self::majority_threshold(assertion.resolvers.len());
         let winner_is_asserter = if assertion.votes_for_outcome >= majority {
             Some(true)
         } else if assertion.votes_against_outcome >= majority {
@@ -845,6 +845,14 @@ impl Tholos {
             .instance()
             .get(key)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// The number of matching votes needed for a strict majority of `n`, i.e.
+    /// `(n / 2) + 1`. Shared by `resolve`, `vote_rotation`, and
+    /// `cancel_rotation`'s deadlock guard, which all decide against this same
+    /// threshold and are exactly what `proptest_vote_counting` exercises.
+    fn majority_threshold(n: u32) -> u32 {
+        (n / 2) + 1
     }
 
     /// Rejects a resolver committee containing duplicate addresses.

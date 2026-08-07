@@ -1,7 +1,15 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { jobs as seedJobs, type Job, type Milestone, type MilestoneStatus } from "../data/jobs";
-import { assertOutcome, disputeAssertion, finalizeAssertion, resolveAssertion } from "../lib/tholos";
 import { JobsContext, type JobsContextValue, type NewJobInput } from "./jobs-context";
+
+/**
+ * lib/tholos.ts pulls in the full Stellar SDK. Importing it dynamically, only
+ * at the point a contract call actually happens, keeps that weight out of the
+ * initial bundle for the read-only job-browsing path most visits never leave.
+ */
+function loadTholosClient() {
+  return import("../lib/tholos");
+}
 
 function updateMilestone(
   jobs: Job[],
@@ -48,6 +56,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const submitMilestone = useCallback(async (jobId: string, milestoneId: string, signerAddress: string) => {
+    const { assertOutcome } = await loadTholosClient();
     const assertionId = (await assertOutcome(signerAddress, true)).toString();
     setJobs((current) =>
       updateMilestone(current, jobId, milestoneId, {
@@ -63,6 +72,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     if (!milestone?.assertionId) {
       return;
     }
+    const { disputeAssertion } = await loadTholosClient();
     await disputeAssertion(signerAddress, BigInt(milestone.assertionId));
     setJobs((current) => updateMilestone(current, jobId, milestoneId, { status: "disputed" }));
   }, [jobs]);
@@ -73,6 +83,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       if (!milestone?.assertionId) {
         return;
       }
+      const { resolveAssertion } = await loadTholosClient();
       const decided = await resolveAssertion(resolverAddress, BigInt(milestone.assertionId), agreesWithFreelancer);
       if (decided === null) {
         return;
@@ -91,6 +102,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     if (!milestone?.assertionId) {
       return;
     }
+    const { finalizeAssertion } = await loadTholosClient();
     await finalizeAssertion(callerAddress, BigInt(milestone.assertionId));
     setJobs((current) => updateMilestone(current, jobId, milestoneId, { status: "released" }));
   }, [jobs]);

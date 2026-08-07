@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["contracts/tholos", "contracts/demo-consumer", "contracts/asserter-consumer"]
 
+[workspace.lints.rust]
+warnings = "deny"
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

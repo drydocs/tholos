@@ -112,6 +112,21 @@ All notable changes to this project are documented here. Format follows
   strings, matching the main contract's convention. Test-only, no behavior
   change. Closes #6.
 
+- The repeated `(committee_len / 2) + 1` majority-threshold calculation in
+  `vote_rotation`, `cancel_rotation`, and `resolve` is now a single
+  `Self::majority_threshold` helper. No behavior change; `proptest_vote_counting`
+  already exercises exactly this formula.
+
+- CI now passes `--locked` to every `cargo build/test/clippy` invocation, so a
+  `Cargo.lock` that's drifted from what `Cargo.toml` would currently resolve to
+  fails the build loudly instead of Cargo silently re-resolving and using an
+  unreviewed dependency graph.
+
+- Added a `[workspace.lints.rust] warnings = "deny"` table (with each crate
+  opting in via `[lints] workspace = true`), so a local `cargo build` enforces
+  the same warnings-as-errors bar CI's `-D warnings` flag does, instead of only
+  CI catching it.
+
 ### Fixed
 
 - `finalize` is now blocked while paused, alongside `assert_outcome`, `dispute`,
