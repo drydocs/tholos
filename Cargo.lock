@@ -182,7 +182,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "asserter-consumer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "soroban-sdk",
 ]
@@ -487,7 +487,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "demo-consumer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "soroban-sdk",
 ]
@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "tholos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
