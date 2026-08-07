@@ -46,8 +46,8 @@ point this at a deployed Tholos instance yourself:
 
 ```sh
 cp .env.example .env.local
-# fill in VITE_THOLOS_CONTRACT_ID with a deployed contract id
-# (see docs/src/DEPLOYMENT.md to deploy one)
+# fill in VITE_THOLOS_CONTRACT_ID with the canonical testnet instance's
+# contract id (published in docs/src/DEPLOYMENT.md, "Canonical testnet instance")
 
 pnpm install
 pnpm dev

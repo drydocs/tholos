@@ -18,7 +18,9 @@ jobs:
           # mock addresses from the mocked test environment, not real
           # deployed addresses, and are committed deliberately for
           # reproducibility (see CONTRIBUTING.md's testing section).
-          if grep -rnE --exclude-dir=.git --exclude-dir=target --exclude-dir=test_snapshots '\bC[A-Z2-7]{55}\b' .; then
+          # DEPLOYMENT.md is excluded: the canonical testnet instance's
+          # contract id is published there deliberately (see CONTRIBUTING.md).
+          if grep -rnE --exclude-dir=.git --exclude-dir=target --exclude-dir=test_snapshots --exclude=DEPLOYMENT.md '\bC[A-Z2-7]{55}\b' .; then
             echo "::error::Found what looks like a Stellar contract address committed to the repo. Contract addresses must never be committed, since a deployed address can't be tied to a specific source commit without an independent rebuild. Use placeholder env vars in examples instead (see CONTRIBUTING.md)."
             exit 1
           fi

@@ -7,12 +7,19 @@ you're looking for the function-by-function reference instead, see
 
 ## Should you deploy your own instance, or share one?
 
-Each Tholos deployment is initialized once with a single token, bond amount,
-challenge window, and resolver committee (`initialize` in [CONTRACT.md](CONTRACT.md)).
-There's no per-call override. That means:
+A canonical testnet instance already exists (see the "Canonical testnet
+instance" section of [DEPLOYMENT.md](DEPLOYMENT.md) for its contract id and
+parameters). **Share that instance by default** and only track the assertion
+`id`s that belong to you: an oracle's trust accumulates from one committee's
+track record over time, and fragmenting across many bespoke deployments resets
+that record for every integrator.
+
+A separate deployment is the **exception**, not the default path — reach for it
+only when your bond size, token, or challenge window is genuinely incompatible
+with the canonical instance:
 
 - If your markets all want the same bond size, token, and challenge window, they can
-  share one deployed instance and just track the assertion `id`s that belong to them.
+  share the canonical instance and just track the assertion `id`s that belong to them.
 - If you need different bond sizes per market (a $10 market and a $10,000 market
   probably shouldn't share a bond amount), deploy a separate instance per
   configuration, or wait for a future version that supports per-call bonds.

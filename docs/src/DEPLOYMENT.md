@@ -4,6 +4,50 @@ A practical guide for deploying a Tholos instance and operating it afterward. Fo
 what each function does, see [CONTRACT.md](CONTRACT.md). For design rationale,
 see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Canonical testnet instance
+
+A long-lived, canonical Tholos instance is deployed on **testnet** for
+integrators (this repo's own demos included) to point at by default, instead of
+each deploying their own throwaway instance:
+
+| | |
+| --- | --- |
+| Network | Testnet |
+| Contract id | `CBFFQEFDGSLLLQKOZGHWNTSPBUWMAVKFFKYXUHCMP6WDR5Y4HN4I2C76` |
+| Admin | `GCULSMS2EFKYYBGVYKFIMHEE4T4OFGNVVWXDQW7HZ4E2VWDPF5HJAQQH` |
+| Token | Native XLM SAC (`stellar contract id asset --asset native`) |
+| `bond_amount` | 50000000 (5 XLM) |
+| `challenge_window_secs` | 21600 (6 hours) |
+| `finalize_reward_bps` | 100 (1 %) |
+| Resolver committee | `GBR745BR3WUHXPADLUKV5J25IUFNUAXGFWFQKQCWKNSK6LKZBTDRBA44`, `GDH2Z5JRUMZCIJ72TNWZ4I337QSCFU52O5KKVF2K6IDI3ZSIHS7DQMHC`, `GAJNSUJB624FUIEWUOSZRHRXGSCDPUTCIKCD2T4QY5CPJMC7C4IR3IYM` |
+
+**Parameter rationale** (using the model in [BOND_SIZING.md](BOND_SIZING.md)):
+
+- `bond_amount` = 5 XLM: with `R_case` ≈ 20 tokens of resolver review time and
+  `K_spam` = 10 tolerated spam assertions per window, the low-value assertion
+  spam floor is `R_case / K_spam` = 2 tokens; for a public deployment the model
+  recommends a 2x–5x multiple, putting the bond in the 4–10 token range. 5 XLM
+  sits inside that band and stays affordable for the smallest assertions this
+  low-value instance is meant to support.
+- `challenge_window_secs` = 6 h: long enough for someone who'd actually catch a
+  bad assertion to see it and act, without stalling finality for integrators
+  that assert frequently.
+- `finalize_reward_bps` = 100 (1 %): a small haircut that keeps prompt
+  third-party finalization economically worthwhile without materially
+  penalizing asserters.
+- Resolver committee: three dedicated, non-reused testnet identities. **These
+  are testnet-only stopgaps** — a canonical instance needs real, accountable
+  resolver identities before it should hold anything beyond play value; see
+  [SECURITY.md](SECURITY.md).
+
+This instance is the default target of the [integration guidance](INTEGRATION.md)
+and of `demos/freelance-escrow` (via its `VITE_THOLOS_CONTRACT_ID` env var).
+The contract id is published here deliberately; the repository's
+never-commit-contract-addresses CI check exempts this file (see
+[CONTRIBUTING.md](CONTRIBUTING.md)) because the whole point of a canonical
+instance is a stable, discoverable id — the ban is on addresses in
+*application source*, not in deployment documentation.
+
 ## Before you deploy
 
 **This is testnet-only until audited.** See [SECURITY.md](SECURITY.md). Don't

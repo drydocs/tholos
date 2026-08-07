@@ -188,6 +188,13 @@ deploy it yourself (or have CI do it) from the PR's actual source; a pasted addr
 is never sufficient proof on its own. CI blocks any literal Stellar contract
 address from being committed at all, as a backstop.
 
+**One deliberate exception:** the canonical testnet instance's contract id is
+published in `docs/src/DEPLOYMENT.md` ("Canonical testnet instance"), and CI
+exempts that file. The point of a canonical instance is a stable, discoverable
+id that integrators point at — the ban is on addresses in *application source*
+and in PR *evidence*, not on documenting the canonical deployment. Everywhere
+else the ban stands.
+
 ## Commit messages
 
 One-line, imperative, conventional-commit style: `feat:`, `fix:`, `docs:`, `test:`,
