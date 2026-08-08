@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts/tholos", "contracts/demo-consumer", "contracts/asserter-consumer"]
+members = ["contracts/tholos", "contracts/tholos-v2", "contracts/demo-consumer", "contracts/asserter-consumer"]
 
 [workspace.lints.rust]
 warnings = "deny"

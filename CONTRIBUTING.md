@@ -29,10 +29,16 @@ checkout until that file exists. Only re-run it after changing `contracts/tholos
 
 ```text
 contracts/
-  tholos/               The assertion and dispute contract
+  tholos/               The assertion and dispute contract (v1, deployed and stable)
     src/
       lib.rs             Contract logic
       test.rs            Unit tests (soroban-sdk testutils, mocked ledger and auth)
+  tholos-v2/            Stake-weighted resolution (v2), design in docs/src/V2_RESOLUTION.md;
+                         a wholly separate contract from v1, never upgraded in place
+    src/
+      lib.rs             Contract logic, built up issue by issue per V2_RESOLUTION.md's
+                         "Future implementation work" list
+      test.rs            Unit tests, same conventions as contracts/tholos
   demo-consumer/        Minimal example contract that calls into Tholos
     src/
       lib.rs             Cross-contract call pattern from docs/src/INTEGRATION.md

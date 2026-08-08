@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `contracts/tholos-v2`: a new, wholly separate contract crate for protocol
+  v2 (stake-weighted resolution, design in `docs/src/V2_RESOLUTION.md`),
+  never upgraded in place from v1. This first issue (#64) implements the
+  immutable `PolicySnapshotV2` pinned at assertion creation and the
+  `AssertionV2` record it lives on, plus `initialize` and read-only lookups.
+  Registration, reveal, outcome resolution, settlement, and the freeze/cancel
+  mechanism are separate issues (#65-#71) landing as the crate grows. Closes #64.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

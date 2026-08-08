@@ -1,0 +1,22 @@
+[package]
+name = "tholos-v2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+soroban-sdk = "26.1.0"
+
+[dev-dependencies]
+proptest = "1.11.0"
+soroban-sdk = { version = "26.1.0", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
