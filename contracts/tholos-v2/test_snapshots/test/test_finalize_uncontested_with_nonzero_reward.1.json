@@ -57,7 +57,7 @@
                   "u64": "300"
                 },
                 {
-                  "u64": "1800"
+                  "u64": "3900"
                 },
                 {
                   "u64": "3600"
@@ -341,7 +341,7 @@
                             "symbol": "anti_snipe_hard_max_secs"
                           },
                           "val": {
-                            "u64": "1800"
+                            "u64": "3900"
                           }
                         },
                         {
@@ -460,7 +460,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "77f6f28aa85ba1789a966aa1c112242afe8b56d0cc56ead25d099fe9c66ee156"
+                      "bytes": "7fbaa4014dcb79c188316461869b4cdbd399e2659cf7203afa9fd641927ac736"
                     }
                   },
                   {
@@ -545,7 +545,7 @@
                               "symbol": "anti_snipe_hard_max_secs"
                             },
                             "val": {
-                              "u64": "1800"
+                              "u64": "3900"
                             }
                           },
                           {

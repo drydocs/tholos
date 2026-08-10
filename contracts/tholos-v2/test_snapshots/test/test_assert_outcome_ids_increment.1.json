@@ -57,7 +57,7 @@
                   "u64": "300"
                 },
                 {
-                  "u64": "1800"
+                  "u64": "3900"
                 },
                 {
                   "u64": "3600"
@@ -356,7 +356,7 @@
                             "symbol": "anti_snipe_hard_max_secs"
                           },
                           "val": {
-                            "u64": "1800"
+                            "u64": "3900"
                           }
                         },
                         {
@@ -475,7 +475,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "36facbb650d274d4a65f4b551476f8088224f6b47ec2c2e29e852ca74ee4ac8b"
+                      "bytes": "d447481bc4436059290521fcb6e05656686b9e86e5523def087dd10087e291d4"
                     }
                   },
                   {
@@ -599,7 +599,7 @@
                             "symbol": "anti_snipe_hard_max_secs"
                           },
                           "val": {
-                            "u64": "1800"
+                            "u64": "3900"
                           }
                         },
                         {
@@ -718,7 +718,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "36facbb650d274d4a65f4b551476f8088224f6b47ec2c2e29e852ca74ee4ac8b"
+                      "bytes": "d447481bc4436059290521fcb6e05656686b9e86e5523def087dd10087e291d4"
                     }
                   },
                   {
@@ -803,7 +803,7 @@
                               "symbol": "anti_snipe_hard_max_secs"
                             },
                             "val": {
-                              "u64": "1800"
+                              "u64": "3900"
                             }
                           },
                           {

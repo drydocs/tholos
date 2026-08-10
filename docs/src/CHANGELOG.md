@@ -26,6 +26,20 @@ All notable changes to this project are documented here. Format follows
   asserter's behalf) is identical in both versions for this uncontested case.
   Closes #65.
 
+- `tholos-v2`: `dispute` and the third-party registration phase. New
+  `Position` (one address's stake, keyed by `(assertion_id, address)`) and
+  `Resolution` (per-dispute deadlines and the running eligible total `W`)
+  records, per V2_RESOLUTION.md's storage layout. Third-party deposits carry
+  a salted commitment hiding their side until reveal (#67); repeated
+  deposits from one address aggregate into one position and can't change
+  that position's original commitment. A qualifying late deposit extends the
+  registration deadline, capped at a hard deadline fixed at `dispute` time.
+  Also fixes a gap in #64's `initialize` validation: `anti_snipe_hard_max_secs`
+  is now required to be at least `registration_duration_secs`, since the
+  hard deadline is `registration_opened_at + anti_snipe_hard_max_secs`, an
+  absolute duration that could otherwise fall before the ordinary soft
+  deadline. Closes #66.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

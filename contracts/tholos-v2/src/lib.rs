@@ -6,11 +6,11 @@
 //! deployments" section for why.
 //!
 //! This crate currently implements #64 (the immutable `PolicySnapshotV2`
-//! pinned at assertion creation, and the `AssertionV2` record it lives on)
-//! and #65 (bonded assertion posting, and the uncontested-finalize path).
-//! Dispute registration, reveal, outcome resolution, settlement, and the
-//! freeze/cancel mechanism are separate issues (#66-#71) and land as this
-//! crate grows.
+//! pinned at assertion creation, and the `AssertionV2` record it lives on),
+//! #65 (bonded assertion posting, and the uncontested-finalize path), and
+//! #66 (`dispute` and the third-party registration phase). Reveal, outcome
+//! resolution, settlement, and the freeze/cancel mechanism are separate
+//! issues (#67-#71) and land as this crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
@@ -108,6 +108,77 @@ pub struct Finalized {
     pub reward: i128,
 }
 
+#[contractevent]
+pub struct Disputed {
+    #[topic]
+    pub id: u64,
+    pub disputer: Address,
+    pub registration_deadline: u64,
+}
+
+#[contractevent]
+pub struct PositionFunded {
+    #[topic]
+    pub id: u64,
+    pub voter: Address,
+    /// The position's new total after this deposit (top-ups aggregate, so
+    /// this isn't just the amount of this one call).
+    pub amount: i128,
+    /// The running eligible total `W` after this deposit.
+    pub eligible_total: i128,
+}
+
+/// What kind of position this is, and (for a `Fixed` one) which side it's
+/// on. The asserter's and disputer's sides are public by construction, no
+/// commitment needed; a third party's side stays hidden in its commitment
+/// until reveal (#67).
+///
+/// Tuple variants, not struct-like named-field variants: soroban-sdk
+/// 26.1.0's `contracttype` derive doesn't support named fields on enum
+/// variants, only unit variants or a single unnamed field, the same general
+/// category of derive-macro limitation as the `Option<EnumType>` gap noted
+/// on `TerminalCause` above.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PositionKind {
+    /// `true` if this position agrees with the asserted outcome.
+    Fixed(bool),
+    /// The salted commitment hash to this position's eventual side.
+    External(BytesN<32>),
+}
+
+/// One address's stake on one dispute. Non-transferable, keyed by
+/// `(assertion_id, address)`. Once funded, only exits through settlement
+/// (#69); this issue only ever grows `amount` via top-ups, never shrinks it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Position {
+    pub amount: i128,
+    pub kind: PositionKind,
+}
+
+/// Registration-phase bookkeeping for one disputed assertion. Separate from
+/// `AssertionV2` per V2_RESOLUTION.md's storage layout ("Replacing
+/// Assertion.resolvers"): `AssertionV2` is claim/parties/policy, `Resolution`
+/// is the mutable per-dispute state that grows as reveal (#67) and
+/// settlement (#69) land.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Resolution {
+    pub registration_opened_at: u64,
+    /// The soft cutoff: pushed out by `anti_snipe_extension_secs` on a
+    /// qualifying late deposit, capped at `registration_hard_deadline`.
+    pub registration_deadline: u64,
+    /// Fixed at `dispute` time: `registration_opened_at +
+    /// anti_snipe_hard_max_secs`. No sequence of extensions can push
+    /// `registration_deadline` past this.
+    pub registration_hard_deadline: u64,
+    /// The frozen-at-reveal-cutoff eligible total `W`, maintained
+    /// incrementally as deposits arrive; never discovered by scanning
+    /// storage.
+    pub eligible_total: i128,
+}
+
 /// Pinned in full onto every `AssertionV2` at creation time, never mutated
 /// afterward. Deployment-wide parameter changes (via a future `initialize`-
 /// adjacent admin call) only affect assertions created after the change; an
@@ -185,6 +256,8 @@ pub enum DataKey {
     Policy,
     NextId,
     AssertionV2(u64),
+    Resolution(u64),
+    Position(u64, Address),
 }
 
 #[contracterror]
@@ -212,6 +285,30 @@ pub enum Error {
     /// `finalize` called before `challenge_window_secs` has elapsed since
     /// `opened_at`.
     ChallengeWindowOpen = 13,
+    /// The disputer address matched the assertion's own asserter. Can't stop
+    /// the same owner using a second address, but prevents one storage
+    /// position from occupying both protocol roles.
+    DisputerIsAsserter = 14,
+    /// Action requires `PhaseV2::Registration` but the assertion isn't.
+    NotRegistration = 15,
+    /// `register` called by the asserter or disputer; they top up their
+    /// fixed position by other means (not yet implemented; tracked
+    /// separately from this issue's third-party registration path).
+    CannotRegisterAsFixedParty = 16,
+    InvalidPositionAmount = 17,
+    /// A new position's amount was below `policy.min_resolution_bond`.
+    BelowMinimumResolutionBond = 18,
+    /// A position's total (after aggregating this deposit) exceeded
+    /// `policy.max_position`.
+    PositionExceedsMax = 19,
+    /// The eligible total `W` (after this deposit) would exceed
+    /// `policy.max_total_weight`.
+    EligibleTotalExceedsMax = 20,
+    /// A top-up's commitment didn't match the one this position was created
+    /// with. A position's committed side can never change after funding.
+    CommitmentMismatch = 21,
+    /// `register` called after `registration_deadline` has passed.
+    RegistrationClosed = 22,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -293,6 +390,16 @@ impl TholosV2 {
         if anti_snipe_extension_secs > anti_snipe_hard_max_secs {
             return Err(Error::InvalidAntiSnipeParams);
         }
+        // registration_hard_deadline is registration_opened_at +
+        // anti_snipe_hard_max_secs (see dispute() below), an absolute
+        // duration from registration opening, independent of
+        // registration_duration_secs. If hard_max were shorter than the
+        // base registration window itself, the hard deadline would fall
+        // before the ordinary soft deadline even with zero extensions ever
+        // granted, which is nonsensical.
+        if anti_snipe_hard_max_secs < registration_duration_secs {
+            return Err(Error::InvalidAntiSnipeParams);
+        }
         // max_total_weight's own bounds must be checked before comparing
         // max_position against it, otherwise a max_total_weight <= 0 always
         // trips the max_position check first (no positive max_position can
@@ -362,6 +469,45 @@ impl TholosV2 {
     fn set_assertion(env: &Env, id: u64, assertion: &AssertionV2) {
         let key = DataKey::AssertionV2(id);
         env.storage().persistent().set(&key, assertion);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+    }
+
+    /// Read-only lookup of one assertion's registration-phase bookkeeping.
+    /// Fails with `AssertionNotFound` if it doesn't exist (a `Resolution`
+    /// always exists once `dispute` has been called, and never before).
+    pub fn get_resolution(env: Env, id: u64) -> Result<Resolution, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)
+    }
+
+    fn set_resolution(env: &Env, id: u64, resolution: &Resolution) {
+        let key = DataKey::Resolution(id);
+        env.storage().persistent().set(&key, resolution);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+    }
+
+    /// Read-only lookup of one address's position on one assertion. Fails
+    /// with `AssertionNotFound` if that address has no position there.
+    pub fn get_position(env: Env, id: u64, address: Address) -> Result<Position, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Position(id, address))
+            .ok_or(Error::AssertionNotFound)
+    }
+
+    fn set_position(env: &Env, id: u64, address: &Address, position: &Position) {
+        let key = DataKey::Position(id, address.clone());
+        env.storage().persistent().set(&key, position);
         env.storage().persistent().extend_ttl(
             &key,
             INSTANCE_LIFETIME_THRESHOLD,
@@ -510,6 +656,215 @@ impl TholosV2 {
         .publish(&env);
 
         Ok(assertion.outcome)
+    }
+
+    /// Disputes a `Pending` assertion, opening the registration phase.
+    /// Transfers `base_bond` from `disputer` into escrow, matching it
+    /// against the asserter's existing bond. Requires `disputer`'s
+    /// signature. Fails with `NotPending` if the assertion isn't `Pending`,
+    /// `DisputerIsAsserter` if `disputer` is the assertion's own asserter.
+    /// Emits `Disputed`.
+    pub fn dispute(env: Env, disputer: Address, id: u64) -> Result<(), Error> {
+        disputer.require_auth();
+
+        let mut assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase != PhaseV2::Pending {
+            return Err(Error::NotPending);
+        }
+        if disputer == assertion.asserter {
+            return Err(Error::DisputerIsAsserter);
+        }
+
+        let policy = assertion.policy.clone();
+        let now = env.ledger().timestamp();
+
+        // State is written before the external token transfer below, the
+        // same ordering assert_outcome and finalize use.
+        assertion.disputer = Some(disputer.clone());
+        assertion.phase = PhaseV2::Registration;
+        Self::set_assertion(&env, id, &assertion);
+
+        Self::set_position(
+            &env,
+            id,
+            &assertion.asserter,
+            &Position {
+                amount: policy.base_bond,
+                kind: PositionKind::Fixed(true),
+            },
+        );
+        Self::set_position(
+            &env,
+            id,
+            &disputer,
+            &Position {
+                amount: policy.base_bond,
+                kind: PositionKind::Fixed(false),
+            },
+        );
+
+        let resolution = Resolution {
+            registration_opened_at: now,
+            registration_deadline: now + policy.registration_duration_secs,
+            registration_hard_deadline: now + policy.anti_snipe_hard_max_secs,
+            eligible_total: policy.base_bond * 2,
+        };
+        Self::set_resolution(&env, id, &resolution);
+
+        token::Client::new(&env, &policy.token).transfer(
+            &disputer,
+            env.current_contract_address(),
+            &policy.base_bond,
+        );
+
+        Disputed {
+            id,
+            disputer,
+            registration_deadline: resolution.registration_deadline,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Funds (or tops up) a third-party position on a `Registration`-phase
+    /// assertion, committing to a side without revealing it (see `reveal`,
+    /// #67). Not callable by the assertion's own asserter or disputer, who
+    /// already have fixed positions from `dispute`; a way for them to top up
+    /// those positions is tracked separately from this issue.
+    ///
+    /// A first-time deposit must be at least `policy.min_resolution_bond`.
+    /// A top-up (same voter, same assertion) aggregates into the existing
+    /// position and must reuse its original `commitment`, a position's
+    /// committed side can never change after funding. Rejects atomically,
+    /// with no position or weight created, if the resulting position size or
+    /// eligible total would exceed `policy.max_position` /
+    /// `policy.max_total_weight`.
+    ///
+    /// A qualifying deposit (one landing within `anti_snipe_extension_secs`
+    /// of the current deadline) pushes the registration deadline out by
+    /// `anti_snipe_extension_secs`, capped at `registration_hard_deadline`.
+    ///
+    /// Fails with `NotRegistration` if the assertion isn't in the
+    /// registration phase, `RegistrationClosed` if the deadline has passed.
+    /// Emits `PositionFunded`.
+    pub fn register(
+        env: Env,
+        voter: Address,
+        id: u64,
+        amount: i128,
+        commitment: BytesN<32>,
+    ) -> Result<(), Error> {
+        voter.require_auth();
+
+        let assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase != PhaseV2::Registration {
+            return Err(Error::NotRegistration);
+        }
+        // Invariant: disputer is always Some once phase reaches
+        // Registration, dispute() sets both together and nothing else
+        // transitions into this phase.
+        let disputer = assertion
+            .disputer
+            .clone()
+            .expect("disputer set once phase reaches Registration");
+        if voter == assertion.asserter || voter == disputer {
+            return Err(Error::CannotRegisterAsFixedParty);
+        }
+        if amount <= 0 {
+            return Err(Error::InvalidPositionAmount);
+        }
+
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        let now = env.ledger().timestamp();
+        if now > resolution.registration_deadline {
+            return Err(Error::RegistrationClosed);
+        }
+        // Anti-sniping: a deposit landing within the last extension-window
+        // of the current deadline pushes it out, capped at the hard
+        // deadline fixed at dispute() time.
+        if now
+            >= resolution
+                .registration_deadline
+                .saturating_sub(assertion.policy.anti_snipe_extension_secs)
+        {
+            let extended = now + assertion.policy.anti_snipe_extension_secs;
+            resolution.registration_deadline = extended.min(resolution.registration_hard_deadline);
+        }
+
+        let position_key = DataKey::Position(id, voter.clone());
+        let existing: Option<Position> = env.storage().persistent().get(&position_key);
+
+        let previous_amount = match &existing {
+            Some(position) => {
+                if let PositionKind::External(stored_commitment) = &position.kind {
+                    if *stored_commitment != commitment {
+                        return Err(Error::CommitmentMismatch);
+                    }
+                }
+                position.amount
+            }
+            None => {
+                if amount < assertion.policy.min_resolution_bond {
+                    return Err(Error::BelowMinimumResolutionBond);
+                }
+                0
+            }
+        };
+
+        let new_amount = previous_amount + amount;
+        if new_amount > assertion.policy.max_position {
+            return Err(Error::PositionExceedsMax);
+        }
+        let new_total = resolution.eligible_total - previous_amount + new_amount;
+        if new_total > assertion.policy.max_total_weight {
+            return Err(Error::EligibleTotalExceedsMax);
+        }
+
+        // State is written before the external token transfer below, the
+        // same ordering every other value-moving call in this contract uses.
+        Self::set_position(
+            &env,
+            id,
+            &voter,
+            &Position {
+                amount: new_amount,
+                kind: PositionKind::External(commitment),
+            },
+        );
+        resolution.eligible_total = new_total;
+        Self::set_resolution(&env, id, &resolution);
+
+        token::Client::new(&env, &assertion.policy.token).transfer(
+            &voter,
+            env.current_contract_address(),
+            &amount,
+        );
+
+        PositionFunded {
+            id,
+            voter,
+            amount: new_amount,
+            eligible_total: new_total,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 }
 
