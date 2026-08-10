@@ -48,7 +48,7 @@
                   "u64": "3600"
                 },
                 {
-                  "u32": 0
+                  "u32": 1000
                 },
                 {
                   "u64": "3600"
@@ -74,8 +74,7 @@
           "sub_invocations": []
         }
       ]
-    ],
-    []
+    ]
   ],
   "ledger": {
     "protocol_version": 26,
@@ -214,7 +213,7 @@
                               "symbol": "finalize_reward_bps"
                             },
                             "val": {
-                              "u32": 0
+                              "u32": 1000
                             }
                           },
                           {

@@ -5,14 +5,16 @@
 //! upgraded in place: see the design doc's "Migration from existing v1
 //! deployments" section for why.
 //!
-//! This crate currently implements only #64's scope: the immutable
-//! `PolicySnapshotV2` pinned at assertion creation, and the `AssertionV2`
-//! record it lives on. Registration, reveal, outcome resolution, settlement,
-//! and the freeze/cancel mechanism are separate issues (#65-#71) and land as
-//! this crate grows.
+//! This crate currently implements #64 (the immutable `PolicySnapshotV2`
+//! pinned at assertion creation, and the `AssertionV2` record it lives on)
+//! and #65 (bonded assertion posting, and the uncontested-finalize path).
+//! Dispute registration, reveal, outcome resolution, settlement, and the
+//! freeze/cancel mechanism are separate issues (#66-#71) and land as this
+//! crate grows.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
+    BytesN, Env,
 };
 
 /// Which weight rule this assertion's vote is decided under. A version marker
@@ -73,6 +75,10 @@ pub enum PhaseV2 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalCause {
     NotYetDecided,
+    /// Never disputed within `challenge_window_secs`; `finalize` closed it
+    /// out the same way v1's uncontested `finalize` does. The only terminal
+    /// cause that doesn't go through registration/reveal at all.
+    UncontestedFinalize,
     StrictMajorityFor,
     StrictMajorityAgainst,
     OptimisticTimeout,
@@ -80,6 +86,26 @@ pub enum TerminalCause {
     /// reveals. Reserved here so `AssertionV2.terminal_cause`'s type doesn't
     /// need to change when #71 lands.
     AdminCancelled,
+}
+
+#[contractevent]
+pub struct Asserted {
+    #[topic]
+    pub id: u64,
+    pub asserter: Address,
+    pub outcome: bool,
+}
+
+#[contractevent]
+pub struct Finalized {
+    #[topic]
+    pub id: u64,
+    pub outcome: bool,
+    /// Always a verified address: `finalize` requires the caller's auth
+    /// unconditionally, the same hardening v1 applies, so this can't be
+    /// spoofed regardless of whether a reward was configured.
+    pub finalizer: Address,
+    pub reward: i128,
 }
 
 /// Pinned in full onto every `AssertionV2` at creation time, never mutated
@@ -93,6 +119,17 @@ pub enum TerminalCause {
 pub struct PolicySnapshotV2 {
     pub token: Address,
     pub base_bond: i128,
+    /// How long a `Pending` assertion can be disputed before it's eligible
+    /// for uncontested `finalize`. Distinct from `registration_duration_secs`
+    /// below: this window gates *whether* a dispute can start at all, the
+    /// other gates how long third parties have to join *after* one has.
+    pub challenge_window_secs: u64,
+    /// Basis points (0-1000) of the bond paid to whoever calls `finalize` on
+    /// an uncontested assertion, the same incentive-for-prompt-finalization
+    /// mechanic v1 has, carried over because the problem it solves (nobody
+    /// else is motivated to spend gas finalizing on the asserter's behalf)
+    /// is identical in both versions for this specific uncontested case.
+    pub finalize_reward_bps: u32,
     /// Always equal to `base_bond`: see the rationale on `initialize` below.
     pub min_resolution_bond: i128,
     pub registration_duration_secs: u64,
@@ -116,6 +153,9 @@ pub struct PolicySnapshotV2 {
 pub struct AssertionV2 {
     pub id: u64,
     pub asserter: Address,
+    /// Ledger timestamp `assert_outcome` posted this assertion. Used to check
+    /// `challenge_window_secs` elapsed before an uncontested `finalize`.
+    pub opened_at: u64,
     /// Set once `dispute` (#66) opens registration. `None` while `Pending`.
     pub disputer: Option<Address>,
     pub outcome: bool,
@@ -133,6 +173,10 @@ pub struct AssertionV2 {
     /// which always stays the original claim even after a dispute overturns
     /// it, a sharp edge v1 needed a separate `final_outcome` field to fix.
     pub final_outcome: Option<bool>,
+    /// Who called `finalize`. `None` until finalized. `Address` is a built-in
+    /// type, so `Option<Address>` is fine here, unlike `Option<TerminalCause>`
+    /// above.
+    pub finalizer: Option<Address>,
 }
 
 #[contracttype]
@@ -160,6 +204,14 @@ pub enum Error {
     InvalidAntiSnipeParams = 7,
     InvalidMaxPosition = 8,
     InvalidMaxTotalWeight = 9,
+    InvalidChallengeWindow = 10,
+    /// `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS`.
+    InvalidFinalizeReward = 11,
+    /// Action requires `PhaseV2::Pending` but the assertion isn't.
+    NotPending = 12,
+    /// `finalize` called before `challenge_window_secs` has elapsed since
+    /// `opened_at`.
+    ChallengeWindowOpen = 13,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -168,15 +220,29 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 const MAX_REGISTRATION_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_REVEAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
+/// Same 7-day cap as v1's `challenge_window_secs`, for the same reason: it
+/// must leave real margin within the 30-day persistent-storage TTL bump
+/// (`INSTANCE_BUMP_AMOUNT`) for `finalize` to actually get called before the
+/// assertion's ledger entry risks archival.
+const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+/// 1000 bps (10%) caps the incentive without letting a deployment
+/// accidentally haircut the asserter's bond by more than a tenth. Same
+/// reasoning as v1's `MAX_FINALIZE_REWARD_BPS`, independently applicable
+/// here since the uncontested-finalize case works identically in both
+/// versions.
+const MAX_FINALIZE_REWARD_BPS: u32 = 1_000;
 
-/// Interim safety bound on `base_bond`, reused from v1's `MAX_BOND_AMOUNT`
-/// derivation (i128::MAX bounded by the tighter of the dispute-balance-sum
-/// and a reward-multiply overflow). V2's actual settlement formula
-/// (`s_i * forfeited_pool / recipient_weight`, see #69) has different
-/// overflow characteristics and needs its own derivation once that
-/// arithmetic exists; this bound is deliberately conservative until then,
-/// not a final answer.
-const MAX_BOND_AMOUNT: i128 = i128::MAX / 1_000;
+/// Bound on `base_bond` so `finalize`'s reward-multiply
+/// (`bond * finalize_reward_bps`, computed before the divide by 10,000) can't
+/// overflow `i128`, for any `finalize_reward_bps` up to
+/// `MAX_FINALIZE_REWARD_BPS`. At `assert_outcome` time only one bond has
+/// entered escrow (no disputer yet), so this reward-multiply constraint is
+/// the only one that applies at this stage; #69's settlement arithmetic
+/// (`s_i * forfeited_pool / recipient_weight`) has its own, separate overflow
+/// characteristics and must independently verify or tighten this bound when
+/// that issue lands, the same way `max_total_weight` is already checked
+/// against it in `initialize` below.
+const MAX_BOND_AMOUNT: i128 = i128::MAX / (MAX_FINALIZE_REWARD_BPS as i128);
 
 #[contract]
 pub struct TholosV2;
@@ -192,6 +258,8 @@ impl TholosV2 {
         admin: Address,
         token: Address,
         base_bond: i128,
+        challenge_window_secs: u64,
+        finalize_reward_bps: u32,
         registration_duration_secs: u64,
         anti_snipe_extension_secs: u64,
         anti_snipe_hard_max_secs: u64,
@@ -207,6 +275,12 @@ impl TholosV2 {
 
         if base_bond <= 0 || base_bond > MAX_BOND_AMOUNT {
             return Err(Error::InvalidBondAmount);
+        }
+        if challenge_window_secs == 0 || challenge_window_secs > MAX_CHALLENGE_WINDOW_SECS {
+            return Err(Error::InvalidChallengeWindow);
+        }
+        if finalize_reward_bps > MAX_FINALIZE_REWARD_BPS {
+            return Err(Error::InvalidFinalizeReward);
         }
         if registration_duration_secs == 0
             || registration_duration_secs > MAX_REGISTRATION_DURATION_SECS
@@ -235,6 +309,8 @@ impl TholosV2 {
         let policy = PolicySnapshotV2 {
             token,
             base_bond,
+            challenge_window_secs,
+            finalize_reward_bps,
             // Equal to base_bond by design: a cheaper minimum would let a
             // third party break an asserter/disputer tie for a fraction of
             // what the original two parties risked. See #64/#66.
@@ -279,16 +355,24 @@ impl TholosV2 {
             .ok_or(Error::AssertionNotFound)
     }
 
+    /// Writes an assertion and extends its persistent storage TTL. Every
+    /// write site uses this rather than a bare `.set()`, matching v1's
+    /// `set_assertion` so an assertion's ledger entry can't be archived out
+    /// from under it while still active.
+    fn set_assertion(env: &Env, id: u64, assertion: &AssertionV2) {
+        let key = DataKey::AssertionV2(id);
+        env.storage().persistent().set(&key, assertion);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+    }
+
     /// Builds and stores a `Pending` `AssertionV2` with a freshly pinned
-    /// policy snapshot, without moving any tokens or requiring the
-    /// asserter's bond. Exists so this issue's policy-pinning behavior is
-    /// independently testable before #65 wires up the real, bond-transferring
-    /// `assert_outcome` entrypoint on top of this same helper.
-    ///
-    /// Not called from any `#[contractimpl]` fn yet, only from tests, hence
-    /// `allow(dead_code)`. #65 removes this allow when it adds the public
-    /// entrypoint that calls it for real.
-    #[allow(dead_code)]
+    /// policy snapshot. Doesn't move any tokens itself; `assert_outcome`
+    /// calls this first (matching v1's state-before-external-call ordering)
+    /// and transfers the bond after.
     fn create_pending_assertion(env: &Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         let policy: PolicySnapshotV2 = env
             .storage()
@@ -308,6 +392,7 @@ impl TholosV2 {
         let assertion = AssertionV2 {
             id,
             asserter,
+            opened_at: env.ledger().timestamp(),
             disputer: None,
             outcome,
             phase: PhaseV2::Pending,
@@ -315,18 +400,116 @@ impl TholosV2 {
             policy_hash,
             terminal_cause: TerminalCause::NotYetDecided,
             final_outcome: None,
+            finalizer: None,
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::AssertionV2(id), &assertion);
-        env.storage().persistent().extend_ttl(
-            &DataKey::AssertionV2(id),
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        Self::set_assertion(env, id, &assertion);
 
         Ok(id)
+    }
+
+    /// Posts a bonded claim, the optimistic first stage of a v2 assertion,
+    /// before any dispute exists. Transfers the deployment's `base_bond` from
+    /// `asserter` to the contract. Requires `asserter`'s signature. Returns
+    /// the new assertion id. Emits `Asserted`.
+    pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
+        asserter.require_auth();
+
+        let policy: PolicySnapshotV2 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Policy)
+            .ok_or(Error::NotInitialized)?;
+
+        // State is written (inside create_pending_assertion) before the
+        // external token transfer below, matching v1's assert_outcome: a
+        // reentrant call during the transfer can't be allocated the same
+        // not-yet-incremented id.
+        let id = Self::create_pending_assertion(&env, asserter.clone(), outcome)?;
+
+        token::Client::new(&env, &policy.token).transfer(
+            &asserter,
+            env.current_contract_address(),
+            &policy.base_bond,
+        );
+
+        Asserted {
+            id,
+            asserter,
+            outcome,
+        }
+        .publish(&env);
+
+        Ok(id)
+    }
+
+    /// Callable once a `Pending` assertion's `challenge_window_secs` has
+    /// elapsed with no dispute. `caller` must authorize the call
+    /// unconditionally, even when `finalize_reward_bps` is 0, the same
+    /// hardening v1 applies, so `AssertionV2.finalizer` and the `Finalized`
+    /// event can never be spoofed regardless of whether a reward is paid.
+    ///
+    /// When `finalize_reward_bps` is non-zero, `caller` receives
+    /// `bond * finalize_reward_bps / 10_000` and the asserter receives the
+    /// remainder; when zero, the full bond returns to the asserter.
+    ///
+    /// Returns the asserted outcome. Fails with `NotPending` if the
+    /// assertion isn't `Pending`, `ChallengeWindowOpen` if called too early.
+    /// Emits `Finalized`.
+    pub fn finalize(env: Env, caller: Address, id: u64) -> Result<bool, Error> {
+        caller.require_auth();
+
+        let mut assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase != PhaseV2::Pending {
+            return Err(Error::NotPending);
+        }
+
+        if env.ledger().timestamp() <= assertion.opened_at + assertion.policy.challenge_window_secs
+        {
+            return Err(Error::ChallengeWindowOpen);
+        }
+
+        let reward_bps = assertion.policy.finalize_reward_bps;
+        let reward = if reward_bps > 0 {
+            assertion.policy.base_bond * (reward_bps as i128) / 10_000
+        } else {
+            0
+        };
+
+        // State is written before the external token transfers below so a
+        // reentrant call from a non-standard token sees this assertion as
+        // already resolved, rather than still Pending. Mirrors v1's finalize.
+        assertion.phase = PhaseV2::Resolved;
+        assertion.terminal_cause = TerminalCause::UncontestedFinalize;
+        assertion.final_outcome = Some(assertion.outcome);
+        assertion.finalizer = Some(caller.clone());
+        Self::set_assertion(&env, id, &assertion);
+
+        let token_client = token::Client::new(&env, &assertion.policy.token);
+        if reward > 0 {
+            token_client.transfer(&env.current_contract_address(), &caller, &reward);
+        }
+        let asserter_payout = assertion.policy.base_bond - reward;
+        token_client.transfer(
+            &env.current_contract_address(),
+            &assertion.asserter,
+            &asserter_payout,
+        );
+
+        Finalized {
+            id,
+            outcome: assertion.outcome,
+            finalizer: caller,
+            reward,
+        }
+        .publish(&env);
+
+        Ok(assertion.outcome)
     }
 }
 

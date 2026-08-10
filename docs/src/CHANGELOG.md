@@ -15,6 +15,17 @@ All notable changes to this project are documented here. Format follows
   Registration, reveal, outcome resolution, settlement, and the freeze/cancel
   mechanism are separate issues (#65-#71) landing as the crate grows. Closes #64.
 
+- `tholos-v2`: bonded assertion posting (`assert_outcome`) and the
+  uncontested-`finalize` path, the same two-stage shape v1 has for an
+  assertion nobody disputes. Adds `challenge_window_secs` and
+  `finalize_reward_bps` to `PolicySnapshotV2` (distinct from
+  `registration_duration_secs`, which only governs the post-dispute
+  third-party join window), and `opened_at`/`finalizer` to `AssertionV2`.
+  `finalize_reward_bps` is carried over from v1 unchanged: the problem it
+  solves (incentivizing a third party to spend gas finalizing on the
+  asserter's behalf) is identical in both versions for this uncontested case.
+  Closes #65.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
