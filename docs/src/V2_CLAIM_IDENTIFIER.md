@@ -1,14 +1,13 @@
 # V2 canonical claim identifier and evidence convention
 
-> **Status:** Proposed; design-only, not implemented.
+> **Status:** Accepted; design-only, not implemented.
 >
 > **Tracking:** [Issue #76](https://github.com/drydocs/tholos/issues/76).
 >
 > This document proposes an on-chain reference for what a v2 assertion
-> actually claims. It records a recommendation for review; it does not
-> change any already-merged v2 code. A follow-up implementation issue is
-> opened separately once this is accepted, the same split V2_RESOLUTION.md
-> and its own implementation issues (#64-#71) used.
+> actually claims. It does not change any already-merged v2 code. A
+> follow-up implementation issue is opened separately, the same split
+> V2_RESOLUTION.md and its own implementation issues (#64-#71) used.
 
 ## Why this needs deciding at all
 
@@ -117,20 +116,16 @@ accepted.
 | Contract-side content validation | Not possible: Soroban contracts have no network access to fetch and check off-chain content. |
 | Evidence stored in persistent state | Unbounded, arbitrarily-sized human text is a poor fit for storage that carries a TTL and a per-byte cost; events already solve the indexability need without that cost. |
 
-## Questions for review
+## Resolved questions
 
-1. Should `claim_uri` be validated for basic well-formedness (e.g., a
-   length cap) even though its content is never verified, purely to bound
-   event payload size? Leaning yes, a generous but finite cap (a exact
-   number is an implementation-issue detail, not a decision to lock in
-   here).
-2. Should the evidence hint on `dispute`/`register` be a hash (pointing at
-   off-chain evidence, mirroring the claim) or a plain URI (cheaper, but
-   without the same tamper-evidence guarantee)? Leaning toward a plain URI:
-   evidence is inherently supplementary and informal, not something a voter
-   is trusting the same way they trust the claim itself, so the stronger
-   hash guarantee is likely not worth the added complexity here.
+1. `claim_uri` is capped to a bounded length, so event payload size can't
+   grow unbounded even though the URI's content is never verified. The
+   exact byte limit is an implementation-issue detail, not locked in here.
+2. The evidence hint on `dispute`/`register` is a plain URI, not a hash.
+   Evidence is inherently supplementary and informal, not something a voter
+   is trusting the way they trust the claim itself, so the stronger
+   tamper-evidence guarantee a hash would give isn't worth the added
+   complexity here.
 
-Until these are resolved and this proposal is accepted, no implementation
-issue should treat the "What changes in already-merged code" section above
-as final.
+The implementation issue for this design can proceed against the "What
+changes in already-merged code" section above.
