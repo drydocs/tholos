@@ -2216,6 +2216,23 @@ fn test_withdraw_with_no_credit_fails() {
 }
 
 #[test]
+fn test_withdraw_on_uncontested_finalize_fails_with_no_credit() {
+    // An uncontested assertion resolved via finalize() never had a
+    // Resolution created for it at all (only dispute() does), so this must
+    // surface NoCreditToWithdraw, not a misleading AssertionNotFound from
+    // trying to fetch a Resolution that was never created.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.advance_past_window();
+    f.client.finalize(&asserter, &id);
+
+    let result = f.client.try_withdraw(&asserter, &id, &asserter);
+    assert_eq!(result, Err(Ok(Error::NoCreditToWithdraw)));
+}
+
+#[test]
 fn test_withdraw_twice_fails() {
     let f = Fixture::new();
     let asserter = f.funded_address();

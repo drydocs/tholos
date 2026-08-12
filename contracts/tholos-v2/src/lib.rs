@@ -1780,24 +1780,30 @@ impl TholosV2 {
             .get(&DataKey::AssertionV2(id))
             .ok_or(Error::AssertionNotFound)?;
 
+        // Checked before fetching Resolution: an uncontested assertion
+        // resolved via finalize() never had a Resolution created for it at
+        // all (only dispute() does), and such an owner also never has any
+        // credit (settle() never ran either), so fetching Resolution first
+        // would surface a misleading AssertionNotFound instead of the
+        // documented NoCreditToWithdraw for that case. Mirrors settle()'s
+        // equivalent ordering.
+        let credit_key = DataKey::Credit(id, owner.clone());
+        let credit: i128 = Self::get_credit(env.clone(), id, owner.clone());
+        if credit <= 0 {
+            return Err(Error::NoCreditToWithdraw);
+        }
+
         let mut resolution: Resolution = env
             .storage()
             .persistent()
             .get(&DataKey::Resolution(id))
             .ok_or(Error::AssertionNotFound)?;
 
-        let credit_key = DataKey::Credit(id, owner.clone());
-        let credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
-        if credit <= 0 {
-            return Err(Error::NoCreditToWithdraw);
-        }
-
+        // Not extend_ttl'd: a zeroed credit entry holds nothing worth
+        // paying rent to keep alive, and get_credit already treats a
+        // missing entry the same as a zero one. Mirrors add_credit's
+        // early return on a zero amount, for the same reason.
         env.storage().persistent().set(&credit_key, &0i128);
-        env.storage().persistent().extend_ttl(
-            &credit_key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
 
         resolution.outstanding_liability = resolution
             .outstanding_liability
