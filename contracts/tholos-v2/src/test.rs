@@ -2318,6 +2318,9 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
 
     let pending_id = f.asserted(&asserter);
 
+    let finalize_id = f.asserted(&asserter);
+    f.advance_past_window();
+
     let registration_id = f.asserted(&asserter);
     f.client.dispute(&disputer, &registration_id);
 
@@ -2337,6 +2340,10 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     );
     assert_eq!(
         f.client.try_dispute(&disputer, &pending_id),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_finalize(&asserter, &finalize_id),
         Err(Ok(Error::ReentrancyGuardActive))
     );
     assert_eq!(
