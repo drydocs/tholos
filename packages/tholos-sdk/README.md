@@ -19,14 +19,19 @@ out end to end, rather than before.
 
 The bindings are generated from `contracts/tholos`'s compiled wasm, not from
 a live deployment, so regenerating never needs network access or a contract
-id:
+id. Generate into a scratch directory rather than pointing `--output-dir`
+at this package: the CLI overwrites the whole target directory, including
+`package.json` and this README, not just the generated client, so
+generating straight into `packages/tholos-sdk` would clobber both. Copy
+back only `src/`, the same thing CI's drift check does:
 
 ```sh
 cargo build -p tholos --target wasm32v1-none --release
 stellar contract bindings typescript \
   --wasm target/wasm32v1-none/release/tholos.wasm \
-  --output-dir packages/tholos-sdk \
+  --output-dir /tmp/tholos-sdk-regenerated \
   --overwrite
+cp -r /tmp/tholos-sdk-regenerated/src/. packages/tholos-sdk/src/
 ```
 
 Regenerate whenever `contracts/tholos`'s public interface changes, and
