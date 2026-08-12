@@ -11,10 +11,13 @@
 //! (`dispute` and the third-party registration phase), #67 (the reveal
 //! phase and commitment verification), #68 (weighted-majority outcome
 //! resolution: the strict-majority lock and optimistic-timeout default),
-//! and #69 (settlement: converting a locked outcome into per-position
-//! entitlements, forfeiture, and pro-rata reward distribution). Credit
-//! withdrawal and the freeze/cancel mechanism are separate issues (#70-#71)
-//! and land as this crate grows.
+//! #69 (settlement: converting a locked outcome into per-position
+//! entitlements, forfeiture, and pro-rata reward distribution), #70
+//! (credit withdrawal and the reentrancy guard on every token-moving
+//! entrypoint), and #71 (`set_paused_v2` and `cancel_round`, the emergency
+//! mechanism for an already-active round, distinct from v1's narrower
+//! new-assertions-only pause). Remaining issues (#72 onward) land as this
+//! crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
@@ -88,9 +91,12 @@ pub enum TerminalCause {
     StrictMajorityFor,
     StrictMajorityAgainst,
     OptimisticTimeout,
-    /// Set only by the freeze/cancel mechanism (#71), before any position
-    /// reveals. Reserved here so `AssertionV2.terminal_cause`'s type doesn't
-    /// need to change when #71 lands.
+    /// Set only by `cancel_round`, while `terminal_cause` is still
+    /// `NotYetDecided`: `Pending`, or `Registration`/`Reveal` with no
+    /// strict majority reached yet. Every funded position (including any
+    /// that already revealed) recovers its exact principal through the
+    /// same `settle`/`withdraw` path a normal outcome uses, no forfeiture
+    /// and no reward: see `settlement_pool`.
     AdminCancelled,
 }
 
@@ -198,6 +204,17 @@ pub struct Withdrawn {
     /// transfers to `owner` directly can't strand funds there permanently.
     pub destination: Address,
     pub amount: i128,
+}
+
+#[contractevent]
+pub struct PauseUpdated {
+    pub paused: bool,
+}
+
+#[contractevent]
+pub struct RoundCancelled {
+    #[topic]
+    pub id: u64,
 }
 
 /// What kind of position this is, and (for a `Fixed` one) which side it's
@@ -435,6 +452,14 @@ pub enum DataKey {
     /// external token transfer this contract initiates. See
     /// `enter_reentrancy_guard`.
     ReentrancyGuard,
+    /// Whether new assertions are currently blocked. See `set_paused_v2`.
+    /// Unlike v1's broader pause, this only ever gates `assert_outcome`:
+    /// an already-active round's registration, reveal, settlement, and
+    /// withdrawal continue normally even while paused, since blocking them
+    /// would strand real capital already locked into that round rather
+    /// than protect it. `cancel_round` is the mechanism for protecting an
+    /// already-active round.
+    Paused,
 }
 
 #[contracterror]
@@ -521,6 +546,16 @@ pub enum Error {
     /// in progress: the token's own `transfer` reentered this contract
     /// instead of completing normally. See `enter_reentrancy_guard`.
     ReentrancyGuardActive = 33,
+    /// `assert_outcome` called while `set_paused_v2` has paused new
+    /// assertions.
+    Paused = 34,
+    /// `cancel_round` called while not paused.
+    NotPaused = 35,
+    /// `cancel_round` called on an assertion whose `terminal_cause` is
+    /// already set, whether by a real outcome or an earlier cancellation.
+    /// Rejected outright rather than treated as a no-op, so this call can
+    /// never be read as altering an already-decided result.
+    RoundAlreadyDecided = 36,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -669,6 +704,7 @@ impl TholosV2 {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
+        env.storage().instance().set(&DataKey::Paused, &false);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -684,6 +720,27 @@ impl TholosV2 {
             .instance()
             .get(&DataKey::Policy)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
+    /// admin set at `initialize`. Does not affect any already-active
+    /// round: registration, reveal, `resolve_outcome`, `settle`, and
+    /// `withdraw` all continue normally while paused, since blocking them
+    /// would strand capital already locked into a round rather than
+    /// protect it. `cancel_round` is the mechanism for protecting an
+    /// already-active round instead. Emits `PauseUpdated`.
+    pub fn set_paused_v2(env: Env, paused: bool) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        PauseUpdated { paused }.publish(&env);
+
+        Ok(())
     }
 
     /// Read-only lookup of one assertion. Fails with `AssertionNotFound` if
@@ -797,6 +854,21 @@ impl TholosV2 {
         Ok(())
     }
 
+    /// Fails with `Paused` if `set_paused_v2` has paused new assertions.
+    /// Only `assert_outcome` calls this: see `DataKey::Paused`'s doc
+    /// comment for why this contract's pause is narrower than v1's.
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .ok_or(Error::NotInitialized)?;
+        if paused {
+            return Err(Error::Paused);
+        }
+        Ok(())
+    }
+
     /// Builds and stores a `Pending` `AssertionV2` with a freshly pinned
     /// policy snapshot. Doesn't move any tokens itself; `assert_outcome`
     /// calls this first (matching v1's state-before-external-call ordering)
@@ -838,10 +910,12 @@ impl TholosV2 {
 
     /// Posts a bonded claim, the optimistic first stage of a v2 assertion,
     /// before any dispute exists. Transfers the deployment's `base_bond` from
-    /// `asserter` to the contract. Requires `asserter`'s signature. Returns
+    /// `asserter` to the contract. Requires `asserter`'s signature. Fails
+    /// with `Paused` if `set_paused_v2` has paused new assertions. Returns
     /// the new assertion id. Emits `Asserted`.
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         asserter.require_auth();
+        Self::require_not_paused(&env)?;
 
         let policy: PolicySnapshotV2 = env
             .storage()
@@ -1523,18 +1597,27 @@ impl TholosV2 {
     /// - `StrictMajorityAgainst`: the mirror image, disagreeing side wins.
     /// - `OptimisticTimeout`: every revealed position on either side
     ///   recovers principal; only non-revealed weight is forfeited.
+    /// - `AdminCancelled`: every funded position, revealed or not, is a
+    ///   recipient (`recipient_weight = eligible_total`), so nothing is
+    ///   ever forfeited (`forfeited_pool` is always 0). Only reachable via
+    ///   `cancel_round` cancelling a `Registration`/`Reveal`-phase round;
+    ///   a cancelled `Pending` assertion never had a `Resolution` created
+    ///   at all, so it's refunded directly in `cancel_round` instead and
+    ///   never reaches `settle`.
     ///
-    /// Panics (via `unreachable!`) for any other `TerminalCause`: `settle`
-    /// only calls this once `phase == Resolved`, and `close_reveal_if_ready`
-    /// is the only place that sets `phase = Resolved`, always pairing it
-    /// with one of the three causes handled here.
+    /// Panics (via `unreachable!`) for `NotYetDecided` or
+    /// `UncontestedFinalize`: `settle` only calls this once
+    /// `phase == Resolved`, and both `close_reveal_if_ready` and
+    /// `cancel_round` are the only places that set `phase = Resolved`,
+    /// always pairing it with one of the four causes handled here.
     fn settlement_pool(terminal_cause: TerminalCause, resolution: &Resolution) -> (i128, i128) {
         let recipient_weight = match terminal_cause {
             TerminalCause::StrictMajorityFor => resolution.agree_weight,
             TerminalCause::StrictMajorityAgainst => resolution.disagree_weight,
             TerminalCause::OptimisticTimeout => resolution.revealed_weight(),
+            TerminalCause::AdminCancelled => resolution.eligible_total,
             _ => unreachable!(
-                "settle only runs once phase == Resolved, which always pairs with one of these three terminal causes"
+                "settle only runs once phase == Resolved, which always pairs with one of these four terminal causes"
             ),
         };
         let forfeited_pool = resolution.eligible_total - recipient_weight;
@@ -1658,6 +1741,9 @@ impl TholosV2 {
             TerminalCause::StrictMajorityFor => position.agrees_with_outcome == Some(true),
             TerminalCause::StrictMajorityAgainst => position.agrees_with_outcome == Some(false),
             TerminalCause::OptimisticTimeout => position.agrees_with_outcome.is_some(),
+            // Every funded position recovers its principal on a
+            // cancellation, revealed or not: see settlement_pool.
+            TerminalCause::AdminCancelled => true,
             _ => unreachable!("settlement_pool above already panics for any other terminal_cause"),
         };
 
@@ -1698,8 +1784,13 @@ impl TholosV2 {
                             .clone()
                             .expect("disputer set once phase reaches Registration"),
                         TerminalCause::OptimisticTimeout => assertion.asserter.clone(),
+                        // Unreachable in practice: AdminCancelled's
+                        // forfeited_pool is always 0 (see settlement_pool),
+                        // so the forfeited_pool > 0 guard above already
+                        // skips this whole block for it; any other cause
+                        // would already have panicked in settlement_pool.
                         _ => unreachable!(
-                            "settlement_pool above already panics for any other terminal_cause"
+                            "dust only exists when forfeited_pool > 0, which excludes AdminCancelled, and settlement_pool above already panics for any other terminal_cause"
                         ),
                     };
                     Self::add_credit(&env, id, &dust_recipient, dust)?;
@@ -1826,6 +1917,86 @@ impl TholosV2 {
         .publish(&env);
 
         Ok(credit)
+    }
+
+    /// Cancels an active round before any terminal outcome has locked,
+    /// refunding every already-funded position its exact principal, no
+    /// forfeiture, no reward, as if the round never happened. Only callable
+    /// by the admin set at `initialize`, and only while paused
+    /// (`NotPaused` otherwise): cancellation is an emergency measure, not
+    /// a routine one, and requiring a pause first means it can never
+    /// happen as a surprise to a caller in the middle of an ordinary
+    /// transaction.
+    ///
+    /// Fails outright, rather than treating it as a no-op, with
+    /// `RoundAlreadyDecided` if `terminal_cause` is already set, whether by
+    /// a real outcome (a strict majority, or the optimistic timeout
+    /// default) or an earlier cancellation: this makes it structurally
+    /// impossible for this call to alter an already-decided result, the
+    /// same "once locked, never changes" guarantee every other terminal
+    /// cause has.
+    ///
+    /// A still-`Pending` assertion has no `Resolution` or `Position`
+    /// records at all yet (only `dispute` creates those), so its single
+    /// asserter bond is refunded directly here. A `Registration`- or
+    /// `Reveal`-phase assertion's positions, including any that already
+    /// revealed, instead recover their principal through the normal
+    /// `settle`/`withdraw` path afterward: `settlement_pool` treats
+    /// `AdminCancelled` as every funded position being a recipient of a
+    /// zero forfeited pool, so `settle` naturally pays out `amount + 0`
+    /// per position with no special-casing needed there, and the
+    /// reentrancy and accounting guarantees stay identical to a normal
+    /// settlement.
+    ///
+    /// Emits `RoundCancelled`, a distinct event from `Resolved` (which a
+    /// real outcome emits instead), so indexers can always tell the two
+    /// apart.
+    pub fn cancel_round(env: Env, id: u64) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .ok_or(Error::NotInitialized)?;
+        if !paused {
+            return Err(Error::NotPaused);
+        }
+
+        let mut assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.terminal_cause != TerminalCause::NotYetDecided {
+            return Err(Error::RoundAlreadyDecided);
+        }
+
+        let still_pending = assertion.phase == PhaseV2::Pending;
+
+        assertion.phase = PhaseV2::Resolved;
+        assertion.terminal_cause = TerminalCause::AdminCancelled;
+        Self::set_assertion(&env, id, &assertion);
+
+        if still_pending {
+            Self::enter_reentrancy_guard(&env)?;
+            token::Client::new(&env, &assertion.policy.token).transfer(
+                &env.current_contract_address(),
+                &assertion.asserter,
+                &assertion.policy.base_bond,
+            );
+            Self::exit_reentrancy_guard(&env);
+        }
+
+        RoundCancelled { id }.publish(&env);
+
+        Ok(())
     }
 }
 

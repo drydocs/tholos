@@ -114,6 +114,29 @@ All notable changes to this project are documented here. Format follows
   transfer can't act on state that looks complete before the tokens backing
   it have actually moved. Closes #70.
 
+- `tholos-v2`: the symmetric freeze/cancel emergency mechanism, via two new
+  admin-only entrypoints. `set_paused_v2(paused)` blocks new `assert_outcome`
+  calls; unlike v1's broader pause, it never affects an already-active
+  round, whose registration, reveal, resolution, settlement, and withdrawal
+  all continue normally while paused, since blocking them would strand
+  capital already locked into that round rather than protect it.
+  `cancel_round(id)`, callable only while paused, cancels a round before any
+  terminal outcome has locked (`Pending`, or `Registration`/`Reveal` with no
+  strict majority reached yet) and refunds every already-funded position
+  its exact principal, no forfeiture, no reward, as if the round never
+  happened; it fails outright, not as a no-op, with `RoundAlreadyDecided`
+  once `terminal_cause` is set by any means, including an earlier
+  cancellation, making it structurally impossible to alter an
+  already-decided result. A `Pending` cancellation refunds the asserter's
+  bond directly (no `Resolution`/`Position` exists yet at that phase); a
+  `Registration`/`Reveal` cancellation instead sets a new
+  `TerminalCause::AdminCancelled` and lets every position recover its
+  principal through the normal `settle`/`withdraw` path, since
+  `settlement_pool` treats every funded position as a recipient of a zero
+  forfeited pool for that cause. Emits a distinct `RoundCancelled` event,
+  separate from `Resolved`, so indexers can always tell a cancellation
+  apart from a real outcome. Closes #71.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

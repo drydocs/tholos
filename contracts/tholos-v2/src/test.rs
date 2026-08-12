@@ -2389,3 +2389,274 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     let cause = f.client.resolve_outcome(&id);
     assert_eq!(cause, TerminalCause::OptimisticTimeout);
 }
+
+#[test]
+fn test_set_paused_v2_blocks_new_assertions() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    f.client.set_paused_v2(&true);
+
+    let result = f.client.try_assert_outcome(&asserter, &true);
+    assert_eq!(result, Err(Ok(Error::Paused)));
+
+    f.client.set_paused_v2(&false);
+    f.client.assert_outcome(&asserter, &true);
+}
+
+#[test]
+fn test_set_paused_v2_does_not_block_existing_round() {
+    // The narrower v2 pause only ever gates assert_outcome: an
+    // already-active round's registration, reveal, resolution, settlement,
+    // and withdrawal all continue normally while paused.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+
+    f.client.set_paused_v2(&true);
+
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+
+    f.client.settle(&id, &asserter);
+    f.client.withdraw(&asserter, &id, &asserter);
+}
+
+#[test]
+fn test_cancel_round_before_pause_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+
+    let result = f.client.try_cancel_round(&id);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+}
+
+#[test]
+fn test_cancel_round_nonexistent_assertion_fails() {
+    let f = Fixture::new();
+    f.client.set_paused_v2(&true);
+
+    let result = f.client.try_cancel_round(&0);
+    assert_eq!(result, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_cancel_round_refunds_pending_asserter_directly() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    let balance_before = f.token.balance(&asserter);
+
+    f.client.set_paused_v2(&true);
+    f.client.cancel_round(&id);
+
+    assert_eq!(f.token.balance(&asserter), balance_before + DEFAULT_BOND);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::AdminCancelled);
+    assert_eq!(assertion.final_outcome, None);
+}
+
+#[test]
+fn test_cancel_round_during_registration_refunds_everyone_full_principal() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &250, &c);
+
+    f.client.set_paused_v2(&true);
+    f.client.cancel_round(&id);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::AdminCancelled);
+    assert_eq!(assertion.final_outcome, None);
+
+    // Every position, including the never-revealed voter, recovers exactly
+    // its own principal: no forfeiture, no reward.
+    for (address, expected) in [
+        (&asserter, DEFAULT_BOND),
+        (&disputer, DEFAULT_BOND),
+        (&voter, 250),
+    ] {
+        let payout = f.client.settle(&id, address);
+        assert_eq!(payout, expected);
+    }
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.outstanding_liability, DEFAULT_BOND * 2 + 250);
+
+    for address in [&asserter, &disputer, &voter] {
+        let balance_before = f.token.balance(address);
+        let withdrawn = f.client.withdraw(address, &id, address);
+        assert_eq!(f.token.balance(address), balance_before + withdrawn);
+    }
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.outstanding_liability, 0);
+    assert_eq!(resolution.withdrawn_total, DEFAULT_BOND * 2 + 250);
+    assert_eq!(f.token.balance(&f.client.address), 0);
+}
+
+#[test]
+fn test_cancel_round_during_reveal_still_refunds_full_principal_no_reward() {
+    // A position that already revealed, and one that never gets the
+    // chance to, both just recover their own principal on cancellation:
+    // revealing early confers no advantage over a cancelled round.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let revealed_voter = f.funded_address();
+    let unrevealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &revealed_voter,
+        true,
+        &s,
+    );
+    f.client.register(&revealed_voter, &id, &DEFAULT_BOND, &c);
+    f.client
+        .register(&unrevealed_voter, &id, &300, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&revealed_voter, &id, &true, &s);
+
+    let mid_assertion = f.client.get_assertion(&id);
+    assert_eq!(mid_assertion.phase, PhaseV2::Reveal);
+    assert_eq!(mid_assertion.terminal_cause, TerminalCause::NotYetDecided);
+
+    f.client.set_paused_v2(&true);
+    f.client.cancel_round(&id);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::AdminCancelled);
+
+    assert_eq!(f.client.settle(&id, &asserter), DEFAULT_BOND);
+    assert_eq!(f.client.settle(&id, &disputer), DEFAULT_BOND);
+    assert_eq!(f.client.settle(&id, &revealed_voter), DEFAULT_BOND);
+    assert_eq!(f.client.settle(&id, &unrevealed_voter), 300);
+}
+
+#[test]
+fn test_cancel_round_after_strict_majority_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &300, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.terminal_cause, TerminalCause::StrictMajorityFor);
+
+    f.client.set_paused_v2(&true);
+    let result = f.client.try_cancel_round(&id);
+    assert_eq!(result, Err(Ok(Error::RoundAlreadyDecided)));
+}
+
+#[test]
+fn test_cancel_round_after_optimistic_timeout_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+
+    f.client.set_paused_v2(&true);
+    let result = f.client.try_cancel_round(&id);
+    assert_eq!(result, Err(Ok(Error::RoundAlreadyDecided)));
+}
+
+#[test]
+fn test_cancel_round_twice_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+
+    f.client.set_paused_v2(&true);
+    f.client.cancel_round(&id);
+
+    let result = f.client.try_cancel_round(&id);
+    assert_eq!(result, Err(Ok(Error::RoundAlreadyDecided)));
+}
+
+#[test]
+fn test_cancel_round_on_uncontested_finalize_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.advance_past_window();
+    f.client.finalize(&asserter, &id);
+
+    f.client.set_paused_v2(&true);
+    let result = f.client.try_cancel_round(&id);
+    assert_eq!(result, Err(Ok(Error::RoundAlreadyDecided)));
+}
