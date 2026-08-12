@@ -40,6 +40,16 @@ All notable changes to this project are documented here. Format follows
   absolute duration that could otherwise fall before the ordinary soft
   deadline. Closes #66.
 
+- `tholos-v2`: the reveal phase and commitment verification. `reveal`
+  verifies a third-party position's `(choice, salt)` against its stored
+  commitment (via a `VoteCommitmentPreimage` struct hashed the same
+  canonical-encoding way `policy_hash` already is) and counts its weight
+  into `Resolution.agree_weight`/`disagree_weight`. The Registration ->
+  Reveal transition is lazy, triggered by the first `reveal` call after
+  `registration_deadline`, which also auto-counts and auto-reveals the
+  asserter's and disputer's fixed positions, since their sides are already
+  public and they never call `reveal` themselves. Closes #67.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

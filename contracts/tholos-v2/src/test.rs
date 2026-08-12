@@ -147,14 +147,47 @@ impl Fixture {
     fn asserted(&self, asserter: &Address) -> u64 {
         self.client.assert_outcome(asserter, &true)
     }
+
+    fn advance_past_registration_deadline(&self, id: u64) {
+        let deadline = self.client.get_resolution(&id).registration_deadline;
+        self.env.ledger().with_mut(|l| l.timestamp = deadline + 1);
+    }
 }
 
-/// An opaque, deterministic 32-byte commitment for tests. Reveal (#67) will
-/// verify these are actually `H(canonical_encode(...))`; until then, any
-/// distinct 32-byte value is enough to exercise registration's aggregation
-/// and mismatch-detection rules.
+/// An opaque, deterministic 32-byte commitment for tests that only exercise
+/// registration (aggregation, mismatch-detection), never `reveal`, which is
+/// the only place a commitment's actual hash content is checked.
 fn commitment(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
+}
+
+fn salt(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
+}
+
+/// Mirrors `reveal`'s own preimage construction exactly, so tests can build
+/// a commitment that will actually verify successfully.
+fn compute_commitment(
+    env: &Env,
+    contract_id: &Address,
+    policy_hash: &BytesN<32>,
+    assertion_id: u64,
+    voter: &Address,
+    choice: bool,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    let preimage = VoteCommitmentPreimage {
+        domain: Symbol::new(env, "THOLOS_V2_VOTE"),
+        network_id: env.ledger().network_id(),
+        contract_address: contract_id.clone(),
+        policy_hash: policy_hash.clone(),
+        assertion_id,
+        round: ROUND,
+        voter: voter.clone(),
+        choice,
+        salt: salt.clone(),
+    };
+    env.crypto().sha256(&preimage.to_xdr(env)).into()
 }
 
 #[test]
@@ -1176,4 +1209,295 @@ fn test_register_extension_capped_at_hard_deadline() {
 
     let resolution = f.client.get_resolution(&id);
     assert!(resolution.registration_deadline <= hard_deadline);
+}
+
+#[test]
+fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Reveal);
+
+    let resolution = f.client.get_resolution(&id);
+    // Asserter's fixed position (agrees) + this voter's position (agrees).
+    assert_eq!(resolution.agree_weight, DEFAULT_BOND * 2);
+    // Disputer's fixed position (disagrees).
+    assert_eq!(resolution.disagree_weight, DEFAULT_BOND);
+    assert_eq!(resolution.revealed_weight(), DEFAULT_BOND * 3);
+
+    let asserter_position = f.client.get_position(&id, &asserter);
+    assert!(asserter_position.revealed);
+    let disputer_position = f.client.get_position(&id, &disputer);
+    assert!(disputer_position.revealed);
+    let voter_position = f.client.get_position(&id, &voter);
+    assert!(voter_position.revealed);
+}
+
+#[test]
+fn test_reveal_disagreeing_choice_counts_disagree_weight() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        false,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &false, &s);
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.agree_weight, DEFAULT_BOND);
+    assert_eq!(resolution.disagree_weight, DEFAULT_BOND * 2);
+}
+
+#[test]
+fn test_reveal_wrong_salt_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    let wrong_salt = salt(&f.env, 2);
+    let result = f.client.try_reveal(&voter, &id, &true, &wrong_salt);
+    assert_eq!(result, Err(Ok(Error::CommitmentVerificationFailed)));
+}
+
+#[test]
+fn test_reveal_wrong_choice_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    let result = f.client.try_reveal(&voter, &id, &false, &s);
+    assert_eq!(result, Err(Ok(Error::CommitmentVerificationFailed)));
+}
+
+#[test]
+fn test_reveal_twice_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let result = f.client.try_reveal(&voter, &id, &true, &s);
+    assert_eq!(result, Err(Ok(Error::AlreadyRevealed)));
+}
+
+#[test]
+fn test_fixed_voter_cannot_reveal() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    f.advance_past_registration_deadline(id);
+    // Opens the reveal phase (which auto-reveals the fixed positions), then
+    // the asserter tries to reveal something they never committed to.
+    let result = f.client.try_reveal(&asserter, &id, &true, &salt(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::AlreadyRevealed)));
+}
+
+#[test]
+fn test_reveal_before_registration_closes_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let s = salt(&f.env, 1);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    let result = f.client.try_reveal(&voter, &id, &true, &s);
+    assert_eq!(result, Err(Ok(Error::RegistrationNotClosed)));
+}
+
+#[test]
+fn test_reveal_on_pending_assertion_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+
+    let result = f.client.try_reveal(&asserter, &id, &true, &salt(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::NotReveal)));
+}
+
+#[test]
+fn test_reveal_on_resolved_assertion_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let caller = f.generate();
+
+    let id = f.asserted(&asserter);
+    f.advance_past_window();
+    f.client.finalize(&caller, &id);
+
+    let result = f.client.try_reveal(&asserter, &id, &true, &salt(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::NotReveal)));
+}
+
+#[test]
+fn test_reveal_nonexistent_position_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let stranger = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+
+    let result = f.client.try_reveal(&stranger, &id, &true, &salt(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_reveal_after_reveal_deadline_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let first_voter = f.funded_address();
+    let second_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let first_salt = salt(&f.env, 1);
+    let first_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &first_voter,
+        true,
+        &first_salt,
+    );
+    f.client
+        .register(&first_voter, &id, &DEFAULT_BOND, &first_commitment);
+
+    let second_salt = salt(&f.env, 2);
+    let second_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &second_voter,
+        true,
+        &second_salt,
+    );
+    f.client
+        .register(&second_voter, &id, &DEFAULT_BOND, &second_commitment);
+
+    // The first voter's reveal opens the phase.
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&first_voter, &id, &true, &first_salt);
+
+    // Time passes the reveal window before the second voter gets to reveal.
+    let reveal_deadline = f.client.get_resolution(&id).reveal_deadline;
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp = reveal_deadline + 1);
+
+    let result = f.client.try_reveal(&second_voter, &id, &true, &second_salt);
+    assert_eq!(result, Err(Ok(Error::RevealClosed)));
 }

@@ -2429,6 +2429,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -2482,6 +2490,14 @@
                           "bool": false
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -2537,6 +2553,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -2590,6 +2614,14 @@
                           "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -2645,6 +2677,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -2698,6 +2738,14 @@
                           "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -2753,6 +2801,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -2806,6 +2862,14 @@
                           "bytes": "0505050505050505050505050505050505050505050505050505050505050505"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -2861,6 +2925,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -2914,6 +2986,14 @@
                           "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -2969,6 +3049,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3022,6 +3110,14 @@
                           "bytes": "0909090909090909090909090909090909090909090909090909090909090909"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -3077,6 +3173,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3130,6 +3234,14 @@
                           "bytes": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -3185,6 +3297,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3238,6 +3358,14 @@
                           "bytes": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -3293,6 +3421,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3346,6 +3482,14 @@
                           "bytes": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -3401,6 +3545,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3454,6 +3606,14 @@
                           "bytes": "1111111111111111111111111111111111111111111111111111111111111111"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -3509,6 +3669,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3563,6 +3731,14 @@
                         }
                       ]
                     }
+                  },
+                  {
+                    "key": {
+                      "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
                   }
                 ]
               }
@@ -3594,6 +3770,22 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "agree_weight"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "disagree_weight"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "eligible_total"
                     },
                     "val": {
@@ -3619,6 +3811,22 @@
                   {
                     "key": {
                       "symbol": "registration_opened_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "reveal_deadline"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "reveal_opened_at"
                     },
                     "val": {
                       "u64": "0"

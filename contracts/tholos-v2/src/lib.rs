@@ -7,14 +7,15 @@
 //!
 //! This crate currently implements #64 (the immutable `PolicySnapshotV2`
 //! pinned at assertion creation, and the `AssertionV2` record it lives on),
-//! #65 (bonded assertion posting, and the uncontested-finalize path), and
-//! #66 (`dispute` and the third-party registration phase). Reveal, outcome
-//! resolution, settlement, and the freeze/cancel mechanism are separate
-//! issues (#67-#71) and land as this crate grows.
+//! #65 (bonded assertion posting, and the uncontested-finalize path), #66
+//! (`dispute` and the third-party registration phase), and #67 (the reveal
+//! phase and commitment verification). Outcome resolution, settlement, and
+//! the freeze/cancel mechanism are separate issues (#68-#71) and land as
+//! this crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
-    BytesN, Env,
+    BytesN, Env, Symbol,
 };
 
 /// Which weight rule this assertion's vote is decided under. A version marker
@@ -128,6 +129,21 @@ pub struct PositionFunded {
     pub eligible_total: i128,
 }
 
+#[contractevent]
+pub struct RevealOpened {
+    #[topic]
+    pub id: u64,
+    pub reveal_deadline: u64,
+}
+
+#[contractevent]
+pub struct Revealed {
+    #[topic]
+    pub id: u64,
+    pub voter: Address,
+    pub choice: bool,
+}
+
 /// What kind of position this is, and (for a `Fixed` one) which side it's
 /// on. The asserter's and disputer's sides are public by construction, no
 /// commitment needed; a third party's side stays hidden in its commitment
@@ -155,6 +171,15 @@ pub enum PositionKind {
 pub struct Position {
     pub amount: i128,
     pub kind: PositionKind,
+    /// Whether this position's weight has been counted into
+    /// `Resolution.agree_weight`/`disagree_weight`. For a `Fixed` position
+    /// this is set `true` automatically when reveal opens (their side is
+    /// already public); for an `External` position it's set by a successful
+    /// `reveal` call. Either way, `reveal` rejects a position that's already
+    /// `true` with `AlreadyRevealed`, so a `Fixed` voter calling `reveal`
+    /// themselves (they have no commitment to verify) is rejected the same
+    /// way a double-reveal is, no separate error variant needed.
+    pub revealed: bool,
 }
 
 /// Registration-phase bookkeeping for one disputed assertion. Separate from
@@ -177,6 +202,50 @@ pub struct Resolution {
     /// incrementally as deposits arrive; never discovered by scanning
     /// storage.
     pub eligible_total: i128,
+    /// 0 until the lazy Registration -> Reveal transition happens (see
+    /// `open_reveal_phase`), then the ledger timestamp of that transition.
+    pub reveal_opened_at: u64,
+    /// 0 until reveal opens, then `reveal_opened_at + reveal_duration_secs`.
+    pub reveal_deadline: u64,
+    /// Weight revealed agreeing with the asserted outcome, including the
+    /// asserter's fixed position (counted automatically when reveal opens).
+    pub agree_weight: i128,
+    /// Weight revealed against the asserted outcome, including the
+    /// disputer's fixed position (counted automatically when reveal opens).
+    pub disagree_weight: i128,
+}
+
+impl Resolution {
+    /// `agree_weight + disagree_weight`. Not stored separately: it's always
+    /// derivable from the two tallies, and a redundant stored copy would
+    /// just be one more place for the two to drift out of sync.
+    pub fn revealed_weight(&self) -> i128 {
+        self.agree_weight + self.disagree_weight
+    }
+}
+
+/// The exact preimage `reveal` hashes and compares against a position's
+/// stored commitment, matching V2_RESOLUTION.md's "Registration and voter
+/// eligibility" section:
+/// `H(canonical_encode("THOLOS_V2_VOTE", network_id, contract_address,
+/// policy_hash, assertion_id, round, voter, choice, salt_32))`.
+///
+/// A struct hashed via `ToXdr`, not a hand-rolled byte concatenation, the
+/// same canonical-encoding approach `PolicySnapshotV2.policy_hash` already
+/// uses (see `create_pending_assertion`), so the domain separation is
+/// unambiguous by construction rather than by convention.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VoteCommitmentPreimage {
+    domain: Symbol,
+    network_id: BytesN<32>,
+    contract_address: Address,
+    policy_hash: BytesN<32>,
+    assertion_id: u64,
+    round: u32,
+    voter: Address,
+    choice: bool,
+    salt: BytesN<32>,
 }
 
 /// Pinned in full onto every `AssertionV2` at creation time, never mutated
@@ -309,6 +378,21 @@ pub enum Error {
     CommitmentMismatch = 21,
     /// `register` called after `registration_deadline` has passed.
     RegistrationClosed = 22,
+    /// `reveal` called while still `Registration` and `registration_deadline`
+    /// hasn't passed yet.
+    RegistrationNotClosed = 23,
+    /// `reveal` called on an assertion that's `Pending` or `Resolved`; it
+    /// must be `Registration` (past its deadline) or already `Reveal`.
+    NotReveal = 24,
+    /// `reveal` called after `reveal_deadline` has passed.
+    RevealClosed = 25,
+    /// This position has already been counted into the tally, either by a
+    /// prior `reveal` call, or automatically at the point reveal opened (for
+    /// the asserter's/disputer's fixed positions).
+    AlreadyRevealed = 26,
+    /// The supplied `(choice, salt)` didn't hash to the commitment this
+    /// position was funded with.
+    CommitmentVerificationFailed = 27,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -340,6 +424,13 @@ const MAX_FINALIZE_REWARD_BPS: u32 = 1_000;
 /// that issue lands, the same way `max_total_weight` is already checked
 /// against it in `initialize` below.
 const MAX_BOND_AMOUNT: i128 = i128::MAX / (MAX_FINALIZE_REWARD_BPS as i128);
+
+/// This proposal has exactly one weighted round: no recursive appeals or
+/// repeated stake rounds, per V2_RESOLUTION.md's "Lifecycle and the single
+/// weighted round". `round` is part of the commitment preimage now so a
+/// future multi-round tier wouldn't have to change the commitment format,
+/// but it's always 0 until such a tier exists.
+const ROUND: u32 = 0;
 
 #[contract]
 pub struct TholosV2;
@@ -696,6 +787,7 @@ impl TholosV2 {
             &Position {
                 amount: policy.base_bond,
                 kind: PositionKind::Fixed(true),
+                revealed: false,
             },
         );
         Self::set_position(
@@ -705,6 +797,7 @@ impl TholosV2 {
             &Position {
                 amount: policy.base_bond,
                 kind: PositionKind::Fixed(false),
+                revealed: false,
             },
         );
 
@@ -713,6 +806,10 @@ impl TholosV2 {
             registration_deadline: now + policy.registration_duration_secs,
             registration_hard_deadline: now + policy.anti_snipe_hard_max_secs,
             eligible_total: policy.base_bond * 2,
+            reveal_opened_at: 0,
+            reveal_deadline: 0,
+            agree_weight: 0,
+            disagree_weight: 0,
         };
         Self::set_resolution(&env, id, &resolution);
 
@@ -845,6 +942,9 @@ impl TholosV2 {
             &Position {
                 amount: new_amount,
                 kind: PositionKind::External(commitment),
+                // Always false here: register() only succeeds during
+                // Registration, before reveal has even opened.
+                revealed: false,
             },
         );
         resolution.eligible_total = new_total;
@@ -863,6 +963,177 @@ impl TholosV2 {
             eligible_total: new_total,
         }
         .publish(&env);
+
+        Ok(())
+    }
+
+    /// Lazily transitions a `Registration`-phase assertion to `Reveal` once
+    /// `registration_deadline` has passed. Called from `reveal` itself
+    /// rather than as a separate entrypoint, matching V2_RESOLUTION.md's
+    /// "a caller may advance an expired phase permissionlessly" principle:
+    /// the first `reveal` call after the deadline both closes registration
+    /// and reveals in one transaction.
+    ///
+    /// Counts the asserter's and disputer's fixed positions into the tally
+    /// and marks them `revealed`, exactly once, here, since their sides are
+    /// already public and they never call `reveal` themselves. `register`
+    /// already refuses new deposits once phase leaves `Registration`, so `W`
+    /// (`resolution.eligible_total`) is implicitly frozen by this
+    /// transition without any separate "freeze" step.
+    fn open_reveal_phase(
+        env: &Env,
+        id: u64,
+        mut assertion: AssertionV2,
+        mut resolution: Resolution,
+    ) -> (AssertionV2, Resolution) {
+        let now = env.ledger().timestamp();
+
+        assertion.phase = PhaseV2::Reveal;
+        Self::set_assertion(env, id, &assertion);
+
+        resolution.reveal_opened_at = now;
+        resolution.reveal_deadline = now + assertion.policy.reveal_duration_secs;
+
+        let disputer = assertion
+            .disputer
+            .clone()
+            .expect("disputer set once phase reaches Registration");
+
+        for fixed_voter in [&assertion.asserter, &disputer] {
+            let mut position: Position = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Position(id, fixed_voter.clone()))
+                .expect("asserter and disputer positions created together in dispute()");
+            let PositionKind::Fixed(agrees_with_asserter) = position.kind else {
+                unreachable!("asserter/disputer positions are always Fixed, set in dispute()")
+            };
+            if agrees_with_asserter {
+                resolution.agree_weight += position.amount;
+            } else {
+                resolution.disagree_weight += position.amount;
+            }
+            position.revealed = true;
+            Self::set_position(env, id, fixed_voter, &position);
+        }
+
+        Self::set_resolution(env, id, &resolution);
+
+        RevealOpened {
+            id,
+            reveal_deadline: resolution.reveal_deadline,
+        }
+        .publish(env);
+
+        (assertion, resolution)
+    }
+
+    /// Discloses the side an `External` position committed to during
+    /// registration, and verifies it against the commitment stored then.
+    /// Requires `voter`'s signature.
+    ///
+    /// Lazily transitions the assertion from `Registration` to `Reveal` if
+    /// called after `registration_deadline` has passed (see
+    /// `open_reveal_phase`); fails with `RegistrationNotClosed` if called
+    /// too early instead. Fails with `NotReveal` if the assertion is
+    /// `Pending` or `Resolved`, `RevealClosed` if `reveal_deadline` has
+    /// passed, `AssertionNotFound` if `voter` has no position here,
+    /// `AlreadyRevealed` if this position's weight is already counted (a
+    /// double-reveal, or a `Fixed` voter who never had anything to reveal),
+    /// `CommitmentVerificationFailed` if `(choice, salt)` doesn't hash to
+    /// the stored commitment.
+    ///
+    /// On success, adds this position's full weight to
+    /// `Resolution.agree_weight` if `choice` matches the asserted outcome,
+    /// `disagree_weight` otherwise. A client must read the on-chain phase
+    /// before submitting a reveal: guessing that registration has closed is
+    /// unsafe, a rejected reveal transaction still publishes its
+    /// `(choice, salt)` preimage on-chain even though it failed, and a
+    /// qualifying late deposit may have extended the deadline. Emits
+    /// `Revealed`.
+    pub fn reveal(
+        env: Env,
+        voter: Address,
+        id: u64,
+        choice: bool,
+        salt: BytesN<32>,
+    ) -> Result<(), Error> {
+        voter.require_auth();
+
+        let mut assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        // Checked before fetching Resolution: an uncontested assertion that
+        // reached Resolved via finalize() never had a Resolution created at
+        // all (only dispute() creates one), so fetching it first would
+        // surface a misleading AssertionNotFound instead of NotReveal for
+        // that case.
+        if matches!(assertion.phase, PhaseV2::Pending | PhaseV2::Resolved) {
+            return Err(Error::NotReveal);
+        }
+
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase == PhaseV2::Registration {
+            if env.ledger().timestamp() <= resolution.registration_deadline {
+                return Err(Error::RegistrationNotClosed);
+            }
+            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution);
+        }
+
+        if env.ledger().timestamp() > resolution.reveal_deadline {
+            return Err(Error::RevealClosed);
+        }
+
+        let mut position: Position = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Position(id, voter.clone()))
+            .ok_or(Error::AssertionNotFound)?;
+        if position.revealed {
+            return Err(Error::AlreadyRevealed);
+        }
+        // Fixed positions are marked revealed in open_reveal_phase and never
+        // reach here unrevealed, so this is always External in practice;
+        // matched explicitly rather than assumed.
+        let PositionKind::External(commitment) = &position.kind else {
+            return Err(Error::AlreadyRevealed);
+        };
+
+        let preimage = VoteCommitmentPreimage {
+            domain: Symbol::new(&env, "THOLOS_V2_VOTE"),
+            network_id: env.ledger().network_id(),
+            contract_address: env.current_contract_address(),
+            policy_hash: assertion.policy_hash.clone(),
+            assertion_id: id,
+            round: ROUND,
+            voter: voter.clone(),
+            choice,
+            salt,
+        };
+        let computed_commitment: BytesN<32> = env.crypto().sha256(&preimage.to_xdr(&env)).into();
+        if computed_commitment != *commitment {
+            return Err(Error::CommitmentVerificationFailed);
+        }
+
+        position.revealed = true;
+        Self::set_position(&env, id, &voter, &position);
+
+        if choice == assertion.outcome {
+            resolution.agree_weight += position.amount;
+        } else {
+            resolution.disagree_weight += position.amount;
+        }
+        Self::set_resolution(&env, id, &resolution);
+
+        Revealed { id, voter, choice }.publish(&env);
 
         Ok(())
     }
