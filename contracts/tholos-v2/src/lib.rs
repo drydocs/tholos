@@ -315,9 +315,16 @@ pub struct AssertionV2 {
     /// policy an assertion is bound to without re-deriving the encoding
     /// themselves.
     pub policy_hash: BytesN<32>,
-    /// `TerminalCause::NotYetDecided` until `phase == Resolved`.
+    /// `TerminalCause::NotYetDecided` until the outcome is decided, which
+    /// can happen before `phase` reaches `Resolved`: a strict majority
+    /// locks this (see `lock_outcome_if_undecided`) as soon as it's
+    /// reached, while `phase` deliberately stays `Reveal` so other
+    /// positions can keep revealing to prove entitlement for settlement.
+    /// Once set, never changes. Read this field, not `phase`, to learn
+    /// whether the outcome itself is decided.
     pub terminal_cause: TerminalCause,
-    /// The authoritative resolved outcome. `None` until `phase == Resolved`.
+    /// The authoritative resolved outcome. `None` until `terminal_cause` is
+    /// decided (see above; not necessarily gated on `phase == Resolved`).
     /// Stored directly (not only in an event), unlike v1's `Assertion.outcome`
     /// which always stays the original claim even after a dispute overturns
     /// it, a sharp edge v1 needed a separate `final_outcome` field to fix.
