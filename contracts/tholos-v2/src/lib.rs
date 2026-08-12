@@ -8,10 +8,11 @@
 //! This crate currently implements #64 (the immutable `PolicySnapshotV2`
 //! pinned at assertion creation, and the `AssertionV2` record it lives on),
 //! #65 (bonded assertion posting, and the uncontested-finalize path), #66
-//! (`dispute` and the third-party registration phase), and #67 (the reveal
-//! phase and commitment verification). Outcome resolution, settlement, and
-//! the freeze/cancel mechanism are separate issues (#68-#71) and land as
-//! this crate grows.
+//! (`dispute` and the third-party registration phase), #67 (the reveal
+//! phase and commitment verification), and #68 (weighted-majority outcome
+//! resolution: the strict-majority lock and optimistic-timeout default).
+//! Settlement and the freeze/cancel mechanism are separate issues (#69-#71)
+//! and land as this crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
@@ -142,6 +143,14 @@ pub struct Revealed {
     pub id: u64,
     pub voter: Address,
     pub choice: bool,
+}
+
+#[contractevent]
+pub struct Resolved {
+    #[topic]
+    pub id: u64,
+    pub terminal_cause: TerminalCause,
+    pub final_outcome: bool,
 }
 
 /// What kind of position this is, and (for a `Fixed` one) which side it's
@@ -393,6 +402,10 @@ pub enum Error {
     /// The supplied `(choice, salt)` didn't hash to the commitment this
     /// position was funded with.
     CommitmentVerificationFailed = 27,
+    /// `resolve_outcome` called while still `Reveal`, before
+    /// `reveal_deadline` has passed, and before all eligible weight has
+    /// revealed.
+    RevealNotClosed = 28,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -968,11 +981,12 @@ impl TholosV2 {
     }
 
     /// Lazily transitions a `Registration`-phase assertion to `Reveal` once
-    /// `registration_deadline` has passed. Called from `reveal` itself
-    /// rather than as a separate entrypoint, matching V2_RESOLUTION.md's
-    /// "a caller may advance an expired phase permissionlessly" principle:
-    /// the first `reveal` call after the deadline both closes registration
-    /// and reveals in one transaction.
+    /// `registration_deadline` has passed. Called from `reveal` and
+    /// `resolve_outcome` rather than as a separate entrypoint, matching
+    /// V2_RESOLUTION.md's "a caller may advance an expired phase
+    /// permissionlessly" principle: the first call after the deadline both
+    /// closes registration and (depending on the caller) reveals or
+    /// resolves in one transaction.
     ///
     /// Counts the asserter's and disputer's fixed positions into the tally
     /// and marks them `revealed`, exactly once, here, since their sides are
@@ -980,6 +994,12 @@ impl TholosV2 {
     /// already refuses new deposits once phase leaves `Registration`, so `W`
     /// (`resolution.eligible_total`) is implicitly frozen by this
     /// transition without any separate "freeze" step.
+    ///
+    /// Immediately delegates to `close_reveal_if_ready`: if there were no
+    /// third-party registrations, the asserter's and disputer's fixed
+    /// positions alone already account for all of `W`, so the assertion can
+    /// resolve in this same call rather than waiting on a reveal deadline
+    /// nothing will ever arrive before.
     fn open_reveal_phase(
         env: &Env,
         id: u64,
@@ -989,7 +1009,6 @@ impl TholosV2 {
         let now = env.ledger().timestamp();
 
         assertion.phase = PhaseV2::Reveal;
-        Self::set_assertion(env, id, &assertion);
 
         resolution.reveal_opened_at = now;
         resolution.reveal_deadline = now + assertion.policy.reveal_duration_secs;
@@ -1025,7 +1044,80 @@ impl TholosV2 {
         }
         .publish(env);
 
+        assertion = Self::close_reveal_if_ready(env, id, assertion, &resolution, false);
+
         (assertion, resolution)
+    }
+
+    /// Locks `assertion.terminal_cause`/`final_outcome` the moment either
+    /// side's revealed weight exceeds half of the frozen eligible total `W`
+    /// (`resolution.eligible_total`), matching V2_RESOLUTION.md's "Reveal ->
+    /// OutcomeLocked: either side exceeds 50% of eligible weight". Compares
+    /// via subtraction (`side_weight > W - side_weight`) rather than
+    /// `side_weight > W / 2`: integer division rounds down, which would
+    /// wrongly pass a side sitting exactly at the boundary on an odd `W`.
+    /// A no-op once `terminal_cause` is already locked: it never changes
+    /// after that.
+    fn lock_outcome_if_undecided(assertion: &mut AssertionV2, resolution: &Resolution) {
+        if assertion.terminal_cause != TerminalCause::NotYetDecided {
+            return;
+        }
+
+        let w = resolution.eligible_total;
+        if resolution.agree_weight > w - resolution.agree_weight {
+            assertion.terminal_cause = TerminalCause::StrictMajorityFor;
+            assertion.final_outcome = Some(assertion.outcome);
+        } else if resolution.disagree_weight > w - resolution.disagree_weight {
+            assertion.terminal_cause = TerminalCause::StrictMajorityAgainst;
+            assertion.final_outcome = Some(!assertion.outcome);
+        }
+    }
+
+    /// Closes a `Reveal`-phase assertion out to `Resolved` once its closing
+    /// condition is met: `force_close` (the caller has already confirmed
+    /// `reveal_deadline` passed) or `revealed_weight` has caught up with the
+    /// frozen eligible total `W` (nothing left that could still change the
+    /// result). Always attempts `lock_outcome_if_undecided` first; if
+    /// neither side ever reached strict majority by the time it closes,
+    /// applies `TimeoutDefaultRule::AssertedOutcomeStands`
+    /// (`terminal_cause = OptimisticTimeout`, `final_outcome = outcome`) as
+    /// the fallback. Always persists `assertion` (an early lock, or the
+    /// phase change a caller made before calling this, must survive even on
+    /// a call that doesn't close: see `PhaseV2::Reveal`'s doc comment on why
+    /// an early lock doesn't by itself stop further reveals); only emits
+    /// `Resolved` when it actually closes.
+    fn close_reveal_if_ready(
+        env: &Env,
+        id: u64,
+        mut assertion: AssertionV2,
+        resolution: &Resolution,
+        force_close: bool,
+    ) -> AssertionV2 {
+        Self::lock_outcome_if_undecided(&mut assertion, resolution);
+
+        let ready = force_close || resolution.revealed_weight() >= resolution.eligible_total;
+        if !ready {
+            Self::set_assertion(env, id, &assertion);
+            return assertion;
+        }
+
+        if assertion.terminal_cause == TerminalCause::NotYetDecided {
+            assertion.terminal_cause = TerminalCause::OptimisticTimeout;
+            assertion.final_outcome = Some(assertion.outcome);
+        }
+        assertion.phase = PhaseV2::Resolved;
+        Self::set_assertion(env, id, &assertion);
+
+        Resolved {
+            id,
+            terminal_cause: assertion.terminal_cause,
+            final_outcome: assertion
+                .final_outcome
+                .expect("terminal_cause locked above always sets final_outcome alongside it"),
+        }
+        .publish(env);
+
+        assertion
     }
 
     /// Discloses the side an `External` position committed to during
@@ -1045,12 +1137,18 @@ impl TholosV2 {
     ///
     /// On success, adds this position's full weight to
     /// `Resolution.agree_weight` if `choice` matches the asserted outcome,
-    /// `disagree_weight` otherwise. A client must read the on-chain phase
+    /// `disagree_weight` otherwise, and locks `terminal_cause`/
+    /// `final_outcome` if that tips either side past strict majority (see
+    /// `lock_outcome_if_undecided`); the assertion stays `Reveal` even after
+    /// locking, so further reveals can still prove entitlement for
+    /// settlement, unless this was the last outstanding weight, in which
+    /// case the assertion closes to `Resolved` in this same call (see
+    /// `close_reveal_if_ready`). A client must read the on-chain phase
     /// before submitting a reveal: guessing that registration has closed is
     /// unsafe, a rejected reveal transaction still publishes its
     /// `(choice, salt)` preimage on-chain even though it failed, and a
     /// qualifying late deposit may have extended the deadline. Emits
-    /// `Revealed`.
+    /// `Revealed`, and `Resolved` if it closes the assertion out.
     pub fn reveal(
         env: Env,
         voter: Address,
@@ -1133,9 +1231,81 @@ impl TholosV2 {
         }
         Self::set_resolution(&env, id, &resolution);
 
+        // Not force_close: this reveal happened before reveal_deadline (the
+        // check above already ruled out the alternative), so closing here
+        // only happens if this reveal was the last weight outstanding.
+        Self::close_reveal_if_ready(&env, id, assertion, &resolution, false);
+
         Revealed { id, voter, choice }.publish(&env);
 
         Ok(())
+    }
+
+    /// Permissionlessly closes a disputed assertion out to `Resolved` once
+    /// its outcome can no longer change: called directly (not as a side
+    /// effect of `register`/`reveal`) for the cases neither of those calls
+    /// can reach on their own, most importantly when `reveal_deadline`
+    /// passes without every eligible weight revealing, and the degenerate
+    /// case where a dispute drew no third-party registrations at all, so
+    /// nobody ever has a position to call `reveal` with. Requires no
+    /// signature: it only applies a deterministic rule to already-committed
+    /// weights and elapsed time, moving no funds.
+    ///
+    /// Lazily transitions `Registration` to `Reveal` first (see
+    /// `open_reveal_phase`) if `registration_deadline` has passed; that step
+    /// alone may already close the assertion out (see its doc comment).
+    /// Otherwise requires `Reveal` phase; if `reveal_deadline` has passed or
+    /// `revealed_weight` has caught up with the frozen eligible total `W`,
+    /// locks the outcome (strict majority if reached, `OptimisticTimeout`
+    /// otherwise) and moves the assertion to `Resolved`. Idempotent: calling
+    /// it again on an already-`Resolved` assertion just returns the
+    /// already-decided `terminal_cause`.
+    ///
+    /// Fails with `NotReveal` if the assertion is `Pending` (nothing to
+    /// resolve yet, it hasn't been disputed), `RegistrationNotClosed` if
+    /// still `Registration` before its deadline, `RevealNotClosed` if still
+    /// `Reveal` before its deadline with unrevealed weight remaining. Emits
+    /// `RevealOpened` and/or `Resolved` as those transitions actually
+    /// happen.
+    pub fn resolve_outcome(env: Env, id: u64) -> Result<TerminalCause, Error> {
+        let mut assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if matches!(assertion.phase, PhaseV2::Pending | PhaseV2::Resolved) {
+            if assertion.phase == PhaseV2::Resolved {
+                return Ok(assertion.terminal_cause);
+            }
+            return Err(Error::NotReveal);
+        }
+
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase == PhaseV2::Registration {
+            if env.ledger().timestamp() <= resolution.registration_deadline {
+                return Err(Error::RegistrationNotClosed);
+            }
+            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution);
+        }
+
+        if assertion.phase == PhaseV2::Resolved {
+            return Ok(assertion.terminal_cause);
+        }
+
+        let deadline_passed = env.ledger().timestamp() > resolution.reveal_deadline;
+        if !deadline_passed && resolution.revealed_weight() < resolution.eligible_total {
+            return Err(Error::RevealNotClosed);
+        }
+
+        assertion = Self::close_reveal_if_ready(&env, id, assertion, &resolution, true);
+
+        Ok(assertion.terminal_cause)
     }
 }
 

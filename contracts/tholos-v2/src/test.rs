@@ -152,6 +152,11 @@ impl Fixture {
         let deadline = self.client.get_resolution(&id).registration_deadline;
         self.env.ledger().with_mut(|l| l.timestamp = deadline + 1);
     }
+
+    fn advance_past_reveal_deadline(&self, id: u64) {
+        let deadline = self.client.get_resolution(&id).reveal_deadline;
+        self.env.ledger().with_mut(|l| l.timestamp = deadline + 1);
+    }
 }
 
 /// An opaque, deterministic 32-byte commitment for tests that only exercise
@@ -1217,11 +1222,17 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
     let asserter = f.funded_address();
     let disputer = f.funded_address();
     let voter = f.funded_address();
+    // A second, never-revealing voter keeps eligible_total above what this
+    // test's one reveal accounts for, so the assertion stays Reveal instead
+    // of closing to Resolved: this test is about the phase-opening/tally/
+    // commitment mechanics, not the closure behavior covered separately by
+    // test_reveal_last_outstanding_weight_closes_assertion.
+    let other_voter = f.funded_address();
 
     let id = f.asserted(&asserter);
     f.client.dispute(&disputer, &id);
-    let s = salt(&f.env, 1);
     let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
     let c = compute_commitment(
         &f.env,
         &f.client.address,
@@ -1232,6 +1243,9 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
         &s,
     );
     f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+    let other_commitment = commitment(&f.env, 9);
+    f.client
+        .register(&other_voter, &id, &DEFAULT_BOND, &other_commitment);
 
     f.advance_past_registration_deadline(id);
     f.client.reveal(&voter, &id, &true, &s);
@@ -1345,11 +1359,16 @@ fn test_reveal_twice_fails() {
     let asserter = f.funded_address();
     let disputer = f.funded_address();
     let voter = f.funded_address();
+    // A second, never-revealing voter keeps the assertion in Reveal after
+    // the first reveal below, so a repeat call exercises the per-position
+    // AlreadyRevealed guard rather than the (also correct, but different)
+    // NotReveal an already-Resolved assertion would return instead.
+    let other_voter = f.funded_address();
 
     let id = f.asserted(&asserter);
     f.client.dispute(&disputer, &id);
-    let s = salt(&f.env, 1);
     let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
     let c = compute_commitment(
         &f.env,
         &f.client.address,
@@ -1360,6 +1379,9 @@ fn test_reveal_twice_fails() {
         &s,
     );
     f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+    let other_commitment = commitment(&f.env, 9);
+    f.client
+        .register(&other_voter, &id, &DEFAULT_BOND, &other_commitment);
 
     f.advance_past_registration_deadline(id);
     f.client.reveal(&voter, &id, &true, &s);
@@ -1500,4 +1522,299 @@ fn test_reveal_after_reveal_deadline_fails() {
 
     let result = f.client.try_reveal(&second_voter, &id, &true, &second_salt);
     assert_eq!(result, Err(Ok(Error::RevealClosed)));
+}
+
+#[test]
+fn test_strict_majority_locks_outcome_early_for_while_staying_in_reveal() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let big_agree_voter = f.funded_address();
+    // Registered but never revealed: keeps eligible_total above what the
+    // big voter's reveal alone accounts for, so the assertion is still
+    // Reveal (not yet closed to Resolved) once the lock fires, letting this
+    // test check that reveals keep being accepted after locking.
+    let unrevealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let big_salt = salt(&f.env, 1);
+    let big_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &big_agree_voter,
+        true,
+        &big_salt,
+    );
+    f.client
+        .register(&big_agree_voter, &id, &300, &big_commitment);
+    let unrevealed_salt = salt(&f.env, 2);
+    let unrevealed_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &unrevealed_voter,
+        false,
+        &unrevealed_salt,
+    );
+    f.client.register(
+        &unrevealed_voter,
+        &id,
+        &DEFAULT_BOND,
+        &unrevealed_commitment,
+    );
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&big_agree_voter, &id, &true, &big_salt);
+
+    // eligible_total = 100 (asserter) + 100 (disputer) + 300 + 100 = 600.
+    // agree_weight = 100 + 300 = 400 > 600 - 400 = 200: strict majority for.
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Reveal);
+    assert_eq!(assertion.terminal_cause, TerminalCause::StrictMajorityFor);
+    assert_eq!(assertion.final_outcome, Some(true));
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.eligible_total, 600);
+    assert!(resolution.revealed_weight() < resolution.eligible_total);
+
+    // The still-unrevealed voter can still reveal after the lock; this is
+    // the last outstanding weight, so it also closes the assertion out.
+    // Its disagreeing choice doesn't change the already-locked outcome.
+    f.client
+        .reveal(&unrevealed_voter, &id, &false, &unrevealed_salt);
+
+    let closed = f.client.get_assertion(&id);
+    assert_eq!(closed.phase, PhaseV2::Resolved);
+    assert_eq!(closed.terminal_cause, TerminalCause::StrictMajorityFor);
+    assert_eq!(closed.final_outcome, Some(true));
+}
+
+#[test]
+fn test_strict_majority_locks_outcome_early_against() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let big_disagree_voter = f.funded_address();
+    let unrevealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let big_salt = salt(&f.env, 1);
+    let big_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &big_disagree_voter,
+        false,
+        &big_salt,
+    );
+    f.client
+        .register(&big_disagree_voter, &id, &300, &big_commitment);
+    f.client.register(
+        &unrevealed_voter,
+        &id,
+        &DEFAULT_BOND,
+        &commitment(&f.env, 9),
+    );
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&big_disagree_voter, &id, &false, &big_salt);
+
+    // eligible_total = 600. disagree_weight = 100 + 300 = 400 > 200: strict
+    // majority against, so the resolved outcome flips from the asserted one.
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Reveal);
+    assert_eq!(
+        assertion.terminal_cause,
+        TerminalCause::StrictMajorityAgainst
+    );
+    assert_eq!(assertion.final_outcome, Some(false));
+}
+
+#[test]
+fn test_strict_majority_boundary_requires_more_than_half() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    // A top-up (not a first-time deposit) isn't held to min_resolution_bond,
+    // so this voter can land on an odd eligible_total: 100 (first deposit)
+    // + 1 (top-up) = 101, for eligible_total = 100 + 100 + 101 = 301.
+    // agree_weight ends up 100 (asserter) + 101 (voter) = 201, which is
+    // checked against `301 - 201 = 100`, exercising the subtraction form
+    // against an odd total rather than an even one like every other test
+    // here uses.
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+    f.client.register(&voter, &id, &1, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.terminal_cause, TerminalCause::StrictMajorityFor);
+}
+
+#[test]
+fn test_resolve_outcome_closes_zero_third_party_dispute_as_optimistic_timeout() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    f.advance_past_registration_deadline(id);
+
+    // Nobody ever registered a third-party position, so no one but the
+    // asserter/disputer has anything to call reveal() with, and their
+    // fixed positions are already marked revealed automatically; reveal()
+    // itself can never be called successfully here. resolve_outcome is the
+    // only way this dispute can ever leave Registration.
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::OptimisticTimeout);
+    // Exact 100/100 tie: neither side exceeds half of eligible_total (200),
+    // so the asserted outcome (true) stands, per the timeout default.
+    assert_eq!(assertion.final_outcome, Some(true));
+
+    // Idempotent: calling it again just returns the already-decided cause.
+    let cause_again = f.client.resolve_outcome(&id);
+    assert_eq!(cause_again, TerminalCause::OptimisticTimeout);
+}
+
+#[test]
+fn test_resolve_outcome_before_registration_deadline_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_resolve_outcome(&id);
+    assert_eq!(result, Err(Ok(Error::RegistrationNotClosed)));
+}
+
+#[test]
+fn test_resolve_outcome_before_reveal_deadline_with_incomplete_reveal_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let first_voter = f.funded_address();
+    let second_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let first_salt = salt(&f.env, 1);
+    let first_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &first_voter,
+        true,
+        &first_salt,
+    );
+    f.client
+        .register(&first_voter, &id, &DEFAULT_BOND, &first_commitment);
+    f.client
+        .register(&second_voter, &id, &DEFAULT_BOND, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&first_voter, &id, &true, &first_salt);
+
+    // second_voter never reveals, and reveal_deadline hasn't passed yet.
+    let result = f.client.try_resolve_outcome(&id);
+    assert_eq!(result, Err(Ok(Error::RevealNotClosed)));
+}
+
+#[test]
+fn test_resolve_outcome_on_pending_assertion_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+
+    let result = f.client.try_resolve_outcome(&id);
+    assert_eq!(result, Err(Ok(Error::NotReveal)));
+}
+
+#[test]
+fn test_optimistic_timeout_when_neither_side_reaches_majority_by_deadline() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let disagree_voter = f.funded_address();
+    let never_revealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let disagree_salt = salt(&f.env, 1);
+    let disagree_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &disagree_voter,
+        false,
+        &disagree_salt,
+    );
+    f.client
+        .register(&disagree_voter, &id, &400, &disagree_commitment);
+    f.client
+        .register(&never_revealed_voter, &id, &400, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client
+        .reveal(&disagree_voter, &id, &false, &disagree_salt);
+
+    // eligible_total = 100 + 100 + 400 + 400 = 1000. disagree_weight after
+    // this reveal = 100 + 400 = 500, exactly half: not a strict majority
+    // (500 is not > 1000 - 500 = 500). agree_weight is only the asserter's
+    // fixed 100. never_revealed_voter's 400 never reveals at all.
+    let mid_assertion = f.client.get_assertion(&id);
+    assert_eq!(mid_assertion.terminal_cause, TerminalCause::NotYetDecided);
+
+    f.advance_past_reveal_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    // The asserted outcome (true) stands: the disagreeing side revealed
+    // more weight than the agreeing side, but never assembled a real
+    // majority of the full eligible total, exactly the "burden of proof is
+    // on the challenger" case V2_RESOLUTION.md calls out.
+    assert_eq!(assertion.final_outcome, Some(true));
 }

@@ -266,10 +266,10 @@
                   "u64": "0"
                 },
                 {
-                  "i128": "100"
+                  "i128": "300"
                 },
                 {
-                  "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                  "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
                 }
               ]
             }
@@ -288,7 +288,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
-                      "i128": "100"
+                      "i128": "300"
                     }
                   ]
                 }
@@ -365,7 +365,7 @@
                   "u64": "0"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 },
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
@@ -377,10 +377,6 @@
         }
       ]
     ],
-    [],
-    [],
-    [],
-    [],
     []
   ],
   "ledger": {
@@ -554,7 +550,9 @@
                     "key": {
                       "symbol": "final_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": false
+                    }
                   },
                   {
                     "key": {
@@ -746,7 +744,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "NotYetDecided"
+                          "symbol": "StrictMajorityAgainst"
                         }
                       ]
                     }
@@ -911,7 +909,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "300"
                     }
                   },
                   {
@@ -924,7 +922,7 @@
                           "symbol": "External"
                         },
                         {
-                          "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                          "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
                         }
                       ]
                     }
@@ -1032,7 +1030,7 @@
                       "symbol": "agree_weight"
                     },
                     "val": {
-                      "i128": "200"
+                      "i128": "100"
                     }
                   },
                   {
@@ -1040,7 +1038,7 @@
                       "symbol": "disagree_weight"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "400"
                     }
                   },
                   {
@@ -1048,7 +1046,7 @@
                       "symbol": "eligible_total"
                     },
                     "val": {
-                      "i128": "400"
+                      "i128": "600"
                     }
                   },
                   {
@@ -1429,7 +1427,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "400"
+                      "i128": "600"
                     }
                   },
                   {
@@ -1585,7 +1583,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "900"
+                      "i128": "700"
                     }
                   },
                   {

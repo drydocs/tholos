@@ -61,6 +61,21 @@ All notable changes to this project are documented here. Format follows
   `demos/freelance-escrow` off its hand-rolled client to use this instead is
   a separate, deliberately out-of-scope follow-up. Closes #60.
 
+- `tholos-v2`: weighted-majority outcome resolution. After every reveal, a
+  side locks in `terminal_cause`/`final_outcome` (`StrictMajorityFor`/
+  `StrictMajorityAgainst`) the moment its revealed weight exceeds half of the
+  frozen eligible total `W`, checked via subtraction rather than division to
+  stay exact on an odd `W`. The assertion stays `Reveal` after locking so
+  other positions can still reveal to prove entitlement for settlement,
+  closing to `Resolved` once `revealed_weight` catches up with `W` or
+  `reveal_deadline` passes, whichever comes first; if neither side ever
+  reached a majority, `terminal_cause` defaults to `OptimisticTimeout` and
+  the originally asserted outcome stands. New permissionless
+  `resolve_outcome` entrypoint closes a `Reveal`-phase assertion out once its
+  deadline has passed, and is the only way a dispute that drew zero
+  third-party registrations can ever leave `Registration`, since nobody
+  would otherwise have a position to call `reveal` with. Closes #68.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
