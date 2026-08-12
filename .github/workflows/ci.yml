@@ -105,3 +105,54 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup target add wasm32v1-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: sdk
+
+      # Pinned to the version used to originally generate packages/tholos-sdk.
+      # Bump deliberately, not incidentally, since a newer CLI could change
+      # the generated output's shape.
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --version 27.0.0
+
+      - name: Build tholos wasm
+        run: cargo build -p tholos --target wasm32v1-none --release --locked
+
+      - name: Regenerate TS bindings and check for drift
+        run: |
+          stellar contract bindings typescript \
+            --wasm target/wasm32v1-none/release/tholos.wasm \
+            --output-dir /tmp/tholos-sdk-regenerated \
+            --overwrite
+          if ! diff -rq packages/tholos-sdk/src /tmp/tholos-sdk-regenerated/src; then
+            echo "::error::packages/tholos-sdk/src is out of date with contracts/tholos's current public interface. Regenerate it (see packages/tholos-sdk/README.md) and commit the result."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/tholos-sdk/pnpm-lock.yaml
+
+      - name: Install SDK package dependencies
+        working-directory: packages/tholos-sdk
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SDK package
+        working-directory: packages/tholos-sdk
+        run: pnpm build

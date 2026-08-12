@@ -51,6 +51,11 @@ demos/
   freelance-escrow/     A real freelance milestone-payment app built on Tholos;
                          a pnpm/Vite/React project, not part of the Cargo
                          workspace, see its own README for setup
+packages/
+  tholos-sdk/           Generated TypeScript client for contracts/tholos, via
+                         `stellar contract bindings typescript`; regenerate
+                         whenever the contract's public interface changes
+                         (CI checks for drift), see its own README
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/

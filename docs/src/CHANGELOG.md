@@ -50,6 +50,17 @@ All notable changes to this project are documented here. Format follows
   asserter's and disputer's fixed positions, since their sides are already
   public and they never call `reveal` themselves. Closes #67.
 
+- `packages/tholos-sdk`: a generated TypeScript client for `contracts/tholos`,
+  via `stellar contract bindings typescript` against the compiled wasm (never
+  a live deployment, so regenerating needs no network access or contract id).
+  Committed in-repo, not yet published to npm, since it hasn't been consumed
+  by a real integration yet. CI regenerates it on every push/PR and fails if
+  the committed package has drifted from the contract's current interface.
+  `docs/src/INTEGRATION.md` documents this as the JS/TS integration path,
+  alongside the existing Rust contract-to-contract pattern. Migrating
+  `demos/freelance-escrow` off its hand-rolled client to use this instead is
+  a separate, deliberately out-of-scope follow-up. Closes #60.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

@@ -95,6 +95,38 @@ there's no way to ask Tholos for the sub-invocation it's about to make ahead of
 time. Only take this path if pooling bonds under your contract is a real
 requirement, not a default choice.
 
+## Calling Tholos from a browser or Node app
+
+The Rust pattern above only helps if you're writing another Soroban contract.
+An application calling Tholos directly, from a browser or a Node backend,
+needs the same building/simulating/signing/submitting/polling machinery
+`demo-consumer` gets from `contractimport!`, but in TypeScript.
+
+`packages/tholos-sdk` is a generated client for exactly this, produced with
+the Stellar CLI's `stellar contract bindings typescript` against Tholos's
+compiled wasm (not a live deployment, so generating it never needs network
+access or a contract id). It's committed in-repo, not yet published to npm;
+see its own [README](../../packages/tholos-sdk/README.md) for regeneration
+instructions and current status.
+
+```ts
+import { Client } from "tholos-sdk";
+
+const client = new Client({
+  contractId: "<the deployed contract id, see DEPLOYMENT.md>",
+  networkPassphrase: "Test SDF Network ; September 2015",
+  rpcUrl: "https://soroban-testnet.stellar.org",
+});
+
+const tx = await client.assert_outcome({ asserter: "<address>", outcome: true });
+const { result } = await tx.signAndSend();
+```
+
+`demos/freelance-escrow` doesn't use this yet, it currently hand-rolls its
+own client (`src/lib/tholos.ts`) predating this package. Migrating it is a
+separate, deliberate follow-up rather than bundled here, so the SDK's
+completion doesn't depend on unrelated demo-app churn.
+
 ## Lifecycle from an integrator's perspective
 
 `finalize` requires `caller`'s authorization unconditionally — even when
