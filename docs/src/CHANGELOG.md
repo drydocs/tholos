@@ -97,6 +97,23 @@ All notable changes to this project are documented here. Format follows
   was nowhere near tight enough to keep settlement's `amount *
   forfeited_pool` multiply inside `i128`. Closes #69.
 
+- `tholos-v2`: credit withdrawal, via a new `withdraw(owner, id, destination)`.
+  Transfers `owner`'s entire withdrawable `Credit(id, owner)` balance
+  (accrued by `settle`) to `destination`, which can be any address, not
+  necessarily `owner` itself, so a token that rejects transfers to `owner`
+  directly can't permanently strand funds there. Effects before
+  interactions: the credit balance is zeroed and `Resolution`'s new
+  `outstanding_liability`/`withdrawn_total` fields updated before the
+  outgoing transfer, so a failed transfer rolls back the whole call and
+  never consumes the credit. Also adds a contract-wide reentrancy guard
+  (`enter_reentrancy_guard`/`check_reentrancy_guard`), held for the duration
+  of every external token transfer this contract initiates
+  (`assert_outcome`, `dispute`, `register`, `finalize`, `withdraw`) and
+  checked at the entry of `reveal`/`resolve_outcome`/`settle` as well, so a
+  non-standard token whose `transfer` calls back into this contract mid-
+  transfer can't act on state that looks complete before the tokens backing
+  it have actually moved. Closes #70.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

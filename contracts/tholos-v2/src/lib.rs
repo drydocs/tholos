@@ -186,6 +186,20 @@ pub struct DustCredited {
     pub amount: i128,
 }
 
+#[contractevent]
+pub struct Withdrawn {
+    #[topic]
+    pub id: u64,
+    /// Whose credit balance this was: `withdraw` requires this address's
+    /// own authorization, so this can't be spoofed.
+    pub owner: Address,
+    /// Where the tokens actually went. Can differ from `owner`: `withdraw`
+    /// lets the owner name any destination, so a token that rejects
+    /// transfers to `owner` directly can't strand funds there permanently.
+    pub destination: Address,
+    pub amount: i128,
+}
+
 /// What kind of position this is, and (for a `Fixed` one) which side it's
 /// on. The asserter's and disputer's sides are public by construction, no
 /// commitment needed; a third party's side stays hidden in its commitment
@@ -282,6 +296,15 @@ pub struct Resolution {
     /// at that point, rather than re-deriving it from individual payouts
     /// nothing here retains a record of. See `settle`.
     pub settled_reward_total: i128,
+    /// Total credit currently accrued (via `settle`) but not yet withdrawn
+    /// (via `withdraw`) for this dispute. Increases whenever `settle`
+    /// accrues a payout or dust, decreases whenever `withdraw` pays one out.
+    /// `outstanding_liability + withdrawn_total` never exceeds
+    /// `eligible_total`, the invariant `withdraw`'s tests check explicitly.
+    pub outstanding_liability: i128,
+    /// Cumulative amount actually transferred out via `withdraw` for this
+    /// dispute, across every address that has withdrawn anything.
+    pub withdrawn_total: i128,
 }
 
 impl Resolution {
@@ -405,9 +428,13 @@ pub enum DataKey {
     Position(u64, Address),
     /// Token units `settle` has credited an address for one assertion, not
     /// yet withdrawn. A bare `i128` rather than a wrapper struct: it's the
-    /// only value this key ever holds. Withdrawal (a separate issue) is
-    /// what actually moves tokens against this balance.
+    /// only value this key ever holds. `withdraw` is what actually moves
+    /// tokens against this balance.
     Credit(u64, Address),
+    /// A single contract-wide mutex, held (`true`) for the duration of any
+    /// external token transfer this contract initiates. See
+    /// `enter_reentrancy_guard`.
+    ReentrancyGuard,
 }
 
 #[contracterror]
@@ -487,6 +514,13 @@ pub enum Error {
     /// `max_total_weight`/`max_position` bounds, but settlement moves real
     /// funds, so it's checked rather than assumed.
     SettlementArithmeticOverflow = 31,
+    /// `withdraw` called with no credit balance to withdraw (either never
+    /// settled anything here, or already withdrew it).
+    NoCreditToWithdraw = 32,
+    /// A call that moves tokens was attempted while another one was still
+    /// in progress: the token's own `transfer` reentered this contract
+    /// instead of completing normally. See `enter_reentrancy_guard`.
+    ReentrancyGuardActive = 33,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -714,6 +748,61 @@ impl TholosV2 {
         );
     }
 
+    /// Acquires the contract-wide reentrancy mutex, failing with
+    /// `ReentrancyGuardActive` if it's already held. Every function that
+    /// initiates an external token transfer calls this immediately before
+    /// that transfer (after writing whatever state the transfer follows,
+    /// matching the existing state-before-external-call ordering) and
+    /// `exit_reentrancy_guard` immediately after. A non-standard token
+    /// whose `transfer` implementation calls back into this contract mid-
+    /// transfer, instead of a well-behaved SEP-41 token that just updates
+    /// balances, would otherwise be able to act on state that looks
+    /// complete (because it was written before the transfer) while the
+    /// tokens backing it haven't actually moved yet.
+    ///
+    /// `reveal`, `resolve_outcome`, and `settle` also check this at their
+    /// own entry, even though none of them move tokens themselves: all
+    /// three can act on a position's weight or credit, which the guard
+    /// above exists specifically to keep provisional until its funding
+    /// transfer actually completes.
+    fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+        {
+            return Err(Error::ReentrancyGuardActive);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+        Ok(())
+    }
+
+    fn exit_reentrancy_guard(env: &Env) {
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
+    }
+
+    /// Fails with `ReentrancyGuardActive` if the mutex `enter_reentrancy_guard`
+    /// manages is currently held, without acquiring it. For entrypoints that
+    /// don't themselves transfer tokens but still shouldn't run while one of
+    /// this contract's own transfers is mid-flight (see
+    /// `enter_reentrancy_guard`'s doc comment).
+    fn check_reentrancy_guard(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyGuard)
+            .unwrap_or(false)
+        {
+            return Err(Error::ReentrancyGuardActive);
+        }
+        Ok(())
+    }
+
     /// Builds and stores a `Pending` `AssertionV2` with a freshly pinned
     /// policy snapshot. Doesn't move any tokens itself; `assert_outcome`
     /// calls this first (matching v1's state-before-external-call ordering)
@@ -772,11 +861,13 @@ impl TholosV2 {
         // not-yet-incremented id.
         let id = Self::create_pending_assertion(&env, asserter.clone(), outcome)?;
 
+        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &asserter,
             env.current_contract_address(),
             &policy.base_bond,
         );
+        Self::exit_reentrancy_guard(&env);
 
         Asserted {
             id,
@@ -835,6 +926,7 @@ impl TholosV2 {
         assertion.finalizer = Some(caller.clone());
         Self::set_assertion(&env, id, &assertion);
 
+        Self::enter_reentrancy_guard(&env)?;
         let token_client = token::Client::new(&env, &assertion.policy.token);
         if reward > 0 {
             token_client.transfer(&env.current_contract_address(), &caller, &reward);
@@ -845,6 +937,7 @@ impl TholosV2 {
             &assertion.asserter,
             &asserter_payout,
         );
+        Self::exit_reentrancy_guard(&env);
 
         Finalized {
             id,
@@ -924,14 +1017,18 @@ impl TholosV2 {
             disagree_weight: 0,
             settled_recipient_weight: 0,
             settled_reward_total: 0,
+            outstanding_liability: 0,
+            withdrawn_total: 0,
         };
         Self::set_resolution(&env, id, &resolution);
 
+        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &disputer,
             env.current_contract_address(),
             &policy.base_bond,
         );
+        Self::exit_reentrancy_guard(&env);
 
         Disputed {
             id,
@@ -1066,11 +1163,13 @@ impl TholosV2 {
         resolution.eligible_total = new_total;
         Self::set_resolution(&env, id, &resolution);
 
+        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &voter,
             env.current_contract_address(),
             &amount,
         );
+        Self::exit_reentrancy_guard(&env);
 
         PositionFunded {
             id,
@@ -1261,6 +1360,7 @@ impl TholosV2 {
         salt: BytesN<32>,
     ) -> Result<(), Error> {
         voter.require_auth();
+        Self::check_reentrancy_guard(&env)?;
 
         let mut assertion: AssertionV2 = env
             .storage()
@@ -1374,6 +1474,8 @@ impl TholosV2 {
     /// `RevealOpened` and/or `Resolved` as those transitions actually
     /// happen.
     pub fn resolve_outcome(env: Env, id: u64) -> Result<TerminalCause, Error> {
+        Self::check_reentrancy_guard(&env)?;
+
         let mut assertion: AssertionV2 = env
             .storage()
             .persistent()
@@ -1483,9 +1585,9 @@ impl TholosV2 {
 
     /// Converts one position's share of a decided outcome into withdrawable
     /// credit. Permissionless: any caller may settle any known position,
-    /// and settling doesn't move tokens itself (see `get_credit`); a
-    /// separate withdrawal step, not yet implemented, is what actually
-    /// transfers tokens against the accrued balance.
+    /// and settling doesn't move tokens itself (see `get_credit`); `withdraw`
+    /// is the separate step that actually transfers tokens against the
+    /// accrued balance.
     ///
     /// Requires `phase == Resolved` (`NotResolved` otherwise): settlement
     /// needs final, frozen tallies, which don't exist yet mid-`Reveal` even
@@ -1519,6 +1621,8 @@ impl TholosV2 {
     /// forfeited; never includes dust routed to a different address in the
     /// same call). Emits `Settled`.
     pub fn settle(env: Env, id: u64, address: Address) -> Result<i128, Error> {
+        Self::check_reentrancy_guard(&env)?;
+
         let assertion: AssertionV2 = env
             .storage()
             .persistent()
@@ -1575,6 +1679,10 @@ impl TholosV2 {
                 .checked_mul(forfeited_pool)
                 .and_then(|product| product.checked_div(recipient_weight))
                 .ok_or(Error::SettlementArithmeticOverflow)?;
+            let position_payout = position
+                .amount
+                .checked_add(reward)
+                .ok_or(Error::SettlementArithmeticOverflow)?;
 
             resolution.settled_recipient_weight = resolution
                 .settled_recipient_weight
@@ -1584,6 +1692,7 @@ impl TholosV2 {
                 .settled_reward_total
                 .checked_add(reward)
                 .ok_or(Error::SettlementArithmeticOverflow)?;
+            let mut liability_increase = position_payout;
 
             if forfeited_pool > 0 && resolution.settled_recipient_weight == recipient_weight {
                 let dust = forfeited_pool - resolution.settled_reward_total;
@@ -1600,6 +1709,9 @@ impl TholosV2 {
                         ),
                     };
                     Self::add_credit(&env, id, &dust_recipient, dust)?;
+                    liability_increase = liability_increase
+                        .checked_add(dust)
+                        .ok_or(Error::SettlementArithmeticOverflow)?;
                     DustCredited {
                         id,
                         address: dust_recipient,
@@ -1608,12 +1720,14 @@ impl TholosV2 {
                     .publish(&env);
                 }
             }
+
+            resolution.outstanding_liability = resolution
+                .outstanding_liability
+                .checked_add(liability_increase)
+                .ok_or(Error::SettlementArithmeticOverflow)?;
             Self::set_resolution(&env, id, &resolution);
 
-            position
-                .amount
-                .checked_add(reward)
-                .ok_or(Error::SettlementArithmeticOverflow)?
+            position_payout
         } else {
             0
         };
@@ -1631,6 +1745,87 @@ impl TholosV2 {
         .publish(&env);
 
         Ok(payout)
+    }
+
+    /// Transfers `owner`'s entire withdrawable credit balance on one
+    /// assertion to `destination`. Requires `owner`'s authorization.
+    /// `destination` may be any address, not necessarily `owner` itself: a
+    /// token that rejects transfers to `owner` directly can't permanently
+    /// strand funds there, since the owner can route around it. Fails with
+    /// `NoCreditToWithdraw` if the balance is 0 (never settled anything
+    /// here, or already withdrew it).
+    ///
+    /// Effects before interactions: `Credit(id, owner)` is zeroed, and
+    /// `Resolution.outstanding_liability`/`withdrawn_total` updated, before
+    /// the outgoing transfer below. If the transfer fails, the whole call
+    /// fails and every write above is rolled back with it (Soroban reverts
+    /// all of an invocation's storage writes when it returns `Err`, the
+    /// same guarantee every other value-moving function in this contract
+    /// already relies on): the credit is never consumed by a failed
+    /// transfer.
+    ///
+    /// Returns the amount withdrawn. Emits `Withdrawn`.
+    pub fn withdraw(
+        env: Env,
+        owner: Address,
+        id: u64,
+        destination: Address,
+    ) -> Result<i128, Error> {
+        owner.require_auth();
+        Self::check_reentrancy_guard(&env)?;
+
+        let assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        let credit_key = DataKey::Credit(id, owner.clone());
+        let credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+        if credit <= 0 {
+            return Err(Error::NoCreditToWithdraw);
+        }
+
+        env.storage().persistent().set(&credit_key, &0i128);
+        env.storage().persistent().extend_ttl(
+            &credit_key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
+        resolution.outstanding_liability = resolution
+            .outstanding_liability
+            .checked_sub(credit)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
+        resolution.withdrawn_total = resolution
+            .withdrawn_total
+            .checked_add(credit)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
+        Self::set_resolution(&env, id, &resolution);
+
+        Self::enter_reentrancy_guard(&env)?;
+        token::Client::new(&env, &assertion.policy.token).transfer(
+            &env.current_contract_address(),
+            &destination,
+            &credit,
+        );
+        Self::exit_reentrancy_guard(&env);
+
+        Withdrawn {
+            id,
+            owner,
+            destination,
+            amount: credit,
+        }
+        .publish(&env);
+
+        Ok(credit)
     }
 }
 

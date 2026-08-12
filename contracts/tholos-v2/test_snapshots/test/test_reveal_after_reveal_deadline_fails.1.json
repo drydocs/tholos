@@ -1112,6 +1112,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "outstanding_liability"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "registration_deadline"
                     },
                     "val": {
@@ -1161,6 +1169,14 @@
                   {
                     "key": {
                       "symbol": "settled_reward_total"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_total"
                     },
                     "val": {
                       "i128": "0"
@@ -1348,6 +1364,18 @@
                             }
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "ReentrancyGuard"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
                       }
                     }
                   ]

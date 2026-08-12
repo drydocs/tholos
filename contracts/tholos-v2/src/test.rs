@@ -2151,3 +2151,217 @@ fn test_get_credit_returns_zero_for_unknown_address() {
     let id = f.asserted(&asserter);
     assert_eq!(f.client.get_credit(&id, &stranger), 0);
 }
+
+#[test]
+fn test_withdraw_transfers_credit_and_updates_resolution_totals() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+
+    f.client.settle(&id, &asserter);
+    assert_eq!(f.client.get_credit(&id, &asserter), DEFAULT_BOND);
+
+    let balance_before = f.token.balance(&asserter);
+    let withdrawn = f.client.withdraw(&asserter, &id, &asserter);
+    assert_eq!(withdrawn, DEFAULT_BOND);
+    assert_eq!(f.token.balance(&asserter), balance_before + DEFAULT_BOND);
+    assert_eq!(f.client.get_credit(&id, &asserter), 0);
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.withdrawn_total, DEFAULT_BOND);
+    // The disputer's forfeited principal is still outstanding: only the
+    // asserter has settled and withdrawn so far.
+    assert_eq!(resolution.outstanding_liability, 0);
+}
+
+#[test]
+fn test_withdraw_to_different_destination() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let destination = f.generate();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+    f.client.settle(&id, &asserter);
+
+    f.client.withdraw(&asserter, &id, &destination);
+
+    assert_eq!(f.token.balance(&destination), DEFAULT_BOND);
+    // The owner's own balance never received anything directly.
+    assert_eq!(f.token.balance(&asserter), DEFAULT_MINT - DEFAULT_BOND);
+}
+
+#[test]
+fn test_withdraw_with_no_credit_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+
+    // The disputer never settled, so has no credit to withdraw.
+    let result = f.client.try_withdraw(&disputer, &id, &disputer);
+    assert_eq!(result, Err(Ok(Error::NoCreditToWithdraw)));
+}
+
+#[test]
+fn test_withdraw_twice_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+    f.client.settle(&id, &asserter);
+
+    f.client.withdraw(&asserter, &id, &asserter);
+    let result = f.client.try_withdraw(&asserter, &id, &asserter);
+    assert_eq!(result, Err(Ok(Error::NoCreditToWithdraw)));
+}
+
+#[test]
+fn test_withdraw_settle_conserves_pool_across_all_participants() {
+    // Every position settles and withdraws; the sum of what actually left
+    // the contract must equal what was funded, and nothing should remain
+    // outstanding afterward.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &200, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+
+    for address in [&asserter, &disputer, &voter] {
+        f.client.settle(&id, address);
+    }
+
+    let mut withdrawn_total = 0;
+    for address in [&asserter, &disputer, &voter] {
+        let credit = f.client.get_credit(&id, address);
+        if credit > 0 {
+            withdrawn_total += f.client.withdraw(address, &id, address);
+        }
+    }
+
+    // eligible_total = 100 (asserter) + 100 (disputer) + 200 (voter) = 400.
+    assert_eq!(withdrawn_total, 400);
+
+    let resolution = f.client.get_resolution(&id);
+    assert_eq!(resolution.outstanding_liability, 0);
+    assert_eq!(resolution.withdrawn_total, 400);
+    assert_eq!(f.token.balance(&f.client.address), 0);
+}
+
+#[test]
+fn test_reentrancy_guard_blocks_calls_while_held() {
+    // Simulates a stuck guard, as if a hostile token's transfer callback
+    // reentered mid-transfer and never released it, without needing a
+    // custom malicious-token contract to actually trigger reentrancy.
+    //
+    // dispute() and register() only check the guard right before their own
+    // transfer (after their other validation), so each needs its own state
+    // that would otherwise succeed, to prove the guard is what's actually
+    // blocking them rather than an unrelated validation error.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let pending_id = f.asserted(&asserter);
+
+    let registration_id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &registration_id);
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    assert_eq!(
+        f.client.try_assert_outcome(&asserter, &true),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_dispute(&disputer, &pending_id),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_register(
+            &voter,
+            &registration_id,
+            &DEFAULT_BOND,
+            &commitment(&f.env, 1)
+        ),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Advancing the ledger clock is a pure test-harness operation, not a
+    // contract call, so it's safe to do here while the guard is still held;
+    // id's registration window needs to be closed before reveal/
+    // resolve_outcome/settle/withdraw below are meaningful to call at all.
+    f.advance_past_registration_deadline(id);
+
+    assert_eq!(
+        f.client.try_reveal(&asserter, &id, &true, &salt(&f.env, 1)),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_resolve_outcome(&id),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_settle(&id, &asserter),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+    assert_eq!(
+        f.client.try_withdraw(&asserter, &id, &asserter),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Releasing it lets calls through again.
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &false);
+    });
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+}
