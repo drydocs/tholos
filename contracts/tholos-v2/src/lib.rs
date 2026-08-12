@@ -166,8 +166,24 @@ pub struct Settled {
     /// not include any leftover dust this settlement happened to route
     /// (see `settle`); dust is credited but not reflected in this payout
     /// figure, since it's incidental to which position happened to close
-    /// the recipient side out, not part of that position's own formula.
+    /// the recipient side out, not part of that position's own formula. See
+    /// `DustCredited`, emitted separately when this happens.
     pub payout: i128,
+}
+
+/// Emitted alongside `Settled`, at most once per assertion, when the
+/// settlement that closes out the last recipient position also routes
+/// leftover floor-division dust to the deterministic recipient (see
+/// `settle`). Kept separate from `Settled` rather than folded into its
+/// `payout` field: an indexer reconstructing withdrawable balances purely
+/// from the event log needs this to add up to the same total `settle`
+/// actually credits on-chain, which `Settled.payout` alone doesn't capture.
+#[contractevent]
+pub struct DustCredited {
+    #[topic]
+    pub id: u64,
+    pub address: Address,
+    pub amount: i128,
 }
 
 /// What kind of position this is, and (for a `Fixed` one) which side it's
@@ -1584,6 +1600,12 @@ impl TholosV2 {
                         ),
                     };
                     Self::add_credit(&env, id, &dust_recipient, dust)?;
+                    DustCredited {
+                        id,
+                        address: dust_recipient,
+                        amount: dust,
+                    }
+                    .publish(&env);
                 }
             }
             Self::set_resolution(&env, id, &resolution);
