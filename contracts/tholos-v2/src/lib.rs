@@ -766,14 +766,7 @@ impl TholosV2 {
     /// above exists specifically to keep provisional until its funding
     /// transfer actually completes.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::ReentrancyGuard)
-            .unwrap_or(false)
-        {
-            return Err(Error::ReentrancyGuardActive);
-        }
+        Self::check_reentrancy_guard(env)?;
         env.storage()
             .instance()
             .set(&DataKey::ReentrancyGuard, &true);
@@ -790,7 +783,8 @@ impl TholosV2 {
     /// manages is currently held, without acquiring it. For entrypoints that
     /// don't themselves transfer tokens but still shouldn't run while one of
     /// this contract's own transfers is mid-flight (see
-    /// `enter_reentrancy_guard`'s doc comment).
+    /// `enter_reentrancy_guard`'s doc comment), and reused by
+    /// `enter_reentrancy_guard` itself as the first half of acquiring it.
     fn check_reentrancy_guard(env: &Env) -> Result<(), Error> {
         if env
             .storage()
