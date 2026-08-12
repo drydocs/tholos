@@ -1818,3 +1818,336 @@ fn test_optimistic_timeout_when_neither_side_reaches_majority_by_deadline() {
     // on the challenger" case V2_RESOLUTION.md calls out.
     assert_eq!(assertion.final_outcome, Some(true));
 }
+
+#[test]
+fn test_settle_strict_majority_conserves_pool_and_pays_dust_to_asserter() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter_x = f.funded_address();
+    let voter_y = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let x_salt = salt(&f.env, 1);
+    let x_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_x,
+        true,
+        &x_salt,
+    );
+    f.client.register(&voter_x, &id, &300, &x_commitment);
+    let y_salt = salt(&f.env, 2);
+    let y_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_y,
+        true,
+        &y_salt,
+    );
+    f.client.register(&voter_y, &id, &150, &y_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter_x, &id, &true, &x_salt);
+    f.client.reveal(&voter_y, &id, &true, &y_salt);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::StrictMajorityFor);
+
+    // eligible_total = 100 + 100 + 300 + 150 = 650. recipient_weight (agree)
+    // = 100 + 300 + 150 = 550. forfeited_pool = 650 - 550 = 100 (the
+    // disputer's forfeited fixed bond).
+    // reward_asserter = floor(100 * 100 / 550) = 18
+    // reward_x = floor(300 * 100 / 550) = 54
+    // reward_y = floor(150 * 100 / 550) = 27
+    // sum = 99, dust = 1, credited to the asserter.
+    f.client.settle(&id, &asserter);
+    f.client.settle(&id, &voter_x);
+    f.client.settle(&id, &voter_y);
+    f.client.settle(&id, &disputer);
+
+    assert_eq!(f.client.get_credit(&id, &asserter), 100 + 18 + 1);
+    assert_eq!(f.client.get_credit(&id, &voter_x), 300 + 54);
+    assert_eq!(f.client.get_credit(&id, &voter_y), 150 + 27);
+    assert_eq!(f.client.get_credit(&id, &disputer), 0);
+
+    let total = f.client.get_credit(&id, &asserter)
+        + f.client.get_credit(&id, &voter_x)
+        + f.client.get_credit(&id, &voter_y)
+        + f.client.get_credit(&id, &disputer);
+    assert_eq!(total, 650);
+}
+
+#[test]
+fn test_settle_strict_majority_order_independent() {
+    // Same scenario as
+    // test_settle_strict_majority_conserves_pool_and_pays_dust_to_asserter,
+    // but settled in a different order (loser first, dust recipient last),
+    // to confirm every payout is identical regardless of call order.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter_x = f.funded_address();
+    let voter_y = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let x_salt = salt(&f.env, 1);
+    let x_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_x,
+        true,
+        &x_salt,
+    );
+    f.client.register(&voter_x, &id, &300, &x_commitment);
+    let y_salt = salt(&f.env, 2);
+    let y_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_y,
+        true,
+        &y_salt,
+    );
+    f.client.register(&voter_y, &id, &150, &y_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter_x, &id, &true, &x_salt);
+    f.client.reveal(&voter_y, &id, &true, &y_salt);
+
+    f.client.settle(&id, &disputer);
+    f.client.settle(&id, &voter_y);
+    f.client.settle(&id, &voter_x);
+    f.client.settle(&id, &asserter);
+
+    assert_eq!(f.client.get_credit(&id, &asserter), 100 + 18 + 1);
+    assert_eq!(f.client.get_credit(&id, &voter_x), 300 + 54);
+    assert_eq!(f.client.get_credit(&id, &voter_y), 150 + 27);
+    assert_eq!(f.client.get_credit(&id, &disputer), 0);
+}
+
+#[test]
+fn test_settle_optimistic_timeout_conserves_pool_and_pays_dust_to_asserter() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter_a = f.funded_address();
+    let voter_b = f.funded_address();
+    let never_revealed = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let a_salt = salt(&f.env, 1);
+    let a_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_a,
+        true,
+        &a_salt,
+    );
+    f.client.register(&voter_a, &id, &300, &a_commitment);
+    let b_salt = salt(&f.env, 2);
+    let b_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter_b,
+        false,
+        &b_salt,
+    );
+    f.client.register(&voter_b, &id, &200, &b_commitment);
+    f.client
+        .register(&never_revealed, &id, &150, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter_a, &id, &true, &a_salt);
+    f.client.reveal(&voter_b, &id, &false, &b_salt);
+
+    f.advance_past_reveal_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    // eligible_total = 100 + 100 + 300 + 200 + 150 = 850. recipient_weight
+    // (revealed_weight) = 100 + 100 + 300 + 200 = 700. forfeited_pool =
+    // 850 - 700 = 150 (never_revealed's stake).
+    // reward_asserter = floor(100 * 150 / 700) = 21
+    // reward_disputer = floor(100 * 150 / 700) = 21
+    // reward_a = floor(300 * 150 / 700) = 64
+    // reward_b = floor(200 * 150 / 700) = 42
+    // sum = 148, dust = 2, credited to the asserter (timeout default).
+    f.client.settle(&id, &asserter);
+    f.client.settle(&id, &disputer);
+    f.client.settle(&id, &voter_a);
+    f.client.settle(&id, &voter_b);
+    f.client.settle(&id, &never_revealed);
+
+    assert_eq!(f.client.get_credit(&id, &asserter), 100 + 21 + 2);
+    assert_eq!(f.client.get_credit(&id, &disputer), 100 + 21);
+    assert_eq!(f.client.get_credit(&id, &voter_a), 300 + 64);
+    assert_eq!(f.client.get_credit(&id, &voter_b), 200 + 42);
+    assert_eq!(f.client.get_credit(&id, &never_revealed), 0);
+
+    let total = f.client.get_credit(&id, &asserter)
+        + f.client.get_credit(&id, &disputer)
+        + f.client.get_credit(&id, &voter_a)
+        + f.client.get_credit(&id, &voter_b)
+        + f.client.get_credit(&id, &never_revealed);
+    assert_eq!(total, 850);
+}
+
+#[test]
+fn test_settle_optimistic_timeout_fully_revealed_skips_dust_step() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    f.advance_past_registration_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    // eligible_total = 200, recipient_weight = 200 (both fixed positions
+    // auto-revealed), forfeited_pool = 0: nothing forfeited, so the dust
+    // step never runs, and every position just recovers its own principal.
+    f.client.settle(&id, &asserter);
+    f.client.settle(&id, &disputer);
+
+    assert_eq!(f.client.get_credit(&id, &asserter), 100);
+    assert_eq!(f.client.get_credit(&id, &disputer), 100);
+}
+
+#[test]
+fn test_settle_strict_majority_against_dust_goes_to_disputer() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let voter_salt = salt(&f.env, 1);
+    let voter_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        false,
+        &voter_salt,
+    );
+    f.client.register(&voter, &id, &301, &voter_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &false, &voter_salt);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(
+        assertion.terminal_cause,
+        TerminalCause::StrictMajorityAgainst
+    );
+
+    // eligible_total = 100 + 100 + 301 = 501. recipient_weight (disagree) =
+    // 100 + 301 = 401. forfeited_pool = 501 - 401 = 100 (asserter's fixed
+    // bond, the losing side here).
+    // reward_disputer = floor(100 * 100 / 401) = 24
+    // reward_voter = floor(301 * 100 / 401) = 75
+    // sum = 99, dust = 1, credited to the disputer (the winning party).
+    f.client.settle(&id, &asserter);
+    f.client.settle(&id, &voter);
+    f.client.settle(&id, &disputer);
+
+    assert_eq!(f.client.get_credit(&id, &asserter), 0);
+    assert_eq!(f.client.get_credit(&id, &voter), 301 + 75);
+    assert_eq!(f.client.get_credit(&id, &disputer), 100 + 24 + 1);
+}
+
+#[test]
+fn test_settle_before_resolved_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_settle(&id, &asserter);
+    assert_eq!(result, Err(Ok(Error::NotResolved)));
+}
+
+#[test]
+fn test_settle_on_uncontested_finalize_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.advance_past_window();
+    f.client.finalize(&asserter, &id);
+
+    let result = f.client.try_settle(&id, &asserter);
+    assert_eq!(result, Err(Ok(Error::NotResolved)));
+}
+
+#[test]
+fn test_settle_twice_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+
+    f.client.settle(&id, &asserter);
+    let result = f.client.try_settle(&id, &asserter);
+    assert_eq!(result, Err(Ok(Error::AlreadySettled)));
+}
+
+#[test]
+fn test_settle_nonexistent_position_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let stranger = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    f.client.resolve_outcome(&id);
+
+    let result = f.client.try_settle(&id, &stranger);
+    assert_eq!(result, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_get_credit_returns_zero_for_unknown_address() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let stranger = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    assert_eq!(f.client.get_credit(&id, &stranger), 0);
+}

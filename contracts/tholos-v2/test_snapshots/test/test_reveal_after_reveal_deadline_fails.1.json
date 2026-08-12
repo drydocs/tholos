@@ -781,6 +781,14 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "agrees_with_outcome"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "amount"
                     },
                     "val": {
@@ -808,6 +816,14 @@
                     },
                     "val": {
                       "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -843,6 +859,14 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "agrees_with_outcome"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "amount"
                     },
                     "val": {
@@ -870,6 +894,14 @@
                     },
                     "val": {
                       "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -905,6 +937,14 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "agrees_with_outcome"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "amount"
                     },
                     "val": {
@@ -932,6 +972,14 @@
                     },
                     "val": {
                       "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   }
                 ]
@@ -967,6 +1015,12 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "agrees_with_outcome"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "amount"
                     },
                     "val": {
@@ -991,6 +1045,14 @@
                   {
                     "key": {
                       "symbol": "revealed"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled"
                     },
                     "val": {
                       "bool": false
@@ -1086,6 +1148,22 @@
                     },
                     "val": {
                       "u64": "3601"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled_recipient_weight"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "settled_reward_total"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   }
                 ]

@@ -9,9 +9,11 @@
 //! pinned at assertion creation, and the `AssertionV2` record it lives on),
 //! #65 (bonded assertion posting, and the uncontested-finalize path), #66
 //! (`dispute` and the third-party registration phase), #67 (the reveal
-//! phase and commitment verification), and #68 (weighted-majority outcome
-//! resolution: the strict-majority lock and optimistic-timeout default).
-//! Settlement and the freeze/cancel mechanism are separate issues (#69-#71)
+//! phase and commitment verification), #68 (weighted-majority outcome
+//! resolution: the strict-majority lock and optimistic-timeout default),
+//! and #69 (settlement: converting a locked outcome into per-position
+//! entitlements, forfeiture, and pro-rata reward distribution). Credit
+//! withdrawal and the freeze/cancel mechanism are separate issues (#70-#71)
 //! and land as this crate grows.
 
 use soroban_sdk::{
@@ -52,9 +54,11 @@ pub enum PayoutRuleVersion {
 }
 
 /// The lifecycle phase of an `AssertionV2`. `OutcomeLocked` (a strict majority
-/// reached before the reveal deadline) is folded into `Reveal` for now:
-/// distinguishing "revealing, outcome undecided" from "revealing, outcome
-/// already locked" only matters once settlement exists, which is #69's scope.
+/// reached before the reveal deadline) is folded into `Reveal`: an assertion
+/// stays `Reveal` after locking so other positions can keep revealing to
+/// prove entitlement for settlement (see `lock_outcome_if_undecided`), only
+/// reaching `Resolved` once `revealed_weight` catches up with the frozen
+/// eligible total or `reveal_deadline` passes.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhaseV2 {
@@ -153,6 +157,19 @@ pub struct Resolved {
     pub final_outcome: bool,
 }
 
+#[contractevent]
+pub struct Settled {
+    #[topic]
+    pub id: u64,
+    pub address: Address,
+    /// Principal plus pro-rata reward, or 0 for a forfeited position. Does
+    /// not include any leftover dust this settlement happened to route
+    /// (see `settle`); dust is credited but not reflected in this payout
+    /// figure, since it's incidental to which position happened to close
+    /// the recipient side out, not part of that position's own formula.
+    pub payout: i128,
+}
+
 /// What kind of position this is, and (for a `Fixed` one) which side it's
 /// on. The asserter's and disputer's sides are public by construction, no
 /// commitment needed; a third party's side stays hidden in its commitment
@@ -173,8 +190,9 @@ pub enum PositionKind {
 }
 
 /// One address's stake on one dispute. Non-transferable, keyed by
-/// `(assertion_id, address)`. Once funded, only exits through settlement
-/// (#69); this issue only ever grows `amount` via top-ups, never shrinks it.
+/// `(assertion_id, address)`. Once funded, only exits through settlement;
+/// registration and reveal only ever grow `amount` via top-ups, never
+/// shrink it.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Position {
@@ -189,6 +207,21 @@ pub struct Position {
     /// themselves (they have no commitment to verify) is rejected the same
     /// way a double-reveal is, no separate error variant needed.
     pub revealed: bool,
+    /// Whether this position agrees with the assertion's originally
+    /// asserted outcome. `None` until `revealed` is `true`: a `Fixed`
+    /// position's side is already implied by `PositionKind::Fixed`, but is
+    /// only copied in here (by `open_reveal_phase`) once reveal actually
+    /// opens, so `settle` has one uniform field to read regardless of
+    /// `PositionKind`, rather than needing to branch on it. `Option<bool>`
+    /// is fine here, unlike an `Option` of a custom enum: see
+    /// `TerminalCause`'s doc comment.
+    pub agrees_with_outcome: Option<bool>,
+    /// Whether `settle` has already run for this position. `settle` rejects
+    /// a position that's already `true` with `AlreadySettled`: a position's
+    /// payout is computed once and is final, since it depends on
+    /// `Resolution.settled_recipient_weight`, which every settlement (this
+    /// one included) advances.
+    pub settled: bool,
 }
 
 /// Registration-phase bookkeeping for one disputed assertion. Separate from
@@ -222,6 +255,17 @@ pub struct Resolution {
     /// Weight revealed against the asserted outcome, including the
     /// disputer's fixed position (counted automatically when reveal opens).
     pub disagree_weight: i128,
+    /// Cumulative weight of recipient (reward-eligible) positions already
+    /// settled. `settle` compares this against the winning side's total
+    /// recipient weight to detect the last settlement, the one that also
+    /// receives any leftover dust from floor division. See `settle`.
+    pub settled_recipient_weight: i128,
+    /// Cumulative reward (principal excluded) already distributed to
+    /// settled recipient positions. Needed to compute the exact leftover
+    /// dust on the last settlement: `forfeited_pool - settled_reward_total`
+    /// at that point, rather than re-deriving it from individual payouts
+    /// nothing here retains a record of. See `settle`.
+    pub settled_reward_total: i128,
 }
 
 impl Resolution {
@@ -343,6 +387,11 @@ pub enum DataKey {
     AssertionV2(u64),
     Resolution(u64),
     Position(u64, Address),
+    /// Token units `settle` has credited an address for one assertion, not
+    /// yet withdrawn. A bare `i128` rather than a wrapper struct: it's the
+    /// only value this key ever holds. Withdrawal (a separate issue) is
+    /// what actually moves tokens against this balance.
+    Credit(u64, Address),
 }
 
 #[contracterror]
@@ -413,6 +462,15 @@ pub enum Error {
     /// `reveal_deadline` has passed, and before all eligible weight has
     /// revealed.
     RevealNotClosed = 28,
+    /// `settle` called before the assertion has reached `PhaseV2::Resolved`.
+    NotResolved = 29,
+    /// `settle` called on a position that's already settled.
+    AlreadySettled = 30,
+    /// A checked arithmetic operation in `settle` would have overflowed
+    /// `i128`. Not expected to be reachable given `initialize`'s
+    /// `max_total_weight`/`max_position` bounds, but settlement moves real
+    /// funds, so it's checked rather than assumed.
+    SettlementArithmeticOverflow = 31,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -438,12 +496,26 @@ const MAX_FINALIZE_REWARD_BPS: u32 = 1_000;
 /// overflow `i128`, for any `finalize_reward_bps` up to
 /// `MAX_FINALIZE_REWARD_BPS`. At `assert_outcome` time only one bond has
 /// entered escrow (no disputer yet), so this reward-multiply constraint is
-/// the only one that applies at this stage; #69's settlement arithmetic
-/// (`s_i * forfeited_pool / recipient_weight`) has its own, separate overflow
-/// characteristics and must independently verify or tighten this bound when
-/// that issue lands, the same way `max_total_weight` is already checked
-/// against it in `initialize` below.
+/// the only one that applies at this stage.
 const MAX_BOND_AMOUNT: i128 = i128::MAX / (MAX_FINALIZE_REWARD_BPS as i128);
+
+/// Bound on `max_total_weight` (and, transitively, `max_position`, which
+/// `initialize` already requires to be no larger) so `settle`'s
+/// forfeiture-distribution multiply (`position.amount * forfeited_pool`,
+/// computed before the divide by `recipient_weight`) can't overflow `i128`.
+/// Both operands are themselves bounded by `max_total_weight`
+/// (`position.amount <= max_position <= max_total_weight`, and
+/// `forfeited_pool <= eligible_total <= max_total_weight`), so bounding
+/// their product requires `max_total_weight^2 <= i128::MAX`, i.e.
+/// `max_total_weight <= sqrt(i128::MAX)` (~1.3 * 10^19). This is far
+/// tighter than `MAX_BOND_AMOUNT` above (~1.7 * 10^35), which only had to
+/// keep a single multiply by `MAX_FINALIZE_REWARD_BPS` in range: bounding
+/// `max_total_weight` by `MAX_BOND_AMOUNT` alone, as `initialize` did
+/// before this issue, would let `settle`'s multiply overflow for any
+/// realistically large, heavily-contested dispute. 10^19 leaves comfortable
+/// headroom under the true `sqrt(i128::MAX)` limit while still supporting
+/// any deployment token's full realistic supply range.
+const MAX_SETTLEMENT_TOTAL_WEIGHT: i128 = 10_000_000_000_000_000_000;
 
 /// This proposal has exactly one weighted round: no recursive appeals or
 /// repeated stake rounds, per V2_RESOLUTION.md's "Lifecycle and the single
@@ -516,7 +588,7 @@ impl TholosV2 {
         // trips the max_position check first (no positive max_position can
         // ever be <= a non-positive total), making InvalidMaxTotalWeight's
         // <= 0 case unreachable.
-        if max_total_weight <= 0 || max_total_weight > MAX_BOND_AMOUNT {
+        if max_total_weight <= 0 || max_total_weight > MAX_SETTLEMENT_TOTAL_WEIGHT {
             return Err(Error::InvalidMaxTotalWeight);
         }
         // A position can't usefully exceed the frozen total it's part of.
@@ -808,6 +880,8 @@ impl TholosV2 {
                 amount: policy.base_bond,
                 kind: PositionKind::Fixed(true),
                 revealed: false,
+                agrees_with_outcome: None,
+                settled: false,
             },
         );
         Self::set_position(
@@ -818,6 +892,8 @@ impl TholosV2 {
                 amount: policy.base_bond,
                 kind: PositionKind::Fixed(false),
                 revealed: false,
+                agrees_with_outcome: None,
+                settled: false,
             },
         );
 
@@ -830,6 +906,8 @@ impl TholosV2 {
             reveal_deadline: 0,
             agree_weight: 0,
             disagree_weight: 0,
+            settled_recipient_weight: 0,
+            settled_reward_total: 0,
         };
         Self::set_resolution(&env, id, &resolution);
 
@@ -965,6 +1043,8 @@ impl TholosV2 {
                 // Always false here: register() only succeeds during
                 // Registration, before reveal has even opened.
                 revealed: false,
+                agrees_with_outcome: None,
+                settled: false,
             },
         );
         resolution.eligible_total = new_total;
@@ -1040,6 +1120,7 @@ impl TholosV2 {
                 resolution.disagree_weight += position.amount;
             }
             position.revealed = true;
+            position.agrees_with_outcome = Some(agrees_with_asserter);
             Self::set_position(env, id, fixed_voter, &position);
         }
 
@@ -1228,10 +1309,12 @@ impl TholosV2 {
             return Err(Error::CommitmentVerificationFailed);
         }
 
+        let agrees = choice == assertion.outcome;
         position.revealed = true;
+        position.agrees_with_outcome = Some(agrees);
         Self::set_position(&env, id, &voter, &position);
 
-        if choice == assertion.outcome {
+        if agrees {
             resolution.agree_weight += position.amount;
         } else {
             resolution.disagree_weight += position.amount;
@@ -1313,6 +1396,219 @@ impl TholosV2 {
         assertion = Self::close_reveal_if_ready(&env, id, assertion, &resolution, true);
 
         Ok(assertion.terminal_cause)
+    }
+
+    /// The winning side's total recipient weight, and the total weight
+    /// forfeited to it, for a `Resolved` assertion's `terminal_cause`.
+    /// Purely a function of already-frozen `resolution` fields (nothing
+    /// changes in `Resolution` once `phase == Resolved`), so every `settle`
+    /// call recomputes the identical pair regardless of call order, exactly
+    /// what "captured at outcome-lock time" in #69 requires without needing
+    /// to separately persist it.
+    ///
+    /// - `StrictMajorityFor`: the agreeing side recovers principal; the
+    ///   disagreeing side and anything never revealed is forfeited to it.
+    /// - `StrictMajorityAgainst`: the mirror image, disagreeing side wins.
+    /// - `OptimisticTimeout`: every revealed position on either side
+    ///   recovers principal; only non-revealed weight is forfeited.
+    ///
+    /// Panics (via `unreachable!`) for any other `TerminalCause`: `settle`
+    /// only calls this once `phase == Resolved`, and `close_reveal_if_ready`
+    /// is the only place that sets `phase = Resolved`, always pairing it
+    /// with one of the three causes handled here.
+    fn settlement_pool(terminal_cause: TerminalCause, resolution: &Resolution) -> (i128, i128) {
+        let recipient_weight = match terminal_cause {
+            TerminalCause::StrictMajorityFor => resolution.agree_weight,
+            TerminalCause::StrictMajorityAgainst => resolution.disagree_weight,
+            TerminalCause::OptimisticTimeout => resolution.revealed_weight(),
+            _ => unreachable!(
+                "settle only runs once phase == Resolved, which always pairs with one of these three terminal causes"
+            ),
+        };
+        let forfeited_pool = resolution.eligible_total - recipient_weight;
+        (recipient_weight, forfeited_pool)
+    }
+
+    /// Adds `amount` to `(id, address)`'s withdrawable credit balance,
+    /// leaving it untouched if `amount` is 0. Read-modify-write rather than
+    /// a bare `set`: a single settlement can touch an address's credit up
+    /// to twice (its own payout, and separately, if it happens to be the
+    /// deterministic dust recipient described in `settle`), and those two
+    /// additions must not clobber each other regardless of which happens
+    /// first.
+    fn add_credit(env: &Env, id: u64, address: &Address, amount: i128) -> Result<(), Error> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let key = DataKey::Credit(id, address.clone());
+        let existing: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let updated = existing
+            .checked_add(amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
+        env.storage().persistent().set(&key, &updated);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        Ok(())
+    }
+
+    /// Read-only lookup of one address's withdrawable credit balance on one
+    /// assertion, accrued so far by `settle`. Returns 0 for an address with
+    /// no credit record rather than failing: unlike `get_position`, "never
+    /// settled anything here" isn't a caller error worth surfacing as one.
+    pub fn get_credit(env: Env, id: u64, address: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Credit(id, address))
+            .unwrap_or(0)
+    }
+
+    /// Converts one position's share of a decided outcome into withdrawable
+    /// credit. Permissionless: any caller may settle any known position,
+    /// and settling doesn't move tokens itself (see `get_credit`); a
+    /// separate withdrawal step, not yet implemented, is what actually
+    /// transfers tokens against the accrued balance.
+    ///
+    /// Requires `phase == Resolved` (`NotResolved` otherwise): settlement
+    /// needs final, frozen tallies, which don't exist yet mid-`Reveal` even
+    /// after the outcome has locked (see `PhaseV2::Reveal`'s doc comment).
+    /// Fails with `AlreadySettled` if `address`'s position here has already
+    /// settled.
+    ///
+    /// A position on the winning side (per `settlement_pool`'s rule for
+    /// this assertion's `terminal_cause`) recovers its principal plus a
+    /// pro-rata share of the forfeited pool: `reward = floor(amount *
+    /// forfeited_pool / recipient_weight)`. A losing or never-revealed
+    /// position recovers nothing; its principal is exactly what became
+    /// part of the forfeited pool the winners are splitting.
+    ///
+    /// Every position's `reward` is computed from the same
+    /// `(recipient_weight, forfeited_pool)` pair (see `settlement_pool`),
+    /// so settling positions in any order, or interleaved with other
+    /// assertions' settlements, never changes any individual result.
+    /// Floor division leaves at most `recipient_weight - 1` units of
+    /// indivisible dust; once this settlement brings
+    /// `Resolution.settled_recipient_weight` up to the full
+    /// `recipient_weight` (i.e. this was the last recipient position left
+    /// to settle), any such dust is credited to a deterministic party: the
+    /// winning asserter or disputer after a strict-majority result, or the
+    /// asserter after a timeout default (both are always themselves a
+    /// recipient position under this assertion's rule, so this never
+    /// invents a new participant). Skipped entirely when `forfeited_pool`
+    /// is 0.
+    ///
+    /// Returns this position's own payout (principal plus reward, or 0 if
+    /// forfeited; never includes dust routed to a different address in the
+    /// same call). Emits `Settled`.
+    pub fn settle(env: Env, id: u64, address: Address) -> Result<i128, Error> {
+        let assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        if assertion.phase != PhaseV2::Resolved {
+            return Err(Error::NotResolved);
+        }
+
+        // An uncontested assertion resolved via finalize() never had a
+        // Resolution or any Position created for it at all (only dispute()
+        // creates those); the position lookup below would surface a
+        // misleading AssertionNotFound for that case, so this is checked
+        // first with a clearer, dedicated error instead.
+        if assertion.terminal_cause == TerminalCause::UncontestedFinalize {
+            return Err(Error::NotResolved);
+        }
+
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .ok_or(Error::AssertionNotFound)?;
+
+        let mut position: Position = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Position(id, address.clone()))
+            .ok_or(Error::AssertionNotFound)?;
+        if position.settled {
+            return Err(Error::AlreadySettled);
+        }
+
+        let (recipient_weight, forfeited_pool) =
+            Self::settlement_pool(assertion.terminal_cause, &resolution);
+
+        let is_recipient = match assertion.terminal_cause {
+            TerminalCause::StrictMajorityFor => position.agrees_with_outcome == Some(true),
+            TerminalCause::StrictMajorityAgainst => position.agrees_with_outcome == Some(false),
+            TerminalCause::OptimisticTimeout => position.agrees_with_outcome.is_some(),
+            _ => unreachable!("settlement_pool above already panics for any other terminal_cause"),
+        };
+
+        let payout = if is_recipient {
+            // recipient_weight is always > 0 whenever is_recipient is true:
+            // the asserter's and disputer's fixed positions are always
+            // auto-revealed the moment Reveal opens, so agree_weight,
+            // disagree_weight, and revealed_weight() can never be 0 by the
+            // time phase == Resolved. Checked anyway; settlement moves real
+            // funds, not something to lean on an argument for.
+            let reward = position
+                .amount
+                .checked_mul(forfeited_pool)
+                .and_then(|product| product.checked_div(recipient_weight))
+                .ok_or(Error::SettlementArithmeticOverflow)?;
+
+            resolution.settled_recipient_weight = resolution
+                .settled_recipient_weight
+                .checked_add(position.amount)
+                .ok_or(Error::SettlementArithmeticOverflow)?;
+            resolution.settled_reward_total = resolution
+                .settled_reward_total
+                .checked_add(reward)
+                .ok_or(Error::SettlementArithmeticOverflow)?;
+
+            if forfeited_pool > 0 && resolution.settled_recipient_weight == recipient_weight {
+                let dust = forfeited_pool - resolution.settled_reward_total;
+                if dust > 0 {
+                    let dust_recipient = match assertion.terminal_cause {
+                        TerminalCause::StrictMajorityFor => assertion.asserter.clone(),
+                        TerminalCause::StrictMajorityAgainst => assertion
+                            .disputer
+                            .clone()
+                            .expect("disputer set once phase reaches Registration"),
+                        TerminalCause::OptimisticTimeout => assertion.asserter.clone(),
+                        _ => unreachable!(
+                            "settlement_pool above already panics for any other terminal_cause"
+                        ),
+                    };
+                    Self::add_credit(&env, id, &dust_recipient, dust)?;
+                }
+            }
+            Self::set_resolution(&env, id, &resolution);
+
+            position
+                .amount
+                .checked_add(reward)
+                .ok_or(Error::SettlementArithmeticOverflow)?
+        } else {
+            0
+        };
+
+        position.settled = true;
+        Self::set_position(&env, id, &address, &position);
+
+        Self::add_credit(&env, id, &address, payout)?;
+
+        Settled {
+            id,
+            address,
+            payout,
+        }
+        .publish(&env);
+
+        Ok(payout)
     }
 }
 

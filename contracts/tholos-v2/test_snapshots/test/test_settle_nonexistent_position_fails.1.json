@@ -63,7 +63,7 @@
                   "u64": "3600"
                 },
                 {
-                  "i128": "150"
+                  "i128": "1000000"
                 },
                 {
                   "i128": "10000000"
@@ -227,12 +227,14 @@
         }
       ]
     ],
+    [],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 26,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 3601,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -380,7 +382,9 @@
                     "key": {
                       "symbol": "final_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": true
+                    }
                   },
                   {
                     "key": {
@@ -419,7 +423,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "Registration"
+                          "symbol": "Resolved"
                         }
                       ]
                     }
@@ -475,7 +479,7 @@
                             "symbol": "max_position"
                           },
                           "val": {
-                            "i128": "150"
+                            "i128": "1000000"
                           }
                         },
                         {
@@ -562,7 +566,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "bea16dd2b9c07d0117fd494aca3f5351976ffbed6c9fd7d6946bd14c5d342278"
+                      "bytes": "d447481bc4436059290521fcb6e05656686b9e86e5523def087dd10087e291d4"
                     }
                   },
                   {
@@ -572,7 +576,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "NotYetDecided"
+                          "symbol": "OptimisticTimeout"
                         }
                       ]
                     }
@@ -612,7 +616,9 @@
                     "key": {
                       "symbol": "agrees_with_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": true
+                    }
                   },
                   {
                     "key": {
@@ -642,7 +648,7 @@
                       "symbol": "revealed"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -688,7 +694,9 @@
                     "key": {
                       "symbol": "agrees_with_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": false
+                    }
                   },
                   {
                     "key": {
@@ -718,7 +726,7 @@
                       "symbol": "revealed"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -762,7 +770,7 @@
                       "symbol": "agree_weight"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "100"
                     }
                   },
                   {
@@ -770,7 +778,7 @@
                       "symbol": "disagree_weight"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "100"
                     }
                   },
                   {
@@ -810,7 +818,7 @@
                       "symbol": "reveal_deadline"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "7201"
                     }
                   },
                   {
@@ -818,7 +826,7 @@
                       "symbol": "reveal_opened_at"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "3601"
                     }
                   },
                   {
@@ -939,7 +947,7 @@
                               "symbol": "max_position"
                             },
                             "val": {
-                              "i128": "150"
+                              "i128": "1000000"
                             }
                           },
                           {

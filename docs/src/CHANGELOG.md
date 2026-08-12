@@ -76,6 +76,27 @@ All notable changes to this project are documented here. Format follows
   third-party registrations can ever leave `Registration`, since nobody
   would otherwise have a position to call `reveal` with. Closes #68.
 
+- `tholos-v2`: settlement, converting a `Resolved` assertion's decided
+  outcome into per-position entitlements via a new permissionless
+  `settle(id, address)`. A winning position (per `terminal_cause`: the
+  agreeing side for `StrictMajorityFor`, the disagreeing side for
+  `StrictMajorityAgainst`, either side if revealed for `OptimisticTimeout`)
+  recovers its principal plus a pro-rata share of the forfeited pool from
+  losing/never-revealed positions; a losing or never-revealed position
+  recovers nothing. Every position's share is computed from the same
+  `(recipient_weight, forfeited_pool)` pair, derived purely from `Resolution`
+  fields already frozen once `phase == Resolved`, so settling positions in
+  any order never changes any individual result. `settle` doesn't move
+  tokens itself, it accrues the payout to a new `Credit(id, address)` record
+  (`get_credit` reads it); withdrawal is a separate, not yet implemented,
+  issue. Leftover dust from floor division is credited to a deterministic
+  party (the winning asserter/disputer, or the asserter for a timeout
+  default) once the last recipient position settles. Tightens
+  `initialize`'s `max_total_weight` bound from `MAX_BOND_AMOUNT` (~1.7 *
+  10^35) to a new `MAX_SETTLEMENT_TOTAL_WEIGHT` (10^19), since the old bound
+  was nowhere near tight enough to keep settlement's `amount *
+  forfeited_pool` multiply inside `i128`. Closes #69.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
