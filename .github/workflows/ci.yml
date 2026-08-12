@@ -119,10 +119,10 @@ jobs:
         with:
           key: sdk
 
-      # stellar-cli pulls in libdbus-sys, which needs the system dbus-1
-      # library at build time; ubuntu-latest doesn't have it preinstalled.
+      # stellar-cli pulls in libdbus-sys (dbus-1) and hidapi (libudev, for
+      # hardware wallet support), neither preinstalled on ubuntu-latest.
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
 
       # Pinned to the version used to originally generate packages/tholos-sdk.
       # Bump deliberately, not incidentally, since a newer CLI could change
