@@ -137,6 +137,27 @@ All notable changes to this project are documented here. Format follows
   separate from `Resolved`, so indexers can always tell a cancellation
   apart from a real outcome. Closes #71.
 
+- `docs/src/INTEGRATION.md`: a new "Tholos v2" section covering the v2
+  function-by-function lifecycle (`assert_outcome` through `withdraw`), why
+  an assertion's identity is now `(contract_id, assertion_id)` rather than
+  a bare `id` (v1 and v2 each have their own `NextId` counter, so both can
+  independently issue id `0`), and the current gaps (no canonical v2
+  testnet deployment yet, `packages/tholos-sdk` targets v1 only,
+  `demos/freelance-escrow` still talks to v1).
+
+- `docs/src/V2_MIGRATION.md`: a new runbook for the v1/v2 coexistence
+  period, since v1 has no WASM upgrade entry point and no state importer,
+  and a bond already locked in an open v1 dispute can't move contracts
+  without changing who's liable for it. Covers inventorying an existing v1
+  deployment from its transactions and event history (v1 exposes no public
+  config/version/`NextId` getter), deploying v2 fresh without copying v1's
+  assertion records or pooled token balance, cutting new traffic over from
+  a recorded point, and draining v1's remaining open assertions to
+  completion without pausing it (pausing blocks `dispute`/`resolve` while
+  leaving `finalize` callable, which could let a pending assertion's
+  challenge window close without ever having had a real chance to be
+  disputed). Closes #73.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

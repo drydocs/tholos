@@ -181,6 +181,77 @@ resolved; it is `None` while the assertion is still `Pending` or `Disputed`.
 | `resolvers` | Must be odd-length, non-zero, distinct, and at most 21 addresses; v1 rejects duplicates with `DuplicateResolvers`. See [CONTRACT.md](CONTRACT.md) for what `update_resolvers` can and can't change mid-dispute. |
 | `finalize_reward_bps` | 0–1000 basis points of the bond paid to whoever calls `finalize`. Auth is always required from the caller, regardless of this value. 0 (default) returns the full bond to the asserter with no reward; non-zero values incentivize prompt finalization. |
 
+## Tholos v2
+
+Everything above this section is v1: the fixed-committee-vote contract in
+`contracts/tholos`, deployed and stable. `contracts/tholos-v2` is a wholly
+separate, stake-weighted contract (design in
+[V2_RESOLUTION.md](V2_RESOLUTION.md)), never an upgrade of v1 in place; the
+two run side by side rather than one replacing the other. See
+[V2_MIGRATION.md](V2_MIGRATION.md) for the coexistence period specifically:
+how to inventory a v1 deployment, when to cut new traffic over, and how to
+retire v1 operationally once its accepted assertions have drained.
+
+### Assertion identity changes
+
+Because v1 and v2 are independent deployments, each with its own `NextId`
+counter starting at 0, an assertion `id` is only unique *within* one
+contract. Two different assertions, one on each deployment, can both be id
+`0` at the same time. Once you integrate with both, track `(contract_id,
+assertion_id)` as the pair that actually identifies an assertion, not the
+bare `id` alone; `market_id -> (contract_id, assertion_id)` if you're
+already storing a mapping per the advice above.
+
+### Lifecycle at a glance
+
+v2 splits what v1 does in one `resolve` call into a multi-phase flow: an
+optimistic stage identical in shape to v1's, followed by a bounded
+registration window and a commit-reveal vote open to any address willing to
+post a bond, not just a fixed committee.
+
+```text
+assert_outcome -> [uncontested: finalize]
+                -> [disputed: dispute -> register* -> reveal* -> resolve_outcome]
+                       -> settle* (once per funded position)
+                       -> withdraw* (once per address with a credit balance)
+```
+
+(`*` marks calls made once per participant, not once per assertion.)
+
+| Function | What it does |
+| --- | --- |
+| `assert_outcome(asserter, outcome) -> u64` | Posts a bonded claim. Same shape as v1's. |
+| `finalize(caller, id) -> bool` | Closes an uncontested assertion out once `challenge_window_secs` has elapsed. Same caller-auth-always-required rule as v1. |
+| `dispute(disputer, id)` | Opens the registration window. `disputer`'s bond becomes the fixed disagreeing position; the asserter's existing bond becomes the fixed agreeing one. |
+| `register(voter, id, amount, commitment)` | Any third-party address posts a bond and a salted commitment to its eventual side, without revealing it yet. Repeated calls from the same voter top up one position; the commitment can't change after the first deposit. |
+| `reveal(voter, id, choice, salt)` | Discloses and verifies a registered position's side. Lazily closes registration and opens reveal on the first call after `registration_deadline`, permissionlessly. |
+| `resolve_outcome(id) -> TerminalCause` | Permissionlessly closes reveal out once it's decided: a strict majority locked, everyone eligible revealed, or the deadline passed. Needed specifically for the case nobody's `reveal` call would otherwise trigger it (see "Known gaps" below). |
+| `settle(id, address) -> i128` | Converts one position's share of the decided outcome into withdrawable credit. Permissionless: anyone may settle anyone's known position. Doesn't move tokens. |
+| `withdraw(owner, id, destination) -> i128` | Pays out `owner`'s full credit balance to `destination` (any address, not necessarily `owner`). |
+| `get_credit(id, address) -> i128` | Read-only lookup of a withdrawable credit balance. |
+| `set_paused_v2(paused)` | Admin-only. Blocks new `assert_outcome` calls; unlike v1's pause, an already-active round keeps running (registration, reveal, settlement, withdrawal) even while paused. |
+| `cancel_round(id)` | Admin-only, and only while paused. Cancels a round before any terminal outcome has locked, refunding every funded position its exact principal. See [V2_RESOLUTION.md](V2_RESOLUTION.md) for why this exists and what it deliberately can't do. |
+
+Reading the outcome and reacting to state changes follows the same two
+options as v1 (poll `get_assertion(id)` for `phase == Resolved`, or watch
+events), just against `AssertionV2`'s fields (`terminal_cause`,
+`final_outcome`) instead of v1's `Assertion.status`.
+
+### Known gaps
+
+- **No canonical v2 deployment yet.** Unlike v1 (see
+  [DEPLOYMENT.md](DEPLOYMENT.md#canonical-testnet-deployment)), there's no
+  shared, long-lived v2 instance to point at yet. Deploy your own for now,
+  following the same parameter guidance as v1's deployment section, until a
+  canonical one exists.
+- **`packages/tholos-sdk` targets v1 only.** The generated TypeScript client
+  described above is built from `contracts/tholos`'s wasm, not
+  `contracts/tholos-v2`'s. A browser or Node app integrating with v2 today
+  needs its own `contractimport!`-equivalent tooling or hand-rolled calls
+  until v2 gets its own generated bindings.
+- **`demos/freelance-escrow` still talks to v1.** Migrating it to v2 is a
+  separate follow-up, not bundled with the rest of the v2 work.
+
 ## Known caveats for integrators
 
 - Finalize always requires caller's authorization: `caller.require_auth()` is

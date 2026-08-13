@@ -10,6 +10,7 @@
 - [Deployment & Operations](DEPLOYMENT.md)
     - [Bond Sizing Analysis](BOND_SIZING.md)
 - [Integration Guide](INTEGRATION.md)
+    - [v1/v2 Migration Runbook](V2_MIGRATION.md)
 - [Glossary](GLOSSARY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)
