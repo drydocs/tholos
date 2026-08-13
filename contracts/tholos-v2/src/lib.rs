@@ -1606,10 +1606,12 @@ impl TholosV2 {
     ///   never reaches `settle`.
     ///
     /// Panics (via `unreachable!`) for `NotYetDecided` or
-    /// `UncontestedFinalize`: `settle` only calls this once
-    /// `phase == Resolved`, and both `close_reveal_if_ready` and
-    /// `cancel_round` are the only places that set `phase = Resolved`,
-    /// always pairing it with one of the four causes handled here.
+    /// `UncontestedFinalize`: `settle` rejects `UncontestedFinalize` itself
+    /// before ever calling this (see its own doc comment), and
+    /// `NotYetDecided` is impossible once `phase == Resolved`, which
+    /// `close_reveal_if_ready` and `cancel_round` (the only two places
+    /// that set it, besides `finalize`'s own `UncontestedFinalize` path)
+    /// always pair with one of the four causes handled here.
     fn settlement_pool(terminal_cause: TerminalCause, resolution: &Resolution) -> (i128, i128) {
         let recipient_weight = match terminal_cause {
             TerminalCause::StrictMajorityFor => resolution.agree_weight,
