@@ -817,11 +817,11 @@ impl TholosV2 {
     /// complete (because it was written before the transfer) while the
     /// tokens backing it haven't actually moved yet.
     ///
-    /// `reveal`, `resolve_outcome`, and `settle` also check this at their
-    /// own entry, even though none of them move tokens themselves: all
-    /// three can act on a position's weight or credit, which the guard
-    /// above exists specifically to keep provisional until its funding
-    /// transfer actually completes.
+    /// `reveal`, `resolve_outcome`, `settle`, and `cancel_round` also check
+    /// this at their own entry, even though none of them move tokens
+    /// themselves: all four can act on a position's weight, credit, or
+    /// terminal state, which the guard above exists specifically to keep
+    /// provisional until its funding transfer actually completes.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
         Self::check_reentrancy_guard(env)?;
         env.storage()
@@ -1952,6 +1952,8 @@ impl TholosV2 {
     /// real outcome emits instead), so indexers can always tell the two
     /// apart.
     pub fn cancel_round(env: Env, id: u64) -> Result<(), Error> {
+        Self::check_reentrancy_guard(&env)?;
+
         let admin: Address = env
             .storage()
             .instance()

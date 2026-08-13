@@ -2342,6 +2342,19 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
         f.client.try_dispute(&disputer, &pending_id),
         Err(Ok(Error::ReentrancyGuardActive))
     );
+
+    // cancel_round only works while paused; set_paused_v2 isn't itself
+    // guarded (it only ever touches the Paused flag, never a position's
+    // weight, credit, or terminal state), so calling it here doesn't
+    // disturb the guard. pending_id is still NotYetDecided, since the
+    // guard-blocked dispute() above reverted entirely, and is reused here
+    // to prove the guard, not the pause itself, is what blocks
+    // cancel_round.
+    f.client.set_paused_v2(&true);
+    assert_eq!(
+        f.client.try_cancel_round(&pending_id),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
     assert_eq!(
         f.client.try_finalize(&asserter, &finalize_id),
         Err(Ok(Error::ReentrancyGuardActive))
