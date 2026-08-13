@@ -1,0 +1,13 @@
+[package]
+name = "compute-commitment"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+soroban-sdk = "26.1.0"
+tholos-v2 = { path = "../../contracts/tholos-v2" }

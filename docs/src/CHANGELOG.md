@@ -163,6 +163,30 @@ All notable changes to this project are documented here. Format follows
   is meant to be read alongside rather than duplicate independently.
   Closes #73.
 
+- `scripts/testnet-load-v2.sh`: an E2E load test for `tholos-v2` against real
+  Stellar testnet infrastructure, the v2 analog of `scripts/testnet-load.sh`.
+  Opens two disputes concurrently, funds several third-party positions on
+  one of them (real, individually computed `sha256(VoteCommitmentPreimage)`
+  commitments, not placeholders, since `reveal` would reject anything else),
+  drives one dispute to a strict-majority result and the other to the
+  optimistic timeout default, then settles and withdraws every position
+  across both in an order deliberately different from registration order,
+  to exercise `settle`/`withdraw`'s order-independence invariant from #69.
+  Records per-phase and per-invocation timing.
+
+  Adds a new `tools/compute-commitment` crate (a path dependency on
+  `tholos-v2`, reusing its `VoteCommitmentPreimage` type directly rather
+  than duplicating the hashing logic) so `register`/`reveal`'s off-chain
+  callers can compute a real commitment without hand-rolling the XDR
+  encoding themselves; a separate crate rather than living inside
+  `tholos-v2/src/bin/`, since `stellar contract build` needs exactly one
+  buildable target per package and errors on the ambiguity a second target
+  would introduce. Since `wasm32v1-none` has no `std`, this also means
+  `.github/workflows/ci.yml`'s "Build contract wasm" step now runs `cargo
+  build --workspace --lib` rather than every target: only each crate's
+  library needs to build for that target, not a host-side helper binary
+  that was never meant to. Closes #74.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

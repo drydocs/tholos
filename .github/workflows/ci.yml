@@ -37,7 +37,7 @@ jobs:
           # members list is invisible to `cargo build/test/clippy --workspace`,
           # so CI can pass while never touching it (see #43).
           missing=0
-          for manifest in contracts/*/Cargo.toml; do
+          for manifest in contracts/*/Cargo.toml tools/*/Cargo.toml; do
             dir=$(dirname "$manifest")
             if ! grep -qF "\"$dir\"" Cargo.toml; then
               echo "::error::$dir has a Cargo.toml but is not listed in the root Cargo.toml's [workspace] members. Add it there before this crate can be built, tested, or linted by CI."
@@ -76,8 +76,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      # --lib: wasm32v1-none has no std, so tools/compute-commitment (a
+      # plain host-side binary, not a contract) can't compile for this
+      # target at all; only each crate's library (the actual deployable
+      # contract) needs to.
       - name: Build contract wasm
-        run: cargo build --workspace --target wasm32v1-none --release --locked
+        run: cargo build --workspace --lib --target wasm32v1-none --release --locked
 
   demo:
     runs-on: ubuntu-latest

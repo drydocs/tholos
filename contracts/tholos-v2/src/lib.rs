@@ -343,18 +343,26 @@ impl Resolution {
 /// same canonical-encoding approach `PolicySnapshotV2.policy_hash` already
 /// uses (see `create_pending_assertion`), so the domain separation is
 /// unambiguous by construction rather than by convention.
+///
+/// `pub`, not crate-private: `tools/compute-commitment` (a separate crate,
+/// a path dependency on this one) constructs one directly to compute a
+/// real commitment off-chain (for `register`) the same way `reveal`
+/// verifies one, rather than duplicating this struct's shape and risking
+/// drift between the two. This doesn't change the contract's own on-chain
+/// interface at all, `pub` here is a Rust visibility modifier for tooling,
+/// not a new callable function or a change to this type's XDR encoding.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct VoteCommitmentPreimage {
-    domain: Symbol,
-    network_id: BytesN<32>,
-    contract_address: Address,
-    policy_hash: BytesN<32>,
-    assertion_id: u64,
-    round: u32,
-    voter: Address,
-    choice: bool,
-    salt: BytesN<32>,
+pub struct VoteCommitmentPreimage {
+    pub domain: Symbol,
+    pub network_id: BytesN<32>,
+    pub contract_address: Address,
+    pub policy_hash: BytesN<32>,
+    pub assertion_id: u64,
+    pub round: u32,
+    pub voter: Address,
+    pub choice: bool,
+    pub salt: BytesN<32>,
 }
 
 /// Pinned in full onto every `AssertionV2` at creation time, never mutated

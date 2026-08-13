@@ -56,6 +56,12 @@ packages/
                          `stellar contract bindings typescript`; regenerate
                          whenever the contract's public interface changes
                          (CI checks for drift), see its own README
+tools/
+  compute-commitment/   Off-chain helper computing register()/reveal()'s salted vote
+                         commitment for v2, via a path dependency on tholos-v2's own
+                         VoteCommitmentPreimage type; a plain host binary, not a
+                         contract, so it has no [lib]/cdylib target and `cargo build
+                         --workspace --lib --target wasm32v1-none` skips it deliberately
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/
