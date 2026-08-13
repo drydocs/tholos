@@ -12,6 +12,13 @@ See [INTEGRATION.md](INTEGRATION.md#tholos-v2) for the function-level
 differences between the two contracts. This doc is about the operational
 sequence of moving traffic from one to the other, not the interface itself.
 
+[V2_RESOLUTION.md's "Migration from existing v1 deployments"](V2_RESOLUTION.md#migration-from-existing-v1-deployments)
+already covers this same period from a design-time angle (why blue/green,
+what can and can't be guaranteed, the rollback boundary). This doc restates
+those steps as a practical runbook rather than duplicating them
+independently; treat the two as one account split across two docs, not two
+separate opinions, and update both together if either changes.
+
 ## Why there's no automated migration
 
 - **No upgrade entry point.** V1's WASM is immutable once deployed; nothing
@@ -100,13 +107,18 @@ after cutover, already on v2."
 
 ## 4. Let v1 drain, without pausing it
 
-**Do not pause v1 during drain.** `set_paused` blocks `dispute` and
-`resolve` together, while leaving `finalize` callable (see
-[DEPLOYMENT.md](DEPLOYMENT.md#pausing-during-an-incident)). Pausing during
-drain would let any `Pending` assertion whose challenge window closes while
-paused finalize uncontested, without the dispute window it was actually
-promised, exactly the risk that admin runbook section already warns pause
-is not a safe migration or retirement switch.
+**Do not pause v1 during drain.** `set_paused` blocks `assert_outcome`,
+`dispute`, `resolve`, and `finalize` all together (see
+[DEPLOYMENT.md](DEPLOYMENT.md#pausing-during-an-incident) and
+[INTEGRATION.md](INTEGRATION.md#known-caveats-for-integrators)); there's no
+way to pause only new direct-caller assertions while leaving every already-
+open `Pending`/`Disputed` assertion free to finalize or resolve normally.
+Pausing during drain doesn't protect anything, since drain is a routine
+wind-down, not an incident, it just stalls every assertion still in flight
+(a `Pending` one past its challenge window can't finalize, a `Disputed` one
+can't resolve) for as long as the pause lasts, working directly against the
+point of this step. This is the same reason `DEPLOYMENT.md`'s admin runbook
+already warns not to use pause as a migration or retirement switch.
 
 Instead, simply stop sending new `assert_outcome` calls to v1 (step 3
 already does this) and let the inventory from step 1 run its natural
@@ -117,7 +129,16 @@ touching assertions that haven't had their full, promised window to be
 contested; don't try to accelerate it.
 
 Track the inventory set from step 1 against `Finalized`/`Resolved` events
-as they arrive. V1 is fully drained once every id in that set has one.
+as they arrive. V1 is fully drained once every id in that set has one, but
+this isn't guaranteed to happen on any timeline: v1 has no timeout or
+cancellation for a dispute whose snapshotted committee can no longer reach
+a majority (a resolver gone unreachable, a duplicate-filled snapshot from
+older v1 bytecode that never validated distinctness), so a stuck dispute
+can leave drain, and full v1 retirement, permanently incomplete. See
+[V2_RESOLUTION.md's "Migration from existing v1 deployments"](V2_RESOLUTION.md#migration-from-existing-v1-deployments)
+for the fuller design-time treatment of this and the rollback boundary;
+this runbook is the practical step-by-step version of the same period, and
+the two should be read together rather than as competing accounts.
 
 ## 5. Retire v1 operationally
 

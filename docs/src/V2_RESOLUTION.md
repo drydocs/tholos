@@ -613,10 +613,12 @@ Keep the v1 committee stable during drain unless an incident requires a change,
 and analyze that change against the verified WASM first. Rotation cannot repair
 an unavailable or malformed committee already captured by a snapshot.
 
-Do not pause v1 during this drain. V1 pause blocks both `dispute` and `resolve`
-while leaving `finalize` callable; pausing a pending assertion could remove its
-chance to be challenged without preventing it from finalizing. It also cannot
-rescue an open dispute whose snapshotted committee is unavailable.
+Do not pause v1 during this drain. V1 pause blocks `assert_outcome`, `dispute`,
+`resolve`, and `finalize` all together, so it cannot selectively reject only new
+assertions while leaving already-open ones free to finalize or resolve; using it
+here just stalls every in-flight assertion for as long as the pause lasts, with
+no compensating protection since drain is a routine wind-down, not an incident.
+It also cannot rescue an open dispute whose snapshotted committee is unavailable.
 
 The v1 contract cannot reject only new assertions. The cutover is therefore an
 integrator policy, not a perfect on-chain gate: direct callers may still create

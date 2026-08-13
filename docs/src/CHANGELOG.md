@@ -153,10 +153,15 @@ All notable changes to this project are documented here. Format follows
   config/version/`NextId` getter), deploying v2 fresh without copying v1's
   assertion records or pooled token balance, cutting new traffic over from
   a recorded point, and draining v1's remaining open assertions to
-  completion without pausing it (pausing blocks `dispute`/`resolve` while
-  leaving `finalize` callable, which could let a pending assertion's
-  challenge window close without ever having had a real chance to be
-  disputed). Closes #73.
+  completion without pausing it (pause blocks `assert_outcome`, `dispute`,
+  `resolve`, and `finalize` all together, so it can't selectively reject
+  new assertions while leaving already-open ones free to finalize or
+  resolve; using it during drain just stalls everything in flight for no
+  compensating protection). Also fixes the same factual error, present
+  since the original design doc, in `V2_RESOLUTION.md`'s existing
+  "Migration from existing v1 deployments" section, which the new runbook
+  is meant to be read alongside rather than duplicate independently.
+  Closes #73.
 
 ## [0.3.0] - 2026-08-08
 
