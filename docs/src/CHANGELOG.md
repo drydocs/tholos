@@ -213,6 +213,15 @@ All notable changes to this project are documented here. Format follows
   the same ordering constraint `demo-consumer` already has with `tholos`'s
   wasm on the Rust side. Closes #63.
 
+- `packages/tholos-sdk`: bumps `@stellar/stellar-sdk` from `^14.5.0` (the
+  version the Stellar CLI's codegen template defaulted to when the SDK was
+  originally generated in #60) to `^16.2.0`. Verified against both this
+  package's own `tsc` build and `demos/freelance-escrow`'s full build/lint,
+  from a clean install, with no changes needed on either side. Also shrinks
+  `demos/freelance-escrow`'s `tholos` chunk from 1,735 kB to 369 kB
+  (480 kB to 98 kB gzipped), apparently from newer `stellar-sdk` tree-shaking
+  more cleanly.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
