@@ -9,11 +9,23 @@ JS/TS integrator would otherwise hand-roll (see
 
 ## Status
 
-Committed in-repo, not published to npm. This package is new and hasn't been
-consumed by a real integration yet (the actual migration of
-`demos/freelance-escrow` off its hand-rolled client is a separate,
-deliberately out-of-scope follow-up). Publish it once it's actually proven
-out end to end, rather than before.
+Committed in-repo, not published to npm. `demos/freelance-escrow` consumes
+it as a local `file:` dependency (see its own README), which is currently
+the only real integration; the build, a real (headless) browser render, and
+the app's UI-level guard against calling any contract method without a
+connected wallet have all been verified, but an actual signed on-chain call
+through this client (via a real Freighter wallet with funded testnet keys)
+hasn't been. Publish to npm once that's done too, rather than before.
+
+A `file:` dependency needs `dist/` to actually exist in the linked copy:
+pnpm applies npm's pack-list filtering even for local directory
+dependencies, which respects `.gitignore` (and `dist/` is deliberately
+gitignored here, being a build artifact), so it's silently excluded unless
+this package's `files` field explicitly allowlists it, overriding that.
+Run `pnpm build` here before any consumer's own `pnpm install`, and if a
+consumer still can't resolve types, check that `exports` carries a `types`
+condition (`moduleResolution: "bundler"`/`"node16"`/`"nodenext"` ignore the
+top-level `typings` field once `exports` is present at all).
 
 ## Regenerating
 

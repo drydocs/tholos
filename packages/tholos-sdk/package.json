@@ -10,7 +10,13 @@
   },
   "private": true,
   "type": "module",
-  "exports": "./dist/index.js",
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "typings": "dist/index.d.ts",
   "scripts": {
     "build": "tsc"

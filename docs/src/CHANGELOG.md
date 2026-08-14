@@ -187,6 +187,32 @@ All notable changes to this project are documented here. Format follows
   library needs to build for that target, not a host-side helper binary
   that was never meant to. Closes #74.
 
+- `demos/freelance-escrow`: migrated `src/lib/tholos.ts` off its hand-rolled
+  `TransactionBuilder`/`nativeToScVal`/simulate-sign-submit-poll
+  boilerplate to `packages/tholos-sdk`'s generated `Client`. Same five
+  exported functions and signatures as before
+  (`assertOutcome`/`disputeAssertion`/`resolveAssertion`/
+  `finalizeAssertion`/`getAssertionState`), so `state/JobsContext.tsx`
+  didn't need to change at all; `getAssertionState` now returns the SDK's
+  own decoded `Assertion` type directly instead of a hand-mapped
+  camelCase shape nothing in the app actually consumed. Adds `tholos-sdk`
+  as a local `file:` dependency (not published to npm) in place of a
+  direct `@stellar/stellar-sdk` dependency, now pulled in transitively.
+
+  Also fixes two real packaging bugs in `packages/tholos-sdk` this surfaced,
+  neither caught before because nothing had actually consumed the package
+  as a real dependency yet: its `exports` field was a bare string with no
+  `types` condition, which `moduleResolution: "bundler"` (and `"node16"`/
+  `"nodenext"`) silently ignore the top-level `typings` fallback for once
+  `exports` is present at all, so no consumer could ever resolve its type
+  declarations; and pnpm applies npm's pack-list filtering even to local
+  `file:` directory dependencies, which respects `.gitignore`, so the
+  gitignored `dist/` build output was silently excluded from the linked
+  copy entirely until a new `files` field explicitly allowlisted it.
+  `.github/workflows/ci.yml`'s `demo` job now builds `tholos-sdk` first,
+  the same ordering constraint `demo-consumer` already has with `tholos`'s
+  wasm on the Rust side. Closes #63.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

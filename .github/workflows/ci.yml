@@ -85,9 +85,6 @@ jobs:
 
   demo:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: demos/freelance-escrow
     steps:
       - uses: actions/checkout@v4
 
@@ -99,15 +96,31 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: demos/freelance-escrow/pnpm-lock.yaml
+          cache-dependency-path: |
+            packages/tholos-sdk/pnpm-lock.yaml
+            demos/freelance-escrow/pnpm-lock.yaml
+
+      # demos/freelance-escrow depends on packages/tholos-sdk as a local
+      # file: dependency, which needs dist/ to already exist before this
+      # job's own `pnpm install` can resolve it; see tholos-sdk's own
+      # README for why (pnpm applies npm's pack-list filtering even to
+      # local directory deps, and dist/ is gitignored).
+      - name: Build tholos-sdk
+        working-directory: packages/tholos-sdk
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Install dependencies
+        working-directory: demos/freelance-escrow
         run: pnpm install --frozen-lockfile
 
       - name: Lint
+        working-directory: demos/freelance-escrow
         run: pnpm lint
 
       - name: Build
+        working-directory: demos/freelance-escrow
         run: pnpm build
 
   sdk:

@@ -46,11 +46,16 @@ point this at a deployed Tholos instance yourself. The
 [canonical testnet deployment](../../docs/src/DEPLOYMENT.md#canonical-testnet-deployment)
 works for this app out of the box:
 
+This app talks to Tholos through `packages/tholos-sdk`, a local, unpublished
+package (`file:` dependency, not on npm), so that has to be built once before
+this app's own `pnpm install` can resolve it:
+
 ```sh
 cp .env.example .env.local
 # fill in VITE_THOLOS_CONTRACT_ID with the canonical testnet contract id from
 # docs/src/DEPLOYMENT.md (or your own deployment, if you have a reason to need one)
 
+(cd ../../packages/tholos-sdk && pnpm install && pnpm build)
 pnpm install
 pnpm dev
 ```
