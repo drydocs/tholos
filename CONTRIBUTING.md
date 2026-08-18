@@ -67,12 +67,14 @@ scripts/
 .github/workflows/
   ci.yml                 Runs three jobs on every push/PR: `test` (blocks
                          committed contract addresses, verifies workspace
-                         membership, fmt, shellcheck, both wasm builds,
-                         clippy, and tests), `demo` (lint and build
+                         membership, fmt, shellcheck, builds tholos's
+                         wasm, clippy, tests, then a second workspace-wide
+                         lib wasm build), `demo` (lint and build
                          demos/freelance-escrow), and `sdk` (checks
                          packages/tholos-sdk's generated bindings for
                          drift, then builds it)
-``` 
+```
+
 Additional demo apps should each live as their own directory under `demos/`,
 following the same layout as `demos/freelance-escrow`.
 
@@ -218,7 +220,7 @@ changes in a single message; split them into separate commits instead.
 
 ## Opening a PR
 
-CI must pass before merge: the `test` job (contract-address and workspace-membership checks, fmt, shellcheck, both wasm builds, clippy, tests), the `demo` job (lint and build demos/freelance-escrow), and the `sdk` job (bindings-drift check and build for packages/tholos-sdk). The PR template
+CI must pass before merge: the `test` job (contract-address and workspace-membership checks, fmt, shellcheck, builds tholos's wasm, clippy, tests, then a second workspace-wide lib wasm build), the `demo` job (lint and build demos/freelance-escrow), and the `sdk` job (bindings-drift check and build for packages/tholos-sdk). The PR template
 (`.github/pull_request_template.md`) is pre-filled when you open a PR; fill it out
 rather than deleting it. If the change affects bond amounts, resolver behavior, or
 anything with an economic consequence, say so explicitly in the summary so it's easy
