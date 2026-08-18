@@ -65,14 +65,14 @@ tools/
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/
-ci.yml                 Runs three jobs on every push/PR: `test` (blocks
+  ci.yml                 Runs three jobs on every push/PR: `test` (blocks
                          committed contract addresses, verifies workspace
                          membership, fmt, shellcheck, both wasm builds,
                          clippy, and tests), `demo` (lint and build
                          demos/freelance-escrow), and `sdk` (checks
                          packages/tholos-sdk's generated bindings for
                          drift, then builds it)
-
+``` 
 Additional demo apps should each live as their own directory under `demos/`,
 following the same layout as `demos/freelance-escrow`.
 
