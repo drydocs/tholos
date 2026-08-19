@@ -55,7 +55,7 @@ A bond gets posted, a window gives anyone the chance to dispute it, and if dispu
 | Contract | Rust, [Soroban SDK](https://developers.stellar.org/docs/build/smart-contracts/overview) 26 |
 | Network | Stellar (testnet today) |
 | Token | Any SEP-41 / Stellar Asset Contract token, configured per deployment |
-| CI | GitHub Actions: `cargo fmt`, `shellcheck`, `cargo clippy`, `cargo test`, wasm build |
+| CI | GitHub Actions: three jobs, `test` (address/workspace checks, fmt, shellcheck, wasm builds, clippy, tests), `demo` (lint and build demos/freelance-escrow), `sdk` (bindings-drift check and build for packages/tholos-sdk) |
 
 ## Project layout
 
@@ -71,7 +71,14 @@ demos/
 scripts/
   testnet-smoke.sh      End-to-end check against real Stellar testnet infrastructure
 .github/workflows/
-  ci.yml                 Runs fmt, clippy, tests, and the wasm build on every push/PR
+  ci.yml                 Runs three jobs on every push/PR: `test` (blocks
+                         committed contract addresses, verifies workspace
+                         membership, fmt, shellcheck, builds tholos's
+                         wasm, clippy, tests, then a second workspace-wide
+                         lib wasm build), `demo` (lint and build
+                         demos/freelance-escrow), and `sdk` (checks
+                         packages/tholos-sdk's generated bindings for
+                         drift, then builds it)
 ```
 
 ## Development
