@@ -2758,3 +2758,404 @@ fn test_cancel_round_on_uncontested_finalize_fails() {
     let result = f.client.try_cancel_round(&id);
     assert_eq!(result, Err(Ok(Error::RoundAlreadyDecided)));
 }
+
+// ---------------------------------------------------------------------------
+// Property-based tests for settlement's pro-rata forfeiture splitting and
+// dust routing (see `settle`)
+// ---------------------------------------------------------------------------
+//
+// The hand-written tests above (`test_settle_strict_majority_conserves_pool_
+// and_pays_dust_to_asserter`, `test_settle_optimistic_timeout_conserves_pool_
+// and_pays_dust_to_asserter`, etc.) each pin one specific weight distribution
+// by hand. These tests instead generate a random number of third-party
+// positions with random weights, random sides, and a random subset that
+// never reveals at all, force the round through to `Resolved` (whichever
+// terminal cause that reveal pattern actually produces), and check the two
+// invariants #106 asks for against `settlement_pool`/`settle`'s own formula:
+//
+//   1. `prop_settlement_payouts_conserve_pool_and_match_formula`: every
+//      settled position's payout matches the documented pro-rata formula
+//      (`amount` plus `floor(amount * forfeited_pool / recipient_weight)`
+//      for a recipient, 0 otherwise) exactly, and the sum of every payout
+//      across every position -- winners, losers, and the dust recipient --
+//      exactly equals `eligible_total`: nothing lost, nothing invented,
+//      regardless of how many positions there are or how their weight is
+//      distributed.
+//   2. `prop_dust_credited_to_exactly_one_recipient`: the one-time
+//      floor-division remainder ("dust") is credited to exactly one address
+//      (the deterministic dust recipient `settle` documents: the winning
+//      asserter or disputer), never split across recipients, never dropped,
+//      and never paid to more than one address.
+//
+// Same in-process rationale as `contracts/tholos/src/test.rs`'s
+// `proptest_vote_counting`/`proptest_initialize_bounds`: Soroban's `Env` is
+// not `Send`, so these run with `fork: false`.
+mod proptest_settlement {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Use the standard-library vec for test-side bookkeeping, mirroring
+    // contracts/tholos/src/test.rs's `proptest_vote_counting` (`Vec` in
+    // scope from `super::*`'s wildcard import is `soroban_sdk::Vec`).
+    extern crate alloc;
+    use alloc::vec::Vec as StdVec;
+
+    /// One third-party registrant. `agrees` doubles as the exact `choice`
+    /// passed to `register`/`reveal`: `Fixture::asserted` always asserts
+    /// outcome `true`, so "agrees with the asserted outcome" and "choice ==
+    /// true" are the same thing. `reveals` is whether this voter ever calls
+    /// `reveal` at all -- a voter that never reveals is exactly the
+    /// "leftover, never-recovered weight" scenario dust routing exists for.
+    #[derive(Clone, Debug)]
+    struct Voter {
+        amount: i128,
+        agrees: bool,
+        reveals: bool,
+    }
+
+    /// Realistic-range weights (at least `min_resolution_bond`, i.e.
+    /// `DEFAULT_BOND`, well under `max_position`/`max_total_weight`) rather
+    /// than the full `i128` domain, matching how v1's committee/vote
+    /// generators are scoped to valid values rather than fuzzing rejection
+    /// paths. Up to 6 third-party voters, on top of the asserter's and
+    /// disputer's always-present fixed positions.
+    fn voters() -> impl Strategy<Value = StdVec<Voter>> {
+        proptest::collection::vec(
+            (DEFAULT_BOND..=500_000i128, any::<bool>(), any::<bool>()),
+            0..=6,
+        )
+        .prop_map(|raw| {
+            raw.into_iter()
+                .map(|(amount, agrees, reveals)| Voter {
+                    amount,
+                    agrees,
+                    reveals,
+                })
+                .collect()
+        })
+    }
+
+    /// One position's outcome after a scenario resolves: its address, staked
+    /// `amount`, and `agrees_with_outcome` (`None` if it never revealed --
+    /// always the case for a `Voter` with `reveals: false`).
+    struct SettledPosition {
+        address: Address,
+        amount: i128,
+        agrees_with_outcome: Option<bool>,
+    }
+
+    /// Runs one full randomized dispute -- asserts, disputes, registers
+    /// every `Voter`, reveals the ones marked `reveals`, then force-closes
+    /// the round by advancing past the reveal deadline and calling
+    /// `resolve_outcome` -- so every case reaches `Resolved` regardless of
+    /// whether a strict majority locked early or nobody ever revealed at
+    /// all (see `PhaseV2::Reveal`'s doc comment: an early majority lock
+    /// doesn't stop further reveals or close the phase by itself).
+    ///
+    /// Returns the fixture, the assertion id, and every position (asserter,
+    /// disputer, and every registered voter) for the caller to compute
+    /// expected payouts from and settle.
+    fn run_scenario(voter_specs: &[Voter]) -> (Fixture, u64, StdVec<SettledPosition>) {
+        let f = Fixture::new();
+        let asserter = f.funded_address();
+        let disputer = f.funded_address();
+
+        let id = f.asserted(&asserter);
+        f.client.dispute(&disputer, &id);
+        let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+        // Fixed positions: always revealed automatically once Reveal opens
+        // (see `open_reveal_phase`), asserter agreeing, disputer disagreeing.
+        let mut positions: StdVec<SettledPosition> = StdVec::from([
+            SettledPosition {
+                address: asserter.clone(),
+                amount: DEFAULT_BOND,
+                agrees_with_outcome: Some(true),
+            },
+            SettledPosition {
+                address: disputer.clone(),
+                amount: DEFAULT_BOND,
+                agrees_with_outcome: Some(false),
+            },
+        ]);
+
+        // Register every voter first (registration must be fully closed
+        // before any reveal is accepted).
+        let mut registered: StdVec<(Address, BytesN<32>, bool, i128)> = StdVec::new();
+        for (i, spec) in voter_specs.iter().enumerate() {
+            let voter = f.generate();
+            f.mint(&voter, spec.amount);
+            let voter_salt = salt(&f.env, i as u8);
+            let voter_commitment = compute_commitment(
+                &f.env,
+                &f.client.address,
+                &policy_hash,
+                id,
+                &voter,
+                spec.agrees,
+                &voter_salt,
+            );
+            f.client
+                .register(&voter, &id, &spec.amount, &voter_commitment);
+            registered.push((voter, voter_salt, spec.agrees, spec.amount));
+        }
+
+        f.advance_past_registration_deadline(id);
+
+        if registered.is_empty() {
+            // No third-party weight at all: the fixed positions alone
+            // already account for the full `eligible_total`, so this one
+            // call both lazily opens `Reveal` (see `open_reveal_phase`)
+            // and immediately closes it to `Resolved` in the same
+            // successful invocation -- no earlier `reveal` call is needed
+            // to persist anything first.
+            f.client.resolve_outcome(&id);
+        } else {
+            // `Reveal`'s deadline only gets persisted on a call that
+            // *succeeds*: Soroban rolls back every storage write of a
+            // failing invocation, so a bare `resolve_outcome` before any
+            // real weight has revealed would open-then-immediately-fail
+            // (`RevealNotClosed`, since revealed weight can't yet have
+            // caught up with `eligible_total`) and roll the phase change
+            // back with it, leaving `reveal_deadline` at its 0 default
+            // forever. A real deployment escapes this the same way: at
+            // least one participant (often the asserter or disputer,
+            // chasing their own payout) eventually calls `reveal`, which
+            // succeeds regardless of whether the round fully closes right
+            // then, and that's what actually starts the reveal clock. If
+            // every generated `Voter` says `reveals: false`, force the
+            // first one to reveal anyway so the scenario doesn't deadlock;
+            // the bookkeeping below reflects what actually happened
+            // on-chain, not the original random spec.
+            let mut reveal_flags: StdVec<bool> = voter_specs.iter().map(|v| v.reveals).collect();
+            if !reveal_flags.iter().any(|&r| r) {
+                reveal_flags[0] = true;
+            }
+
+            for (i, (voter, voter_salt, choice, amount)) in registered.iter().enumerate() {
+                if reveal_flags[i] {
+                    f.client.reveal(voter, &id, choice, voter_salt);
+                    positions.push(SettledPosition {
+                        address: voter.clone(),
+                        amount: *amount,
+                        agrees_with_outcome: Some(*choice),
+                    });
+                } else {
+                    positions.push(SettledPosition {
+                        address: voter.clone(),
+                        amount: *amount,
+                        agrees_with_outcome: None,
+                    });
+                }
+            }
+
+            // At least one successful reveal above guarantees `Reveal` is
+            // open with a real, persisted `reveal_deadline`; force-close
+            // whatever hasn't already resolved (e.g. via an early strict
+            // majority plus full reveal) by advancing past it.
+            if f.client.get_assertion(&id).phase != PhaseV2::Resolved {
+                f.advance_past_reveal_deadline(id);
+                f.client.resolve_outcome(&id);
+            }
+        }
+
+        (f, id, positions)
+    }
+
+    /// `settlement_pool`'s own rule, mirrored here so the reference
+    /// calculation is independent of (and thus actually checks) the
+    /// contract's implementation rather than restating it.
+    fn expected_pool(
+        terminal_cause: TerminalCause,
+        agree_weight: i128,
+        disagree_weight: i128,
+        eligible_total: i128,
+    ) -> (i128, i128) {
+        let recipient_weight = match terminal_cause {
+            TerminalCause::StrictMajorityFor => agree_weight,
+            TerminalCause::StrictMajorityAgainst => disagree_weight,
+            TerminalCause::OptimisticTimeout => agree_weight + disagree_weight,
+            other => unreachable!(
+                "run_scenario only ever produces a contested resolution: got {:?}",
+                other
+            ),
+        };
+        (recipient_weight, eligible_total - recipient_weight)
+    }
+
+    /// Whether a position is a recipient (recovers principal + pro-rata
+    /// reward) under `terminal_cause`, mirroring `settle`'s own
+    /// `is_recipient` match arm by arm.
+    fn is_recipient(terminal_cause: TerminalCause, agrees_with_outcome: Option<bool>) -> bool {
+        match terminal_cause {
+            TerminalCause::StrictMajorityFor => agrees_with_outcome == Some(true),
+            TerminalCause::StrictMajorityAgainst => agrees_with_outcome == Some(false),
+            TerminalCause::OptimisticTimeout => agrees_with_outcome.is_some(),
+            other => unreachable!(
+                "run_scenario only ever produces a contested resolution: got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Every settled position's expected payout (principal + pro-rata
+    /// reward for a recipient, 0 otherwise) under the documented formula,
+    /// alongside the leftover dust and its deterministic recipient.
+    struct Expected {
+        payouts: StdVec<(Address, i128, i128)>, // (address, amount, payout)
+        dust: i128,
+        dust_recipient: Address,
+    }
+
+    fn compute_expected(
+        assertion: &AssertionV2,
+        recipient_weight: i128,
+        forfeited_pool: i128,
+        positions: &[SettledPosition],
+    ) -> Expected {
+        let dust_recipient = match assertion.terminal_cause {
+            TerminalCause::StrictMajorityFor | TerminalCause::OptimisticTimeout => {
+                assertion.asserter.clone()
+            }
+            TerminalCause::StrictMajorityAgainst => assertion
+                .disputer
+                .clone()
+                .expect("disputer set once phase reaches Registration"),
+            other => unreachable!("unexpected terminal cause: {:?}", other),
+        };
+
+        let mut reward_total: i128 = 0;
+        let mut payouts: StdVec<(Address, i128, i128)> = StdVec::new();
+        for position in positions {
+            let recipient = is_recipient(assertion.terminal_cause, position.agrees_with_outcome);
+            let reward = if recipient {
+                (position.amount * forfeited_pool) / recipient_weight
+            } else {
+                0
+            };
+            reward_total += reward;
+            let payout = if recipient {
+                position.amount + reward
+            } else {
+                0
+            };
+            payouts.push((position.address.clone(), position.amount, payout));
+        }
+
+        Expected {
+            payouts,
+            dust: forfeited_pool - reward_total,
+            dust_recipient,
+        }
+    }
+
+    proptest! {
+        // Don't fork: Soroban's Env internals are not Send.
+        #![proptest_config(ProptestConfig {
+            fork: false,
+            cases: 96,
+            ..ProptestConfig::default()
+        })]
+
+        /// For any random distribution of third-party weights, sides, and
+        /// reveal participation: `settle`'s own return value for every
+        /// position matches the documented pro-rata formula exactly (and
+        /// never includes dust routed elsewhere, even when that position
+        /// itself turns out to be the dust recipient -- see `settle`'s doc
+        /// comment), no payout ever exceeds its position's principal plus
+        /// the entire forfeited pool, and -- once every position has
+        /// settled and whatever dust exists has landed via `get_credit`,
+        /// regardless of settle order -- the sum of every credited balance
+        /// exactly equals `eligible_total`. This is the property #106 calls
+        /// "payouts sum correctly and never exceed the pool".
+        #[test]
+        fn prop_settlement_payouts_conserve_pool_and_match_formula(voter_specs in voters()) {
+            let (f, id, positions) = run_scenario(&voter_specs);
+
+            let assertion = f.client.get_assertion(&id);
+            let resolution = f.client.get_resolution(&id);
+            prop_assert_eq!(assertion.phase, PhaseV2::Resolved);
+
+            let (recipient_weight, forfeited_pool) = expected_pool(
+                assertion.terminal_cause,
+                resolution.agree_weight,
+                resolution.disagree_weight,
+                resolution.eligible_total,
+            );
+            prop_assert!(recipient_weight > 0);
+            prop_assert!(forfeited_pool >= 0);
+
+            let expected = compute_expected(&assertion, recipient_weight, forfeited_pool, &positions);
+            prop_assert!(expected.dust >= 0);
+
+            for (address, amount, payout) in &expected.payouts {
+                let actual = f.client.settle(&id, address);
+                prop_assert_eq!(
+                    actual, *payout,
+                    "settle() returned {} but its own pro-rata payout should be {} (recipient_weight {}, forfeited_pool {})",
+                    actual, payout, recipient_weight, forfeited_pool
+                );
+                prop_assert!(actual <= amount + forfeited_pool);
+            }
+
+            let mut credited_total: i128 = 0;
+            for (address, _amount, payout) in &expected.payouts {
+                let extra_dust = if *address == expected.dust_recipient { expected.dust } else { 0 };
+                prop_assert_eq!(
+                    f.client.get_credit(&id, address), payout + extra_dust,
+                    "final credited balance should be this position's payout plus any dust it collects"
+                );
+                credited_total += f.client.get_credit(&id, address);
+            }
+
+            prop_assert_eq!(credited_total, resolution.eligible_total);
+        }
+
+        /// The floor-division remainder from pro-rata splitting is credited
+        /// (via `get_credit`, which reflects `settle`'s side effects rather
+        /// than its per-call return value -- see the previous test's doc
+        /// comment) to exactly one address, the deterministic dust
+        /// recipient, and every other settled position ends up with exactly
+        /// its own formula-computed payout, no more, no less: dust is never
+        /// split across recipients and never silently dropped.
+        #[test]
+        fn prop_dust_credited_to_exactly_one_recipient(voter_specs in voters()) {
+            let (f, id, positions) = run_scenario(&voter_specs);
+
+            let assertion = f.client.get_assertion(&id);
+            let resolution = f.client.get_resolution(&id);
+
+            let (recipient_weight, forfeited_pool) = expected_pool(
+                assertion.terminal_cause,
+                resolution.agree_weight,
+                resolution.disagree_weight,
+                resolution.eligible_total,
+            );
+            let expected = compute_expected(&assertion, recipient_weight, forfeited_pool, &positions);
+
+            for (address, _amount, _payout) in &expected.payouts {
+                f.client.settle(&id, address);
+            }
+
+            let mut addresses_with_bonus = 0u32;
+            for (address, _amount, formula_payout) in &expected.payouts {
+                let bonus = f.client.get_credit(&id, address) - formula_payout;
+                if *address == expected.dust_recipient {
+                    prop_assert_eq!(
+                        bonus, expected.dust,
+                        "dust recipient's bonus must equal the full dust amount"
+                    );
+                    if expected.dust > 0 {
+                        addresses_with_bonus += 1;
+                    }
+                } else {
+                    prop_assert_eq!(bonus, 0, "a non-dust-recipient address must never receive a bonus");
+                }
+            }
+            prop_assert!(
+                addresses_with_bonus <= 1,
+                "dust must never be paid to more than one address"
+            );
+        }
+    }
+}
