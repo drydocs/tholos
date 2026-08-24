@@ -5,3 +5,4 @@
 # (each run produces different address bytes) and must not be committed.
 contracts/tholos/test_snapshots/test/proptest_vote_counting/
 contracts/tholos/test_snapshots/test/proptest_initialize_bounds/
+contracts/tholos-v2/test_snapshots/test/proptest_settlement/
