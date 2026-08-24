@@ -204,6 +204,9 @@ already storing a mapping per the advice above.
 
 ### Lifecycle at a glance
 
+> [!NOTE]
+> This section provides a high-level overview. For full details on the state machine, terminal causes, and edge cases, see [Contract interface (v2)](CONTRACT_V2.md#lifecycle).
+
 v2 splits what v1 does in one `resolve` call into a multi-phase flow: an
 optimistic stage identical in shape to v1's, followed by a bounded
 registration window and a commit-reveal vote open to any address willing to

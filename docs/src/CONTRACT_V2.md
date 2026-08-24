@@ -8,13 +8,16 @@ rationale behind the stake-weighted scheme documented here.
 
 ## Lifecycle
 
+> [!NOTE]
+> This section covers the internal state machine. For a higher-level view of how clients interact with this lifecycle, see [Lifecycle at a glance](INTEGRATION.md#lifecycle-at-a-glance) in the integration guide.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: assert_outcome
     Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>uncontested)
     Pending --> Registration: dispute
-    Registration --> Reveal: register deadline passes<br/>(lazily, on next register/reveal/resolve_outcome)
-    Reveal --> Resolved: resolve_outcome<br/>(strict majority locked, or<br/>reveal deadline / full reveal reached)
+    Registration --> Reveal: register deadline passes<br/>(lazily, on next reveal/resolve_outcome)
+    Reveal --> Resolved: reveal or resolve_outcome<br/>(last outstanding weight revealed,<br/>or deadline reached)
     Resolved --> [*]
 ```
 
@@ -52,7 +55,7 @@ custom enum, only of built-in types like `Address`/`bool`.
 | `StrictMajorityFor` | Revealed weight agreeing with the asserted outcome exceeded half of the frozen eligible total `W`. |
 | `StrictMajorityAgainst` | Revealed weight disagreeing exceeded half of `W`. |
 | `OptimisticTimeout` | Neither side reached a strict majority before reveal closed; the originally asserted outcome stands by default. |
-| `AdminCancelled` | Set only by `cancel_round`, on a `Registration`/`Reveal`-phase assertion with no terminal cause yet. Every funded position recovers its exact principal, no forfeiture, no reward. |
+| `AdminCancelled` | Set only by `cancel_round`, on an assertion with no terminal cause yet (`Pending`, `Registration`, or `Reveal` phase). The asserter's bond is refunded (if `Pending`) or every funded position recovers its exact principal, with no forfeiture or reward. |
 
 ### `WeightRuleVersion`, `TimeoutDefaultRule`, `PayoutRuleVersion`
 
@@ -166,7 +169,7 @@ only affect assertions created after the change.
 | --- | --- |
 | `AlreadyInitialized` | `initialize` called on a contract that's already set up. |
 | `NotInitialized` | Called before `initialize`. |
-| `AssertionNotFound` | No assertion (or, depending on call, resolution/position/credit) exists for the given id/address. |
+| `AssertionNotFound` | No assertion (or, depending on call, resolution/position) exists for the given id/address. |
 | `InvalidBondAmount` | `base_bond` isn't positive, or exceeds `MAX_BOND_AMOUNT`. |
 | `InvalidRegistrationDuration` | `registration_duration_secs` is zero or exceeds 7 days. |
 | `InvalidRevealDuration` | `reveal_duration_secs` is zero or exceeds 7 days. |
