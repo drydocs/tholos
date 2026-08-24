@@ -2038,6 +2038,91 @@ fn test_settle_optimistic_timeout_fully_revealed_skips_dust_step() {
 }
 
 #[test]
+fn test_settle_forfeiture_distribution_multiply_overflow_returns_error() {
+    // initialize()'s max_position/max_total_weight bounds make settle()'s
+    // reward multiply (position.amount.checked_mul(forfeited_pool), which
+    // MAX_SETTLEMENT_TOTAL_WEIGHT's doc comment names "the forfeiture-
+    // distribution multiply") unreachable through the real register/reveal
+    // flow, so the overflow state is written directly into storage instead.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    f.advance_past_registration_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    // HALF_MAX = i128::MAX / 2 = 2^126 - 1 (Rust truncates toward zero).
+    // Setting agree_weight = HALF_MAX and eligible_total = i128::MAX makes
+    // forfeited_pool = i128::MAX - HALF_MAX = 2^126. With amount = HALF_MAX
+    // too, the multiply is (2^126 - 1) * 2^126 = 2^252 - 2^126, roughly
+    // 2^125 times past i128::MAX (2^127 - 1): deterministic overflow, not a
+    // near-boundary case.
+    const HALF_MAX: i128 = i128::MAX / 2;
+
+    let mut resolution = f.client.get_resolution(&id);
+    resolution.agree_weight = HALF_MAX;
+    resolution.disagree_weight = 0;
+    resolution.eligible_total = i128::MAX;
+
+    let mut position = f.client.get_position(&id, &asserter);
+    position.amount = HALF_MAX;
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::Resolution(id), &resolution);
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::Position(id, asserter.clone()), &position);
+    });
+
+    let result = f.client.try_settle(&id, &asserter);
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
+
+#[test]
+fn test_settle_outstanding_liability_overflow_returns_error() {
+    // Independent of the reward-multiply overflow above: this position's
+    // own payout math is completely ordinary (100 in, 100 out, no
+    // forfeited pool at all), only the running outstanding_liability total
+    // is corrupted directly in storage beforehand, isolating settle()'s
+    // final resolution.outstanding_liability.checked_add(liability_increase).
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+    // Same no-voter shape as test_settle_optimistic_timeout_fully_revealed_
+    // skips_dust_step: eligible_total = 200, recipient_weight = 200,
+    // forfeited_pool = 0. Nothing is forfeited, so reward = 0, the dust
+    // block is skipped (forfeited_pool > 0 is false), and
+    // liability_increase is exactly position.amount (100) — normal,
+    // unremarkable payout math. Only outstanding_liability is corrupted, to
+    // i128::MAX, so the single ordinary add at the end of settle() is
+    // pushed past the type's bound with nothing else in the call
+    // contributing to the overflow.
+    let mut resolution = f.client.get_resolution(&id);
+    resolution.outstanding_liability = i128::MAX;
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::Resolution(id), &resolution);
+    });
+    let result = f.client.try_settle(&id, &asserter);
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
+
+#[test]
 fn test_settle_strict_majority_against_dust_goes_to_disputer() {
     let f = Fixture::new();
     let asserter = f.funded_address();
