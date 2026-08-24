@@ -345,10 +345,10 @@ rejected reveal transaction still publishes its `(choice, salt)` preimage
 on-chain even though it failed, and a qualifying late deposit may have
 extended the deadline.
 
-Fails with `AssertionNotFound`, `NotReveal` if the assertion is `Pending`
-or `Resolved`, `RevealClosed` if `reveal_deadline` has passed,
-`AlreadyRevealed` if this position's weight is already counted (including
-a `Fixed` voter, who has nothing to reveal), or
+Fails with `AssertionNotFound`, `RegistrationNotClosed` if called too early,
+`NotReveal` if the assertion is `Pending` or `Resolved`, `RevealClosed` if
+`reveal_deadline` has passed, `AlreadyRevealed` if this position's weight
+is already counted (including a `Fixed` voter, who has nothing to reveal), or
 `CommitmentVerificationFailed` if `(choice, salt)` doesn't hash to the
 stored commitment. Emits `Revealed`, and `RevealOpened`/`Resolved` if those
 transitions happen in the same call.
@@ -412,8 +412,9 @@ Transfers `owner`'s entire withdrawable credit balance on one assertion to
 `destination`. Requires `owner`'s authorization. `destination` may be any
 address, not necessarily `owner` itself — a token that rejects transfers to
 `owner` directly can't permanently strand funds there. Fails with
-`AssertionNotFound` or `NoCreditToWithdraw` if the balance is 0 (never
-settled anything here, or already withdrew it). Returns the amount
+`AssertionNotFound`, `NoCreditToWithdraw` if the balance is 0 (never
+settled anything here, or already withdrew it), or
+`SettlementArithmeticOverflow`. Returns the amount
 withdrawn. Emits `Withdrawn`.
 
 ### `cancel_round(id)`
@@ -504,7 +505,7 @@ assertion's history without polling `get_assertion`:
 | `Revealed` | `reveal` | `id`, `voter`, `choice` |
 | `Resolved` | `reveal`, `resolve_outcome` (once the assertion closes to `Resolved`) | `id`, `terminal_cause`, `final_outcome` |
 | `Settled` | `settle` | `id`, `address`, `payout` (principal plus reward, or 0; excludes any dust routed in the same call) |
-| `DustCredited` | `settle`, at most once per assertion, when that call closes out the recipient side | `id`, `address` (the deterministic dust recipient), `amount` |
+| `DustCredited` | `settle`, at most once per assertion, when that call closes out the recipient side with nonzero leftover dust | `id`, `address` (the deterministic dust recipient), `amount` |
 | `Withdrawn` | `withdraw` | `id`, `owner`, `destination`, `amount` |
 | `PauseUpdated` | `set_paused_v2` | `paused` |
 | `RoundCancelled` | `cancel_round` | `id` |
