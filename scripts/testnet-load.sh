@@ -9,6 +9,13 @@ CONTRACT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WASM_PATH="$CONTRACT_DIR/target/wasm32v1-none/release/tholos.wasm"
 BOND_AMOUNT=1000000
 CHALLENGE_WINDOW_SECS=120 # Short challenge window for quick test execution
+# Funded identity this script deploys and reads balances from.
+DEPLOYER_IDENTITY=load_deployer
+
+# Logging, timing and invocation helpers shared with testnet-load-v2.sh.
+# They read NETWORK and DEPLOYER_IDENTITY, so this must come after them.
+# shellcheck source=SCRIPTDIR/lib/load-test-common.sh
+source "$CONTRACT_DIR/scripts/lib/load-test-common.sh"
 
 # Input parameters
 N=${1:-5}
@@ -20,69 +27,6 @@ if [ "$D" -gt "$N" ]; then
   D=$N
 fi
 
-log() {
-  echo -e "\033[1;34m>>\033[0m $*"
-}
-
-log_success() {
-  echo -e "\033[1;32m✓\033[0m $*"
-}
-
-log_error() {
-  echo -e "\033[1;31m✗\033[0m $*"
-}
-
-get_time() {
-  date +%s.%N 2>/dev/null || date +%s
-}
-
-elapsed_time() {
-  local start=$1
-  local end=$2
-  if command -v awk >/dev/null 2>&1; then
-    awk -v s="$start" -v e="$end" 'BEGIN { printf "%.2f", e - s }'
-  else
-    local diff=$(( ${end%.*} - ${start%.*} ))
-    echo "$diff"
-  fi
-}
-
-# Use the installed stellar CLI
-STELLAR="stellar"
-
-gen_key() {
-  local name=$1
-  $STELLAR keys generate "$name" --network "$NETWORK" --fund --overwrite >/dev/null
-  $STELLAR keys address "$name"
-}
-
-balance() {
-  local token=$1
-  local addr=$2
-  $STELLAR contract invoke --id "$token" --source load_deployer --network "$NETWORK" -- balance --id "$addr" 2>/dev/null \
-    | tr -d '"'
-}
-
-# Wrapper to execute contract calls, capturing stdout/stderr for robust error reporting
-invoke_contract() {
-  local source=$1
-  shift
-  local tmp_out
-  tmp_out=$(mktemp)
-  local tmp_err
-  tmp_err=$(mktemp)
-  
-  if ! $STELLAR contract invoke --source "$source" --network "$NETWORK" "$@" >"$tmp_out" 2>"$tmp_err"; then
-    log_error "Invocation failed!"
-    cat "$tmp_err" >&2
-    rm -f "$tmp_out" "$tmp_err"
-    return 1
-  fi
-  
-  tail -1 "$tmp_out"
-  rm -f "$tmp_out" "$tmp_err"
-}
-
 log "Starting E2E load test (N=$N, D=$D)"
 
 # Ensure contract is built
@@ -91,7 +35,7 @@ log "Rebuilding contract if necessary"
 
 setup_start=$(get_time)
 log "Generating and funding load test identities on testnet..."
-DEPLOYER=$(gen_key load_deployer)
+DEPLOYER=$(gen_key "$DEPLOYER_IDENTITY")
 R1=$(gen_key load_resolver1)
 R2=$(gen_key load_resolver2)
 R3=$(gen_key load_resolver3)
@@ -99,14 +43,14 @@ ASSERTER=$(gen_key load_asserter)
 DISPUTER=$(gen_key load_disputer)
 
 log "Deploying contract"
-CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source load_deployer --network "$NETWORK" 2>/dev/null | tail -1)
+CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" 2>/dev/null | tail -1)
 log "Contract ID: $CONTRACT"
 
 TOKEN=$($STELLAR contract id asset --asset native --network "$NETWORK")
 log "Token (native XLM SAC): $TOKEN"
 
 log "Initializing contract with 3-member resolver committee and challenge_window_secs=$CHALLENGE_WINDOW_SECS"
-invoke_contract load_deployer --id "$CONTRACT" -- initialize \
+invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- initialize \
   --admin "$DEPLOYER" \
   --token "$TOKEN" \
   --bond_amount "$BOND_AMOUNT" \
@@ -207,7 +151,7 @@ for ((i=0; i<D; i++)); do
   fi
   
   # Verify state is Resolved
-  state=$(invoke_contract load_deployer --id "$CONTRACT" -- get_assertion_state --id "$id")
+  state=$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- get_assertion_state --id "$id")
   if ! echo "$state" | grep -q '"status":.*"Resolved"'; then
     log_error "Assertion $id state is not Resolved! Got: $state"
     exit 1
@@ -265,7 +209,7 @@ for ((i=D; i<N; i++)); do
   fi
   
   # Verify state is Resolved
-  state=$(invoke_contract load_deployer --id "$CONTRACT" -- get_assertion_state --id "$id")
+  state=$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- get_assertion_state --id "$id")
   if ! echo "$state" | grep -q '"status":.*"Resolved"'; then
     log_error "Assertion $id state is not Resolved! Got: $state"
     exit 1
@@ -306,20 +250,6 @@ echo "Phase 2 (Disput): ${phase2_duration}s"
 echo "Phase 3 (Resolv): ${phase3_duration}s"
 echo "Phase 4 (Finalz): ${phase4_duration}s"
 echo ""
-
-# Helper to calculate average
-avg_time() {
-  local sum=0
-  local count=${#@}
-  if [ "$count" -eq 0 ]; then
-    echo "0.00"
-    return
-  fi
-  for val in "$@"; do
-    sum=$(awk -v s="$sum" -v v="$val" 'BEGIN { print s + v }')
-  done
-  awk -v s="$sum" -v c="$count" 'BEGIN { printf "%.2f", s / c }'
-}
 
 avg_assert=$(avg_time "${assertion_times[@]}")
 avg_dispute=$(avg_time "${dispute_times[@]}")

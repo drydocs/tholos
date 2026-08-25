@@ -31,83 +31,16 @@ ANTI_SNIPE_HARD_MAX_SECS=240
 REVEAL_DURATION_SECS=180
 MAX_POSITION=10000000
 MAX_TOTAL_WEIGHT=1000000000
+# Funded identity this script deploys and reads balances from.
+DEPLOYER_IDENTITY=v2load_deployer
+
+# Logging, timing and invocation helpers shared with testnet-load.sh. They
+# read NETWORK and DEPLOYER_IDENTITY, so this must come after them.
+# shellcheck source=SCRIPTDIR/lib/load-test-common.sh
+source "$CONTRACT_DIR/scripts/lib/load-test-common.sh"
 
 # Number of third-party positions to fund on the strict-majority dispute.
 P=${1:-8}
-
-log() {
-  echo -e "\033[1;34m>>\033[0m $*"
-}
-
-log_success() {
-  echo -e "\033[1;32m✓\033[0m $*"
-}
-
-log_error() {
-  echo -e "\033[1;31m✗\033[0m $*"
-}
-
-get_time() {
-  date +%s.%N 2>/dev/null || date +%s
-}
-
-elapsed_time() {
-  local start=$1
-  local end=$2
-  if command -v awk >/dev/null 2>&1; then
-    awk -v s="$start" -v e="$end" 'BEGIN { printf "%.2f", e - s }'
-  else
-    local diff=$(( ${end%.*} - ${start%.*} ))
-    echo "$diff"
-  fi
-}
-
-avg_time() {
-  local sum=0
-  local count=${#@}
-  if [ "$count" -eq 0 ]; then
-    echo "0.00"
-    return
-  fi
-  for val in "$@"; do
-    sum=$(awk -v s="$sum" -v v="$val" 'BEGIN { print s + v }')
-  done
-  awk -v s="$sum" -v c="$count" 'BEGIN { printf "%.2f", s / c }'
-}
-
-STELLAR="stellar"
-
-gen_key() {
-  local name=$1
-  $STELLAR keys generate "$name" --network "$NETWORK" --fund --overwrite >/dev/null
-  $STELLAR keys address "$name"
-}
-
-balance() {
-  local token=$1
-  local addr=$2
-  $STELLAR contract invoke --id "$token" --source v2load_deployer --network "$NETWORK" -- balance --id "$addr" 2>/dev/null \
-    | tr -d '"'
-}
-
-invoke_contract() {
-  local source=$1
-  shift
-  local tmp_out
-  tmp_out=$(mktemp)
-  local tmp_err
-  tmp_err=$(mktemp)
-
-  if ! $STELLAR contract invoke --source "$source" --network "$NETWORK" "$@" >"$tmp_out" 2>"$tmp_err"; then
-    log_error "Invocation failed!"
-    cat "$tmp_err" >&2
-    rm -f "$tmp_out" "$tmp_err"
-    return 1
-  fi
-
-  tail -1 "$tmp_out"
-  rm -f "$tmp_out" "$tmp_err"
-}
 
 network_id() {
   # register()'s commitment hashes over env.ledger().network_id(), the
@@ -150,7 +83,7 @@ log "Network id (sha256 of the testnet passphrase): $NETWORK_ID"
 
 setup_start=$(get_time)
 log "Generating and funding load test identities on testnet..."
-DEPLOYER=$(gen_key v2load_deployer)
+DEPLOYER=$(gen_key "$DEPLOYER_IDENTITY")
 ASSERTER=$(gen_key v2load_asserter)
 DISPUTER=$(gen_key v2load_disputer)
 
@@ -164,14 +97,14 @@ for ((i=0; i<P; i++)); do
 done
 
 log "Deploying contract"
-CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source v2load_deployer --network "$NETWORK" 2>/dev/null | tail -1)
+CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" 2>/dev/null | tail -1)
 log "Contract ID: $CONTRACT"
 
 TOKEN=$($STELLAR contract id asset --asset native --network "$NETWORK")
 log "Token (native XLM SAC): $TOKEN"
 
 log "Initializing contract"
-invoke_contract v2load_deployer --id "$CONTRACT" -- initialize \
+invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- initialize \
   --admin "$DEPLOYER" \
   --token "$TOKEN" \
   --base_bond "$BOND_AMOUNT" \
@@ -225,7 +158,7 @@ log_success "Phase 1 completed in ${phase1_duration}s."
 # register()/reveal() actually verify (computed by compute_commitment, see
 # lib.rs's VoteCommitmentPreimage), not an arbitrary placeholder: reveal
 # would reject anything else with CommitmentVerificationFailed.
-MAJORITY_POLICY_HASH=$(json_field "$(invoke_contract v2load_deployer --id "$CONTRACT" -- get_assertion --id "$MAJORITY_ID")" policy_hash)
+MAJORITY_POLICY_HASH=$(json_field "$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- get_assertion --id "$MAJORITY_ID")" policy_hash)
 log "Starting Phase 2: registering $P third-party positions on $MAJORITY_ID (all agreeing, driving it to a strict majority)..."
 phase2_start=$(get_time)
 registration_times=()
@@ -286,7 +219,7 @@ phase3_end=$(get_time)
 phase3_duration=$(elapsed_time "$phase3_start" "$phase3_end")
 log_success "Phase 3 (Reveal) completed in ${phase3_duration}s."
 
-state=$(invoke_contract v2load_deployer --id "$CONTRACT" -- get_assertion --id "$MAJORITY_ID")
+state=$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- get_assertion --id "$MAJORITY_ID")
 if ! echo "$state" | grep -q '"terminal_cause":"StrictMajorityFor"'; then
   log_error "Expected $MAJORITY_ID to have locked StrictMajorityFor. Got: $state"
   exit 1
@@ -298,7 +231,7 @@ log "Waiting for $TIMEOUT_ID's registration and reveal windows to close..."
 sleep $((REGISTRATION_DURATION_SECS + REVEAL_DURATION_SECS + 10))
 
 log "Closing $TIMEOUT_ID via resolve_outcome (permissionless)..."
-cause=$(invoke_contract v2load_deployer --id "$CONTRACT" -- resolve_outcome --id "$TIMEOUT_ID")
+cause=$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- resolve_outcome --id "$TIMEOUT_ID")
 if [ "$cause" != '"OptimisticTimeout"' ]; then
   log_error "Expected $TIMEOUT_ID to resolve as OptimisticTimeout. Got: $cause"
   exit 1
@@ -333,7 +266,7 @@ settle_one() {
   local addr=$2
   local s_start
   s_start=$(get_time)
-  invoke_contract v2load_deployer --id "$CONTRACT" -- settle --id "$id" --address "$addr" >/dev/null
+  invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- settle --id "$id" --address "$addr" >/dev/null
   local s_end
   s_end=$(get_time)
   elapsed_time "$s_start" "$s_end"
@@ -380,7 +313,7 @@ withdraw_if_owed() {
   local name=$2
   local addr=$3
   local credit
-  credit=$(invoke_contract v2load_deployer --id "$CONTRACT" -- get_credit --id "$id" --address "$addr")
+  credit=$(invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- get_credit --id "$id" --address "$addr")
   credit=$(echo "$credit" | tr -d '"')
   if [ "$credit" = "0" ]; then
     log_success "Nothing owed to $name on $id, skipping withdraw"
