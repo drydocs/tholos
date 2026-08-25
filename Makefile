@@ -12,7 +12,7 @@ fmt:
 # Lint shell scripts (fails if shellcheck isn't installed, matching CI)
 shellcheck:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not installed; install it before running make check."; exit 1; }
-	shellcheck scripts/*.sh
+	shellcheck -x scripts/*.sh scripts/lib/*.sh
 
 # Build Tholos WASM first (required by demo-consumer at compile time)
 build-wasm:
