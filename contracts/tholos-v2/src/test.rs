@@ -1068,7 +1068,7 @@ fn test_register_top_up_aggregates() {
     let asserter = f.funded_address();
     let disputer = f.funded_address();
     let voter = f.funded_address();
-    f.mint(&voter, DEFAULTMINT);
+    f.mint(&voter, DEFAULT_MINT);
 
     let id = f.asserted(&asserter);
     f.client.dispute(&disputer, &id);
