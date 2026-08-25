@@ -18,7 +18,7 @@ Decide these parameters up front; none of them can be changed after `initialize`
 | Parameter | Guidance |
 | --- | --- |
 | `token` | Any SEP-41 token your users already hold. No swap step exists, so picking a token nobody has is a dead deployment. Must match v1's choice if accepting both v1 and v2 assertions in your integrations. |
-| `base_bond` | Size from the spam/griefing model in [BOND_SIZING.md](BOND_SIZING.md). Equal to v1's `bond_amount` in principle, but v2 adds a third-party registration tier: a cheaper base bond attracts counter-stake faster, while a larger one deters frivolous disputes. Set it using the same analysis as v1 (start with the larger of the assertion-spam and bad-faith-dispute floors, add any target attacker-loss margin), then check that `max_total_weight` and `max_position` will accommodate realistic multi-party dispute scenarios. Also capped at `MAX_BOND_AMOUNT`, a contract-enforced ceiling well above any realistic bond size — it exists so the bond can never overflow `resolve_outcome`'s reward-multiply arithmetic or the token balance held across registration and settlement. |
+| `base_bond` | Size from the spam/griefing model in [BOND_SIZING.md](BOND_SIZING.md). Equal to v1's `bond_amount` in principle, but v2 adds a third-party registration tier: a cheaper base bond attracts counter-stake faster, while a larger one deters frivolous disputes. Set it using the same analysis as v1 (start with the larger of the assertion-spam and bad-faith-dispute floors, add any target attacker-loss margin), then check that `max_total_weight` and `max_position` will accommodate realistic multi-party dispute scenarios. Also capped at `MAX_BOND_AMOUNT`, a contract-enforced ceiling well above any realistic bond size. It exists so the bond can never overflow `finalize`'s reward-multiply arithmetic (`bond * finalize_reward_bps`) or the token balance held across registration and settlement. |
 | `challenge_window_secs` | Long enough that people who'd actually catch a bad assertion have a realistic chance to see it and act. Short windows finalize faster but catch less. In v2, this is the only deadline before the assertion is disputed; registration and reveal happen afterward, so budget time before this expires for dispute-scoped registration and reveal to complete. |
 | `finalize_reward_bps` | Basis points (0–1000) of the bond paid to whoever calls `finalize`. `caller` must authorize the call unconditionally, even at 0. 0 means no reward: the full bond returns to the asserter. A non-zero value creates an economic incentive for prompt finalization at the cost of a small bond haircut the asserter accepts when posting. 100 bps (1%) is a reasonable starting point; 1000 bps (10%) is the maximum enforced by the contract. |
 
@@ -85,14 +85,14 @@ stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- 
 The example uses these choices for illustration; adapt them to your use case:
 
 - `base_bond`: 1,000,000 units (e.g., 0.1 XLM if using native SAC)
-- `challenge_window_secs`: 3600 (1 hour); disputes must arrive within that window
-- `finalize_reward_bps`: 0 (no reward for calling finalize); callers finalize for free
-- `registration_duration_secs`: 3600 (1 hour); registration stays open 1 hour after `dispute`
-- `anti_snipe_extension_secs`: 300 (5 minutes); each near-deadline deposit extends it by 5 minutes
-- `anti_snipe_hard_max_secs`: 7200 (2 hours); registration hard-stops 2 hours after `dispute`, even if extensions fire
-- `reveal_duration_secs`: 3600 (1 hour); reveal stays open 1 hour after registration closes, then `reveal` accepts no more submissions
-- `max_position`: 50,000,000 units; one address may lock up to 50M units in any dispute
-- `max_total_weight`: 250,000,000 units; any dispute may accumulate up to 250M units of total weight before registration stops accepting new positions
+- `challenge_window_secs`: 3600 (1 hour)
+- `finalize_reward_bps`: 0
+- `registration_duration_secs`: 3600 (1 hour)
+- `anti_snipe_extension_secs`: 300 (5 minutes)
+- `anti_snipe_hard_max_secs`: 7200 (2 hours), twice `registration_duration_secs` so a handful of near-deadline extensions can't stall registration indefinitely
+- `reveal_duration_secs`: 3600 (1 hour)
+- `max_position`: 50,000,000 units, 50x `base_bond`, enough headroom for a real multi-party dispute without approaching `max_total_weight` on its own
+- `max_total_weight`: 250,000,000 units, 5x `max_position`, so no single position can dominate the vote outright
 
 `scripts/testnet-load-v2.sh` automates a similar sequence plus assert/dispute/register/reveal/resolve
 against real testnet infrastructure; run it to sanity-check a fresh deploy before handing the contract
@@ -117,25 +117,29 @@ This stops `assert_outcome` immediately, preventing the creation of new assertio
 as if nothing changed, and no deadline is altered or extended. A paused-out `assert_outcome` is the only
 v2 pause available; v2 cannot (and does not) pause disputes, reveals, settlement, or withdrawals mid-flight.
 
-This narrow scope is intentional: pausing `dispute` or `reveal` while leaving `finalize` or `resolve_outcome`
-active could allow an incident to choose a winner administratively, which breaks the protocol guarantee that
-an already-funded assertion's outcome is decided by its weight-locked voters alone. Minimize pause duration
-and unpause with `--paused false` as soon as incident handling permits. If a deeper incident requires
-canceling an already-open round entirely, use `cancel_round` instead (see below).
+This narrow scope is intentional; see [V2_RESOLUTION.md](V2_RESOLUTION.md#administration-and-pause-semantics)
+for why. Minimize pause duration and unpause with `--paused false` as soon as incident handling permits.
+If a deeper incident requires canceling an already-open round entirely, use `cancel_round` instead (see below).
 
-### Canceling a disputed assertion
+### Canceling a round
 
-If a dispute must be unwound (e.g., a dispute opens under a v2 instance but the contract needs to be
-redeployed, or a bug is discovered mid-round), cancel the round:
+If an assertion must be unwound, whether it's still `Pending` (never disputed) or already `Disputed`
+(e.g., a bug is discovered mid-round, or the contract needs to be redeployed), cancel it:
 
 ```sh
 stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- cancel_round --id 0
 ```
 
 `cancel_round` can only be called while the contract is paused (i.e., after `set_paused_v2 --paused true`).
-It cancels a single dispute at id `0`, returning all locked positions to their owners as credits. Credits
-are then withdrawable as if the dispute had completed. The assertion itself remains stored with outcome
-unchanged; `cancel_round` does not alter the claim or finalize it, it only restores funds.
+It permanently finalizes the round: `phase` moves to `Resolved` and `terminal_cause` locks to
+`AdminCancelled`, so the claim itself is not left open, cancellation is a real terminal outcome, not just a
+fund restoration. What happens to locked funds depends on the phase it was cancelled from:
+
+- **Still `Pending`** (never disputed): the asserter's bond is refunded directly, in the same call.
+- **`Disputed`/`Registration`/`Reveal`** (third-party positions exist): `cancel_round` does not itself move
+  any tokens. Every funded position, including the asserter's and disputer's, recovers its exact principal
+  (no forfeiture, no reward) through the normal `settle` + `withdraw` path afterward, the same as any other
+  resolved round.
 
 Use this path only in genuine emergency scenarios (e.g., a discovered bug in voting logic, or a forced
 redeployment). Canceling a round is visible to users and affects the integrity of the record, so document
@@ -183,21 +187,23 @@ then reveal it in a later phase. The commitment is `sha256(canonical_encode(Vote
 
 ```
 VoteCommitmentPreimage = {
-  label: "THOLOS_V2_VOTE",
+  domain: "THOLOS_V2_VOTE",
   network_id: <soroban network id>,
-  contract_id: <this v2 contract address>,
+  contract_address: <this v2 contract address>,
   policy_hash: <sha256 of the PolicySnapshotV2>,
   assertion_id: <id of the assertion>,
+  round: <registration round counter>,
   voter: <address revealing this vote>,
-  agrees_with_asserter: <boolean choice>,
+  choice: <boolean, agrees with the asserter or not>,
   salt: <32 random bytes>
 }
 ```
 
 Compute the commitment off-chain, call `register` with it, and call `reveal` with the original preimage
-when the reveal phase opens. The `compute-commitment` tool (in `tools/compute-commitment/`) is provided
-for this; see its README for usage. The commit-reveal scheme prevents vote copying and keeps a voter's choice
-private until the reveal phase, when timing and anonymity properties shift.
+when the reveal phase opens. The `compute-commitment` tool (`tools/compute-commitment/`) is provided
+for this; see the usage comment at the top of `tools/compute-commitment/src/main.rs`. The commit-reveal
+scheme prevents vote copying and keeps a voter's choice private until the reveal phase, when timing and
+anonymity properties shift.
 
 ### TTLs and archival
 
