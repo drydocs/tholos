@@ -25,7 +25,9 @@ Every assertion ends in `Resolved`, reached one of three ways: uncontested
 (`finalize` after `challenge_window_secs` with no dispute), a strict majority
 of revealed weight locking in favor of one side, or the optimistic default
 (`AssertedOutcomeStands`) applying because neither side reached a strict
-majority by the reveal deadline. A `Registration`- or `Reveal`-phase
+majority by the time reveal closes, whether that's the reveal deadline or,
+if every eligible position revealed early with a split tally, before it. A
+`Registration`- or `Reveal`-phase
 assertion can also be short-circuited to `Resolved` by `cancel_round` (admin,
 emergency-only).
 
@@ -390,10 +392,12 @@ Requires `phase == Resolved` (`NotResolved` otherwise — including for an
 created). Fails with `AlreadySettled` if `address`'s position has already
 settled.
 
-A position on the winning side (per the assertion's `terminal_cause`)
-recovers its principal plus a pro-rata share of the forfeited pool:
-`reward = floor(amount * forfeited_pool / recipient_weight)`. A losing or
-never-revealed position recovers nothing. Whichever settlement brings the
+A recipient position (per the assertion's `terminal_cause`: the winning side
+for a strict majority, or any revealed position on either side for an
+optimistic timeout) recovers its principal plus a pro-rata share of the
+forfeited pool: `reward = floor(amount * forfeited_pool / recipient_weight)`.
+A losing position, or an unrevealed position under any terminal cause,
+recovers nothing. Whichever settlement brings the
 recipient side's settled weight up to its full total (the last recipient
 position left to settle) also routes any leftover floor-division dust to a
 deterministic recipient (the winning asserter or disputer after a
@@ -450,11 +454,13 @@ malicious `token` contract could otherwise call back into the contract
 mid-transfer and observe stale state.
 
 Beyond that state-before-transfer ordering, every function that moves
-tokens (`assert_outcome`, `finalize`, `dispute`, `register`, `withdraw`)
+tokens (`assert_outcome`, `finalize`, `dispute`, `register`, `withdraw`, and
+`cancel_round` when it refunds a still-`Pending` assertion's bond directly)
 also holds a contract-wide reentrancy mutex (`ReentrancyGuard`) for the
 duration of the transfer, via `enter_reentrancy_guard`/
-`exit_reentrancy_guard`. `reveal`, `resolve_outcome`, `settle`, and
-`cancel_round` don't move tokens themselves but still check the guard at
+`exit_reentrancy_guard`. `reveal`, `resolve_outcome`, and `settle` never
+move tokens themselves, and `cancel_round` doesn't either outside the
+`Pending` case, but all three still check the guard at
 entry (`check_reentrancy_guard`), since all four can act on a position's
 weight, credit, or terminal state — state the guard exists specifically to
 keep provisional until its funding transfer actually completes. A call
