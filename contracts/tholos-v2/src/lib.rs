@@ -572,7 +572,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 const MAX_REGISTRATION_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_REVEAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
-pub const MAX_ANTI_SNIPE_HARD_MAX_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
+pub const MAX_ANTI_SNIPE_HARD_MAX_SECS: u64 = 29 * 24 * 60 * 60; // 29 days
 /// Same 7-day cap as v1's `challenge_window_secs`, for the same reason: it
 /// must leave real margin within the 30-day persistent-storage TTL bump
 /// (`INSTANCE_BUMP_AMOUNT`) for `finalize` to actually get called before the
