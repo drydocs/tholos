@@ -61,8 +61,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      # scripts/*.sh doesn't cover the shared helpers the load tests source
+      # from scripts/lib/, so that directory is listed explicitly; -x makes
+      # shellcheck follow the `source` lines and check each script against
+      # the helpers it actually gets, instead of reporting SC1091 and
+      # analysing the two halves in isolation.
       - name: Lint shell scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
 
       # demo-consumer imports tholos's compiled wasm at compile time
       # (contractimport!), so it must exist before anything below this

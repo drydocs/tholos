@@ -113,7 +113,7 @@ cargo test
 
 # Check formatting and lints (same checks CI runs)
 cargo fmt --check
-shellcheck scripts/*.sh
+shellcheck -x scripts/*.sh scripts/lib/*.sh
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Build the optimized, deployable contract wasm

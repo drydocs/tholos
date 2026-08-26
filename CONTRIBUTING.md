@@ -191,7 +191,7 @@ Or run the raw commands directly:
 
 ```sh
 cargo fmt --check
-shellcheck scripts/*.sh
+shellcheck -x scripts/*.sh scripts/lib/*.sh
 cargo build -p tholos --target wasm32v1-none --release
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test

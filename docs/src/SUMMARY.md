@@ -7,6 +7,7 @@
 - [Protocol v2 Resolution Proposal](V2_RESOLUTION.md)
     - [V2 Claim Identifier and Evidence Convention](V2_CLAIM_IDENTIFIER.md)
 - [Contract Reference](CONTRACT.md)
+    - [Contract Reference (v2)](CONTRACT_V2.md)
 - [Deployment & Operations](DEPLOYMENT.md)
     - [Bond Sizing Analysis](BOND_SIZING.md)
     - [Deployment & Operations: Protocol v2](DEPLOYMENT_V2.md)
