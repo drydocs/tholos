@@ -175,7 +175,7 @@ only affect assertions created after the change.
 | `InvalidBondAmount` | `base_bond` isn't positive, or exceeds `MAX_BOND_AMOUNT`. |
 | `InvalidRegistrationDuration` | `registration_duration_secs` is zero or exceeds 7 days. |
 | `InvalidRevealDuration` | `reveal_duration_secs` is zero or exceeds 7 days. |
-| `InvalidAntiSnipeParams` | `anti_snipe_extension_secs` exceeds `anti_snipe_hard_max_secs`, `anti_snipe_hard_max_secs` is shorter than `registration_duration_secs`, or `anti_snipe_hard_max_secs` exceeds `MAX_ANTI_SNIPE_HARD_MAX_SECS` (30 days). |
+| `InvalidAntiSnipeParams` | `anti_snipe_extension_secs` exceeds `anti_snipe_hard_max_secs`, `anti_snipe_hard_max_secs` is shorter than `registration_duration_secs`, or `anti_snipe_hard_max_secs` exceeds `MAX_ANTI_SNIPE_HARD_MAX_SECS` (29 days). |
 | `InvalidMaxPosition` | `max_position` isn't positive, or exceeds `max_total_weight`. |
 | `InvalidMaxTotalWeight` | `max_total_weight` isn't positive, or exceeds `MAX_SETTLEMENT_TOTAL_WEIGHT`. |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or exceeds 7 days. |
