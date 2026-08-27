@@ -505,6 +505,41 @@ fn test_cannot_dispute_an_already_disputed_assertion() {
 }
 
 #[test]
+fn test_asserter_cannot_dispute_own_assertion() {
+    // An asserter disputing their own assertion would consume the one dispute
+    // slot while facing no economic risk (they receive both bonds back
+    // regardless of the resolver vote), nullifying the bond-forfeiture
+    // deterrent. The fix adds `Error::SelfDispute = 22` and rejects the call
+    // before any state is mutated or any bond is transferred.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    let asserter_balance_after_assert = f.token.balance(&asserter);
+
+    let result = f.client.try_dispute(&asserter, &id);
+
+    // Must return SelfDispute and leave the assertion untouched.
+    assert_eq!(result, Err(Ok(Error::SelfDispute)));
+    assert_eq!(
+        f.client.get_assertion_state(&id).status,
+        Status::Pending,
+        "assertion must still be Pending after a rejected self-dispute"
+    );
+    assert_eq!(
+        f.client.get_assertion_state(&id).disputer,
+        None,
+        "disputer must remain None after a rejected self-dispute"
+    );
+    // No second bond transfer must have occurred.
+    assert_eq!(
+        f.token.balance(&asserter),
+        asserter_balance_after_assert,
+        "asserter balance must be unchanged after a rejected self-dispute"
+    );
+}
+
+#[test]
 fn test_non_resolver_cannot_vote() {
     let f = Fixture::new();
     let asserter = f.funded_address();

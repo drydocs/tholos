@@ -161,6 +161,9 @@ jobs:
             --wasm target/wasm32v1-none/release/tholos.wasm \
             --output-dir /tmp/tholos-sdk-regenerated \
             --overwrite
+          sha256sum target/wasm32v1-none/release/tholos.wasm
+          sha256sum packages/tholos-sdk/src/index.ts /tmp/tholos-sdk-regenerated/src/index.ts
+          diff -u packages/tholos-sdk/src/index.ts /tmp/tholos-sdk-regenerated/src/index.ts || true
           if ! diff -rq packages/tholos-sdk/src /tmp/tholos-sdk-regenerated/src; then
             echo "::error::packages/tholos-sdk/src is out of date with contracts/tholos's current public interface. Regenerate it (see packages/tholos-sdk/README.md) and commit the result."
             exit 1
