@@ -263,6 +263,21 @@ assertion, accrued so far by `settle`. Returns `0` for an address with no
 credit record rather than failing — unlike `get_position`, "never settled
 anything here" isn't a caller error worth surfacing as one.
 
+### `bump_ttl(id, address)`
+
+Permissionlessly re-extends persistent storage TTL on an assertion's
+`AssertionV2` and, if it exists yet, its `Resolution`, plus (if `address`
+is given) that address's `Position` and `Credit` entries. Every other write
+path already bumps TTL as a side effect, but `Position`/`Credit` keys
+aren't enumerable on-chain, so a record nobody happens to touch again
+before its own next write (a registered voter who never reveals, or
+unclaimed credit) would otherwise only get renewed if that address's own
+owner eventually calls `reveal`/`settle`/`withdraw`. Any caller who knows
+the relevant `(id, address)` key can call this, no signature required and
+no funds move. A no-op, not an error, for any of the four entries that
+doesn't exist for this `id`/`address`. Fails only with `AssertionNotFound`
+if `id` itself doesn't exist.
+
 ### `assert_outcome(asserter, outcome) -> u64`
 
 Posts a bonded claim, the optimistic first stage before any dispute exists.
@@ -486,15 +501,32 @@ wrapping or panicking, since settlement moves real funds.
 Every write to an assertion's, resolution's, position's, or credit
 balance's persistent storage entry (via the shared `set_assertion`,
 `set_resolution`, `set_position`, and `add_credit` helpers) extends its TTL
-by 30 days (`INSTANCE_BUMP_AMOUNT`), the same bump amount v1 uses. This is
-why `challenge_window_secs`, `registration_duration_secs`, and
-`reveal_duration_secs` are each capped at 7 days: it leaves comfortable
-headroom within that 30-day bump for a phase's deadline to elapse and for
-the next call (`finalize`, `dispute`, `register`, `reveal`,
-`resolve_outcome`) to actually happen afterward, without the ledger entry
-being archived first. `test_assertion_storage_ttl_is_extended_on_finalize`
-in `contracts/tholos-v2/src/test.rs` verifies the TTL is actually extended
-on write, not just claimed in a comment.
+to cover that specific assertion's own worst-case active-phase horizon:
+`anti_snipe_hard_max_secs + reveal_duration_secs`, plus a fixed 7-day
+settlement/withdrawal grace period on top, converted from seconds to
+ledgers and floored at 30 days (`INSTANCE_BUMP_AMOUNT`, the flat bump v1
+uses). A deployment with a short `anti_snipe_hard_max_secs` gets the same
+30-day floor v1-style deployments always had; a deployment configured with
+a longer one gets a proportionally longer bump, computed fresh from that
+assertion's own pinned `PolicySnapshotV2` on every write, so its records
+can't outlive their own TTL mid-round regardless of how the deployment is
+tuned. `test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_instance_bump`
+in `contracts/tholos-v2/src/test.rs` verifies the sized case exceeds the
+floor; `test_assertion_storage_ttl_is_extended_on_finalize` verifies the
+floor case matches it exactly.
+
+Because `Position` and `Credit` keys aren't enumerable on-chain (the design
+deliberately avoids an unbounded voter vector), a record nobody happens to
+touch again before its own next write, most commonly a registered voter
+who never reveals, or credit nobody withdraws promptly, would otherwise
+only get its TTL renewed if that address's own owner eventually calls
+`reveal`/`settle`/`withdraw`. `bump_ttl(id, address)` (below) lets anyone
+who knows the relevant `(id, address)` key, an off-chain indexer, the
+address's own owner, or anyone else with an interest in the record staying
+live, renew it permissionlessly without needing to be that owner or move
+any funds, closing the same gap v1 doesn't have (v1 has exactly one
+long-lived record type per assertion, kept alive by that same assertion's
+own frequent writes).
 
 ## Events
 

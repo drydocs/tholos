@@ -222,6 +222,21 @@ All notable changes to this project are documented here. Format follows
   (480 kB to 98 kB gzipped), apparently from newer `stellar-sdk` tree-shaking
   more cleanly.
 
+- `tholos-v2`: persistent storage TTL for `AssertionV2`, `Resolution`,
+  `Position`, and `Credit` is now sized per assertion, from that
+  assertion's own pinned `PolicySnapshotV2` (`anti_snipe_hard_max_secs +
+  reveal_duration_secs`, plus a 7-day settlement/withdrawal grace period),
+  rather than a flat 30-day bump on every write. Floored at the same
+  30-day `INSTANCE_BUMP_AMOUNT` v1 uses, so this only ever matches or
+  exceeds the previous margin, never shrinks it. Also adds a new
+  permissionless `bump_ttl(id, address)` function: since `Position` and
+  `Credit` keys aren't enumerable on-chain, a record nobody happens to
+  touch again before its own next write (a registered voter who never
+  reveals, or unclaimed credit) previously could only get its TTL renewed
+  by that address's own owner calling `reveal`/`settle`/`withdraw`; anyone
+  who knows the `(id, address)` key can now renew it directly, no
+  signature required, no funds moved. Closes #72.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

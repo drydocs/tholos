@@ -570,6 +570,22 @@ const DAY_IN_LEDGERS: u32 = 17280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// On top of a round's full registration-through-reveal horizon, extra
+/// padding so `settle`/`withdraw` still have a comfortable window to run
+/// after reveal closes, before any of that round's persistent entries risk
+/// archival. See #72.
+const SETTLEMENT_GRACE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Soroban's target ledger close time. `extend_ttl` operates in ledgers,
+/// but every duration elsewhere in this contract is tracked in seconds via
+/// `env.ledger().timestamp()`, so this only translates a
+/// seconds-denominated policy value into an approximate ledger count for
+/// TTL sizing. A conservative approximation is fine here: TTL is always
+/// computed relative to "now" at write time, not pinned to an absolute
+/// deadline, so a small margin of error just means slightly more or less
+/// rent-covered headroom, never an incorrect result.
+const SECS_PER_LEDGER: u64 = 5;
+
 const MAX_REGISTRATION_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_REVEAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_ANTI_SNIPE_HARD_MAX_SECS: u64 = 29 * 24 * 60 * 60; // 29 days
@@ -764,6 +780,27 @@ impl TholosV2 {
             .ok_or(Error::AssertionNotFound)
     }
 
+    /// TTL bump `(threshold, amount)`, in ledgers, sized to cover one
+    /// dispute's full worst-case active-phase horizon (registration through
+    /// reveal, per this specific assertion's own pinned policy) plus
+    /// `SETTLEMENT_GRACE_SECS`, rather than a flat constant: a deployment's
+    /// `anti_snipe_hard_max_secs`/`reveal_duration_secs` can be sized well
+    /// above what a fixed 30-day bump covers, and every persistent record
+    /// tied to a round (`AssertionV2`, `Resolution`, `Position`, `Credit`)
+    /// needs to survive that same horizon, not just whatever margin the
+    /// instance-storage bump happened to use. Floored at
+    /// `INSTANCE_BUMP_AMOUNT` so this is never a *smaller* safety margin
+    /// than before, only ever the same or larger. See #72.
+    fn record_bump(policy: &PolicySnapshotV2) -> (u32, u32) {
+        let horizon_secs = policy
+            .anti_snipe_hard_max_secs
+            .saturating_add(policy.reveal_duration_secs)
+            .saturating_add(SETTLEMENT_GRACE_SECS);
+        let horizon_ledgers = (horizon_secs / SECS_PER_LEDGER).min(u32::MAX as u64) as u32;
+        let bump = horizon_ledgers.max(INSTANCE_BUMP_AMOUNT);
+        (bump - DAY_IN_LEDGERS, bump)
+    }
+
     /// Writes an assertion and extends its persistent storage TTL. Every
     /// write site uses this rather than a bare `.set()`, matching v1's
     /// `set_assertion` so an assertion's ledger entry can't be archived out
@@ -771,11 +808,8 @@ impl TholosV2 {
     fn set_assertion(env: &Env, id: u64, assertion: &AssertionV2) {
         let key = DataKey::AssertionV2(id);
         env.storage().persistent().set(&key, assertion);
-        env.storage().persistent().extend_ttl(
-            &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        let (threshold, bump) = Self::record_bump(&assertion.policy);
+        env.storage().persistent().extend_ttl(&key, threshold, bump);
     }
 
     /// Read-only lookup of one assertion's registration-phase bookkeeping.
@@ -788,14 +822,11 @@ impl TholosV2 {
             .ok_or(Error::AssertionNotFound)
     }
 
-    fn set_resolution(env: &Env, id: u64, resolution: &Resolution) {
+    fn set_resolution(env: &Env, id: u64, resolution: &Resolution, policy: &PolicySnapshotV2) {
         let key = DataKey::Resolution(id);
         env.storage().persistent().set(&key, resolution);
-        env.storage().persistent().extend_ttl(
-            &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        let (threshold, bump) = Self::record_bump(policy);
+        env.storage().persistent().extend_ttl(&key, threshold, bump);
     }
 
     /// Read-only lookup of one address's position on one assertion. Fails
@@ -807,14 +838,17 @@ impl TholosV2 {
             .ok_or(Error::AssertionNotFound)
     }
 
-    fn set_position(env: &Env, id: u64, address: &Address, position: &Position) {
+    fn set_position(
+        env: &Env,
+        id: u64,
+        address: &Address,
+        position: &Position,
+        policy: &PolicySnapshotV2,
+    ) {
         let key = DataKey::Position(id, address.clone());
         env.storage().persistent().set(&key, position);
-        env.storage().persistent().extend_ttl(
-            &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        let (threshold, bump) = Self::record_bump(policy);
+        env.storage().persistent().extend_ttl(&key, threshold, bump);
     }
 
     /// Acquires the contract-wide reentrancy mutex, failing with
@@ -1072,6 +1106,7 @@ impl TholosV2 {
                 agrees_with_outcome: None,
                 settled: false,
             },
+            &policy,
         );
         Self::set_position(
             &env,
@@ -1084,6 +1119,7 @@ impl TholosV2 {
                 agrees_with_outcome: None,
                 settled: false,
             },
+            &policy,
         );
 
         let resolution = Resolution {
@@ -1100,7 +1136,7 @@ impl TholosV2 {
             outstanding_liability: 0,
             withdrawn_total: 0,
         };
-        Self::set_resolution(&env, id, &resolution);
+        Self::set_resolution(&env, id, &resolution, &policy);
 
         Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
@@ -1239,9 +1275,10 @@ impl TholosV2 {
                 agrees_with_outcome: None,
                 settled: false,
             },
+            &assertion.policy,
         );
         resolution.eligible_total = new_total;
-        Self::set_resolution(&env, id, &resolution);
+        Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
         Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
@@ -1316,10 +1353,10 @@ impl TholosV2 {
             }
             position.revealed = true;
             position.agrees_with_outcome = Some(agrees_with_asserter);
-            Self::set_position(env, id, fixed_voter, &position);
+            Self::set_position(env, id, fixed_voter, &position, &assertion.policy);
         }
 
-        Self::set_resolution(env, id, &resolution);
+        Self::set_resolution(env, id, &resolution, &assertion.policy);
 
         RevealOpened {
             id,
@@ -1508,14 +1545,14 @@ impl TholosV2 {
         let agrees = choice == assertion.outcome;
         position.revealed = true;
         position.agrees_with_outcome = Some(agrees);
-        Self::set_position(&env, id, &voter, &position);
+        Self::set_position(&env, id, &voter, &position, &assertion.policy);
 
         if agrees {
             resolution.agree_weight += position.amount;
         } else {
             resolution.disagree_weight += position.amount;
         }
-        Self::set_resolution(&env, id, &resolution);
+        Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
         // Not force_close: this reveal happened before reveal_deadline (the
         // check above already ruled out the alternative), so closing here
@@ -1645,7 +1682,13 @@ impl TholosV2 {
     /// deterministic dust recipient described in `settle`), and those two
     /// additions must not clobber each other regardless of which happens
     /// first.
-    fn add_credit(env: &Env, id: u64, address: &Address, amount: i128) -> Result<(), Error> {
+    fn add_credit(
+        env: &Env,
+        id: u64,
+        address: &Address,
+        amount: i128,
+        policy: &PolicySnapshotV2,
+    ) -> Result<(), Error> {
         if amount == 0 {
             return Ok(());
         }
@@ -1655,11 +1698,8 @@ impl TholosV2 {
             .checked_add(amount)
             .ok_or(Error::SettlementArithmeticOverflow)?;
         env.storage().persistent().set(&key, &updated);
-        env.storage().persistent().extend_ttl(
-            &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        let (threshold, bump) = Self::record_bump(policy);
+        env.storage().persistent().extend_ttl(&key, threshold, bump);
         Ok(())
     }
 
@@ -1672,6 +1712,67 @@ impl TholosV2 {
             .persistent()
             .get(&DataKey::Credit(id, address))
             .unwrap_or(0)
+    }
+
+    /// Permissionlessly re-extends TTL on an assertion's `AssertionV2` and,
+    /// if it exists yet, its `Resolution`, plus (if `address` is given) that
+    /// address's `Position` and `Credit` entries. Every other write path
+    /// already bumps TTL as a side effect (see `set_assertion`/
+    /// `set_resolution`/`set_position`/`add_credit`), but `Position` and
+    /// `Credit` keys aren't enumerable on-chain (the design deliberately
+    /// avoids an unbounded voter vector, see V2_RESOLUTION.md), so a record
+    /// nobody happens to touch again before settlement (a registered voter
+    /// who never reveals, or unclaimed credit sitting well past its
+    /// settlement) would otherwise only get renewed if its own owner
+    /// eventually calls `reveal`/`settle`/`withdraw`. This lets anyone who
+    /// knows the `(id, address)` key, an off-chain indexer, the address's
+    /// own owner, or anyone else with an interest in the record staying
+    /// live, keep it from approaching archival in the meantime, without
+    /// needing to be that owner or to move any funds. A no-op (not an
+    /// error) for any of the four entries that doesn't exist for this `id`/
+    /// `address`, since which subset exists depends on the assertion's
+    /// phase and whether `address` ever registered or settled anything
+    /// here. Fails only with `AssertionNotFound` if `id` itself doesn't
+    /// exist. See #72.
+    pub fn bump_ttl(env: Env, id: u64, address: Option<Address>) -> Result<(), Error> {
+        let assertion: AssertionV2 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssertionV2(id))
+            .ok_or(Error::AssertionNotFound)?;
+        Self::set_assertion(&env, id, &assertion);
+
+        let resolution_key = DataKey::Resolution(id);
+        if let Some(resolution) = env
+            .storage()
+            .persistent()
+            .get::<_, Resolution>(&resolution_key)
+        {
+            Self::set_resolution(&env, id, &resolution, &assertion.policy);
+        }
+
+        if let Some(address) = address {
+            let position_key = DataKey::Position(id, address.clone());
+            if let Some(position) = env.storage().persistent().get::<_, Position>(&position_key) {
+                Self::set_position(&env, id, &address, &position, &assertion.policy);
+            }
+
+            // Checks the actual balance, not just `has()`: withdraw()
+            // deliberately leaves a zeroed credit entry's TTL untouched
+            // (see its own comment), a zero balance holds nothing worth
+            // paying rent to keep alive, and bump_ttl shouldn't undo that
+            // by renewing it anyway just because the key still exists.
+            let credit_key = DataKey::Credit(id, address);
+            let credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+            if credit > 0 {
+                let (threshold, bump) = Self::record_bump(&assertion.policy);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&credit_key, threshold, bump);
+            }
+        }
+
+        Ok(())
     }
 
     /// Converts one position's share of a decided outcome into withdrawable
@@ -1807,7 +1908,7 @@ impl TholosV2 {
                             "dust only exists when forfeited_pool > 0, which excludes AdminCancelled, and settlement_pool above already panics for any other terminal_cause"
                         ),
                     };
-                    Self::add_credit(&env, id, &dust_recipient, dust)?;
+                    Self::add_credit(&env, id, &dust_recipient, dust, &assertion.policy)?;
                     liability_increase = liability_increase
                         .checked_add(dust)
                         .ok_or(Error::SettlementArithmeticOverflow)?;
@@ -1824,7 +1925,7 @@ impl TholosV2 {
                 .outstanding_liability
                 .checked_add(liability_increase)
                 .ok_or(Error::SettlementArithmeticOverflow)?;
-            Self::set_resolution(&env, id, &resolution);
+            Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
             position_payout
         } else {
@@ -1832,9 +1933,9 @@ impl TholosV2 {
         };
 
         position.settled = true;
-        Self::set_position(&env, id, &address, &position);
+        Self::set_position(&env, id, &address, &position, &assertion.policy);
 
-        Self::add_credit(&env, id, &address, payout)?;
+        Self::add_credit(&env, id, &address, payout, &assertion.policy)?;
 
         Settled {
             id,
@@ -1912,7 +2013,7 @@ impl TholosV2 {
             .withdrawn_total
             .checked_add(credit)
             .ok_or(Error::SettlementArithmeticOverflow)?;
-        Self::set_resolution(&env, id, &resolution);
+        Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
         Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(

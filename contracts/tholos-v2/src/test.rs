@@ -808,6 +808,200 @@ fn test_assertion_storage_ttl_is_extended_on_finalize() {
 }
 
 #[test]
+fn test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_instance_bump() {
+    // A deployment with a generous anti_snipe_hard_max_secs needs its
+    // Resolution/Position entries to survive longer than the flat
+    // INSTANCE_BUMP_AMOUNT floor covers on its own: #72.
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // The largest anti_snipe_hard_max_secs/reveal_duration_secs the
+    // contract allows at all, so this exercises the sized path at its own
+    // real ceiling rather than an arbitrary value that could drift out of
+    // sync with MAX_ANTI_SNIPE_HARD_MAX_SECS/MAX_REVEAL_DURATION_SECS.
+    init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        MAX_ANTI_SNIPE_HARD_MAX_SECS,
+        MAX_REVEAL_DURATION_SECS,
+        DEFAULT_MAX_POSITION,
+        DEFAULT_MAX_TOTAL_WEIGHT,
+    )
+    .unwrap()
+    .unwrap();
+
+    let mint = |addr: &Address| {
+        token::StellarAssetClient::new(&env, &token_id).mint(addr, &DEFAULT_MINT);
+    };
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    mint(&asserter);
+    mint(&disputer);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    // horizon_secs = MAX_ANTI_SNIPE_HARD_MAX_SECS + MAX_REVEAL_DURATION_SECS
+    // + 7d grace, / 5 secs/ledger.
+    let expected_bump =
+        ((MAX_ANTI_SNIPE_HARD_MAX_SECS + MAX_REVEAL_DURATION_SECS + 7 * 24 * 60 * 60) / 5) as u32;
+    assert!(
+        expected_bump > INSTANCE_BUMP_AMOUNT,
+        "test setup should exceed the flat floor, otherwise this isn't exercising the sized path"
+    );
+
+    let ttl_of =
+        |key: &DataKey| env.as_contract(&contract_id, || env.storage().persistent().get_ttl(key));
+    assert_eq!(ttl_of(&DataKey::Resolution(id)), expected_bump);
+    assert_eq!(ttl_of(&DataKey::Position(id, asserter)), expected_bump);
+    assert_eq!(ttl_of(&DataKey::Position(id, disputer)), expected_bump);
+}
+
+#[test]
+fn test_bump_ttl_extends_assertion_resolution_position_and_credit() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let voter_salt = salt(&f.env, 1);
+    let voter_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &voter_salt,
+    );
+    f.client.register(&voter, &id, &300, &voter_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &voter_salt);
+
+    assert_eq!(f.client.get_assertion(&id).phase, PhaseV2::Resolved);
+    f.client.settle(&id, &voter);
+    assert!(f.client.get_credit(&id, &voter) > 0);
+
+    let ttl_of = |key: &DataKey| {
+        f.env.as_contract(&f.client.address, || {
+            f.env.storage().persistent().get_ttl(key)
+        })
+    };
+    let full_bump = ttl_of(&DataKey::AssertionV2(id));
+
+    // Let TTL decay partway (but not expire) since the last write, then
+    // confirm bump_ttl restores every one of the four record types to a
+    // full bump again, even though `voter` didn't itself call anything.
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += full_bump / 2);
+    assert!(ttl_of(&DataKey::AssertionV2(id)) < full_bump);
+
+    f.client.bump_ttl(&id, &Some(voter.clone()));
+
+    assert_eq!(ttl_of(&DataKey::AssertionV2(id)), full_bump);
+    assert_eq!(ttl_of(&DataKey::Resolution(id)), full_bump);
+    assert_eq!(ttl_of(&DataKey::Position(id, voter.clone())), full_bump);
+    assert_eq!(ttl_of(&DataKey::Credit(id, voter)), full_bump);
+}
+
+#[test]
+fn test_bump_ttl_does_not_extend_credit_ttl_after_withdraw_zeroes_it() {
+    // withdraw() deliberately leaves a zeroed credit entry's TTL untouched
+    // (see its own comment): bump_ttl must not undo that by extending it
+    // anyway just because the Credit key still exists in storage with a
+    // value of 0.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let voter_salt = salt(&f.env, 1);
+    let voter_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &voter_salt,
+    );
+    f.client.register(&voter, &id, &300, &voter_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &voter_salt);
+
+    f.client.settle(&id, &voter);
+    assert!(f.client.get_credit(&id, &voter) > 0);
+    f.client.withdraw(&voter, &id, &voter);
+    assert_eq!(f.client.get_credit(&id, &voter), 0);
+
+    let ttl_before = f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Credit(id, voter.clone()))
+    });
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += ttl_before / 2);
+    f.client.bump_ttl(&id, &Some(voter.clone()));
+
+    let ttl_after = f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Credit(id, voter))
+    });
+    // Decayed by the ledger advance above, not renewed: bump_ttl treated
+    // the zeroed entry the same way withdraw() itself does.
+    assert!(ttl_after < ttl_before);
+}
+
+#[test]
+fn test_bump_ttl_on_nonexistent_assertion_fails() {
+    let f = Fixture::new();
+
+    let result = f.client.try_bump_ttl(&0, &None);
+
+    assert_eq!(result, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_bump_ttl_is_noop_when_position_and_credit_do_not_exist_for_address() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let bystander = f.generate();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    // bystander never registered or settled anything here: bump_ttl must
+    // still succeed, touching only AssertionV2/Resolution.
+    let result = f.client.try_bump_ttl(&id, &Some(bystander));
+
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
 fn test_initialize_rejects_anti_snipe_hard_max_below_registration_duration() {
     let env = Env::default();
     env.mock_all_auths();
