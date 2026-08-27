@@ -10,6 +10,7 @@
     - [Contract Reference (v2)](CONTRACT_V2.md)
 - [Deployment & Operations](DEPLOYMENT.md)
     - [Bond Sizing Analysis](BOND_SIZING.md)
+    - [Deployment & Operations: Protocol v2](DEPLOYMENT_V2.md)
 - [Integration Guide](INTEGRATION.md)
     - [v1/v2 Migration Runbook](V2_MIGRATION.md)
 - [Glossary](GLOSSARY.md)
