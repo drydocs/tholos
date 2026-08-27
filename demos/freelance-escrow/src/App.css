@@ -428,3 +428,16 @@
   background: var(--bg);
   color: var(--text);
 }
+
+.wallet-button-container {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.wallet-error {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #ef4444;
+}

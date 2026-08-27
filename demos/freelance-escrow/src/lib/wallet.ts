@@ -25,15 +25,15 @@ export async function detectWallet(): Promise<WalletState> {
 
   return resolveConnectedState();
 }
-
 export async function connectWallet(): Promise<WalletState> {
   const access = await requestAccess();
   if (access.error) {
-    return { status: "disconnected" };
+    throw new Error(
+      typeof access.error === "string" ? access.error : "Failed to connect wallet"
+    );
   }
   return resolveConnectedState();
 }
-
 async function resolveConnectedState(): Promise<WalletState> {
   const [addressResult, networkResult] = await Promise.all([
     getAddress(),
@@ -41,7 +41,11 @@ async function resolveConnectedState(): Promise<WalletState> {
   ]);
 
   if (addressResult.error || !addressResult.address) {
-    return { status: "disconnected" };
+    throw new Error(
+      typeof addressResult.error === "string"
+        ? addressResult.error
+        : "Failed to retrieve wallet address"
+    );
   }
 
   return {
