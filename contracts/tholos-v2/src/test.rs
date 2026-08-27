@@ -3205,3 +3205,4 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
     );
     assert_eq!(result, Ok(Ok(())));
 }
+
