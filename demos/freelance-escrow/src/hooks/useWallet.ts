@@ -7,7 +7,11 @@ export function useWallet() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    detectWallet().then(setWallet);
+    detectWallet()
+      .then(setWallet)
+      .catch(() => {
+        setWallet({ status: "disconnected" });
+      });
   }, []);
 
   const connect = useCallback(async () => {

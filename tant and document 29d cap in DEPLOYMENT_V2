@@ -1,0 +1,26 @@
+[1mdiff --git a/contracts/tholos-v2/src/lib.rs b/contracts/tholos-v2/src/lib.rs[m
+[1mindex 49804f9..2328100 100644[m
+[1m--- a/contracts/tholos-v2/src/lib.rs[m
+[1m+++ b/contracts/tholos-v2/src/lib.rs[m
+[36m@@ -572,7 +572,7 @@[m [mconst INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;[m
+ [m
+ const MAX_REGISTRATION_DURATION_SECS: u64 = 7 * 24 * 60 * 60;[m
+ const MAX_REVEAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;[m
+[31m-pub const MAX_ANTI_SNIPE_HARD_MAX_SECS: u64 = 29 * 24 * 60 * 60; // 29 days[m
+[32m+[m[32mconst MAX_ANTI_SNIPE_HARD_MAX_SECS: u64 = 29 * 24 * 60 * 60; // 29 days[m
+ /// Same 7-day cap as v1's `challenge_window_secs`, for the same reason: it[m
+ /// must leave real margin within the 30-day persistent-storage TTL bump[m
+ /// (`INSTANCE_BUMP_AMOUNT`) for `finalize` to actually get called before the[m
+[1mdiff --git a/docs/src/DEPLOYMENT_V2.md b/docs/src/DEPLOYMENT_V2.md[m
+[1mindex b607fd1..8a0f462 100644[m
+[1m--- a/docs/src/DEPLOYMENT_V2.md[m
+[1m+++ b/docs/src/DEPLOYMENT_V2.md[m
+[36m@@ -32,7 +32,7 @@[m [ma dispute arrives. Every timeline runs from the moment `dispute` is called.[m
+ | --- | --- |[m
+ | `registration_duration_secs` | How long a dispute stays in registration, during which the asserter, disputer, and any third party can lock capital and commit votes. Must be at least 1 second; the contract enforces a practical upper bound to keep lifetimes reasonable. Deposit this commitment time into your business model: typical Internet disputes might use 1 day; urgent or time-sensitive ones might use 1 hour. If your dispute is about a sports result, a stock price, or anything with a known announcement, set this shorter than the time until the external event resolves, so resolution bonds are visible in time. |[m
+ | `anti_snipe_extension_secs` | How much longer the registration deadline moves if a position is funded within this many seconds of the ordinary cutoff. Prevents a late attacker from dominating an already-open dispute in the final second. Set it to 0 if you don't need anti-sniping (a trusted environment with no arms-race incentive), or to a reasonable backstab window (e.g., 5 minutes) if you expect contested disputes. The contract enforces an upper bound relative to `anti_snipe_hard_max_secs` (see below). |[m
+[31m-| `anti_snipe_hard_max_secs` | The absolute maximum registration deadline, regardless of how many extensions occur. No deposit can extend registration past this time, even if extensions keep firing. Set it to at least `registration_duration_secs` (the contract enforces this), plus enough extension opportunities to feel fair (e.g., `registration_duration_secs + 3 * anti_snipe_extension_secs`). A very large hard max (e.g., `registration_duration_secs + 100 * anti_snipe_extension_secs`) defeats anti-sniping; a very small one (barely above the base window) defeats extensions. |[m
+[32m+[m[32m| `anti_snipe_hard_max_secs` | The absolute maximum registration deadline, regardless of how many extensions occur. No deposit can extend registration past this time, even if extensions keep firing. Set it to at least `registration_duration_secs` (the contract enforces this) and at most `MAX_ANTI_SNIPE_HARD_MAX_SECS` (29 days), plus enough extension opportunities to feel fair (e.g., `registration_duration_secs + 100 * anti_snipe_extension_secs`). A very large hard max defeats anti-sniping; a very small one (barely above the base window) defeats extensions. |[m
+ | `reveal_duration_secs` | How long a dispute stays in the reveal phase after registration closes, during which all third-party commitments from registration become binding votes by revealing their salted choice. Must be at least 1 second; the contract enforces a practical upper bound. Typical disputes might use 6 hours to 1 day here: long enough for off-chain coordinators to run their own resolution process, short enough to finalize quickly. After the reveal deadline, any position that did not reveal is counted as abstaining (forfeited in settlement). |[m
+ [m
+ ### Arithmetic bounds[m
