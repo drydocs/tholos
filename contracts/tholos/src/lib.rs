@@ -166,6 +166,11 @@ pub enum Error {
     ResolverNotInCommittee = 19,
     RotationTargetAlreadyResolver = 20,
     NotProposer = 21,
+    /// The caller is the asserter of the assertion they are trying to dispute.
+    /// An asserter disputing their own assertion would consume the one dispute
+    /// slot without any economic risk (they receive both bonds back regardless
+    /// of the resolver vote), nullifying the bond-forfeiture deterrent.
+    SelfDispute = 22,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -622,6 +627,15 @@ impl Tholos {
         let mut assertion = Self::get_assertion(&env, id)?;
         if assertion.status != Status::Pending {
             return Err(Error::NotPending);
+        }
+
+        // An asserter must not be allowed to dispute their own assertion.
+        // Doing so would consume the one dispute slot and guarantee the asserter
+        // receives both bonds back regardless of the resolver vote (since
+        // `resolve` pays the winner, and winner == asserter == disputer either
+        // way), nullifying the bond-forfeiture deterrent entirely.
+        if disputer == assertion.asserter {
+            return Err(Error::SelfDispute);
         }
 
         let window: u64 = Self::get(&env, &DataKey::ChallengeWindow)?;
