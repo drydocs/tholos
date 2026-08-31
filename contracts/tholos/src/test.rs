@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::storage::Persistent as _;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, Ledger};
 
 const DEFAULT_BOND: i128 = 100;
@@ -142,6 +142,28 @@ fn test_assertion_storage_ttl_is_extended_on_every_write() {
         .with_mut(|l| l.sequence_number += ASSERTION_BUMP_AMOUNT - 10);
     f.client.dispute(&disputer, &id);
     assert_eq!(ttl_of(id), ASSERTION_BUMP_AMOUNT);
+}
+
+#[test]
+fn test_instance_storage_ttl_is_extended_by_state_changing_calls() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let instance_ttl = || {
+        f.env
+            .as_contract(&f.client.address, || f.env.storage().instance().get_ttl())
+    };
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    // Advance close to expiry, then confirm a plain state-changing call
+    // (not initialize) bumps the TTL back up rather than leaving the
+    // instance entry to lapse.
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.assert_outcome(&asserter, &true);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
 }
 
 #[test]

@@ -291,9 +291,7 @@ impl Tholos {
         env.storage()
             .instance()
             .set(&DataKey::FinalizeRewardBps, &finalize_reward_bps);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
 
         Ok(())
     }
@@ -315,6 +313,7 @@ impl Tholos {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
+        Self::touch_instance_ttl(&env);
 
         if new_resolvers.is_empty() || new_resolvers.len().is_multiple_of(2) {
             return Err(Error::InvalidResolverCount);
@@ -373,6 +372,7 @@ impl Tholos {
         // test_rotation_in_progress_blocks_second_proposal (RotationInProgress).
         let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
         resolver.require_auth();
+        Self::touch_instance_ttl(&env);
         if !committee.contains(&resolver) {
             return Err(Error::NotAResolver);
         }
@@ -431,6 +431,7 @@ impl Tholos {
             // NoRotationProposal: triggered by test_cannot_vote_rotation_without_proposal.
             .ok_or(Error::NoRotationProposal)?;
         resolver.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
         if !committee.contains(&resolver) {
@@ -514,6 +515,7 @@ impl Tholos {
             // NoRotationProposal: triggered by test_cannot_cancel_rotation_without_proposal.
             .ok_or(Error::NoRotationProposal)?;
         resolver.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let committee: Vec<Address> = Self::get(&env, &DataKey::Resolvers)?;
         if !committee.contains(&resolver) {
@@ -555,6 +557,7 @@ impl Tholos {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
+        Self::touch_instance_ttl(&env);
 
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
@@ -578,6 +581,7 @@ impl Tholos {
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         Self::require_not_paused(&env)?;
         asserter.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let bond_amount: i128 = Self::get(&env, &DataKey::BondAmount)?;
 
@@ -623,6 +627,7 @@ impl Tholos {
     pub fn dispute(env: Env, disputer: Address, id: u64) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         disputer.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let mut assertion = Self::get_assertion(&env, id)?;
         if assertion.status != Status::Pending {
@@ -690,6 +695,7 @@ impl Tholos {
         // record. Requiring auth here ensures that value is always a verified
         // address, not an arbitrary one anyone could have passed in.
         caller.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let mut assertion = Self::get_assertion(&env, id)?;
         if assertion.status != Status::Pending {
@@ -756,6 +762,7 @@ impl Tholos {
     ) -> Result<Option<bool>, Error> {
         Self::require_not_paused(&env)?;
         resolver.require_auth();
+        Self::touch_instance_ttl(&env);
 
         let mut assertion = Self::get_assertion(&env, id)?;
         if assertion.status != Status::Disputed {
@@ -849,6 +856,19 @@ impl Tholos {
             ASSERTION_LIFETIME_THRESHOLD,
             ASSERTION_BUMP_AMOUNT,
         );
+    }
+
+    /// Renews instance storage TTL. Called from every state-changing
+    /// entrypoint besides `initialize` (which already extends TTL on the
+    /// same write that creates the instance entries), mirroring how
+    /// `set_assertion` renews the persistent side on every write. Without
+    /// this, instance storage (admin, token, resolvers, paused flag) would
+    /// only ever be extended once, at `initialize`, and would become
+    /// eligible for archival once `INSTANCE_BUMP_AMOUNT` elapses.
+    fn touch_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     fn get<T: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>(
