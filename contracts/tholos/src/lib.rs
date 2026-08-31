@@ -795,7 +795,10 @@ impl Tholos {
         let winner = if winner_is_asserter {
             assertion.asserter.clone()
         } else {
-            assertion.disputer.clone().unwrap()
+            assertion
+                .disputer
+                .clone()
+                .expect("a Disputed assertion always has a disputer set by dispute()")
         };
         let final_outcome = if winner_is_asserter {
             assertion.outcome
@@ -885,9 +888,14 @@ impl Tholos {
     fn assert_unique_resolvers(resolvers: &Vec<Address>) -> Result<(), Error> {
         let len = resolvers.len();
         for i in 0..len {
-            let a = resolvers.get(i).unwrap();
+            let a = resolvers
+                .get(i)
+                .expect("i is bounded by resolvers.len() in the loop range above");
             for j in (i + 1)..len {
-                if a == resolvers.get(j).unwrap() {
+                if a == resolvers
+                    .get(j)
+                    .expect("j is bounded by resolvers.len() in the loop range above")
+                {
                     return Err(Error::DuplicateResolvers);
                 }
             }
