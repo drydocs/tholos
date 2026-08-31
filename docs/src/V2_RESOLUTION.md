@@ -1,16 +1,26 @@
 # Stake-weighted resolution (protocol v2 proposal)
 
-> **Status:** Proposed; design-only and not implemented.
+> **Status:** Implemented. `contracts/tholos-v2` ships the mechanism this
+> document proposes; see `docs/src/CONTRACT_V2.md` for the authoritative
+> interface reference. This document is retained as the design rationale and
+> threat analysis behind that implementation, not as a still-open proposal.
+> The "Questions for design review" section below records which of the
+> original open questions the shipped code answers, and which remain
+> genuinely open.
 >
-> **Tracking:** [Issue #19](https://github.com/drydocs/tholos/issues/19).
+> **Tracking:** [Issue #19](https://github.com/drydocs/tholos/issues/19),
+> implemented across #64-#71 and following.
 >
 > **Versioning:** "v1" and "v2" in this document name protocol designs. They
-> are independent of the Rust crate's current `0.2.0` package version.
+> are independent of the Rust crate's current package version.
 
-This document proposes replacing v1's fixed, admin-selected resolver committee
+This document proposed replacing v1's fixed, admin-selected resolver committee
 with a vote whose electorate and weight come entirely from token bonds locked on
-the dispute being decided. It records a recommendation for review; it does not
-change the current contract, public interface, or deployment behavior.
+the dispute being decided. `contracts/tholos-v2` implements that mechanism as
+described below; where the shipped contract's actual behavior differs from or
+resolves an ambiguity in the original proposal, the "Questions for design
+review" section at the end says so explicitly. Everything else in this document
+still accurately describes the shipped design.
 
 ## Decision summary
 
@@ -24,9 +34,9 @@ change the current contract, public interface, or deployment behavior.
 | What happens to bonds? | After a strict-majority result, winning positions recover principal and share losing plus non-revealed stake. After an optimistic timeout default, all revealed positions recover principal and share only non-revealed stake. Permissionless O(1) settlement accrues owner-withdrawable credits; it never loops over all voters. |
 | How do v1 deployments migrate? | Blue/green deployment: send only new assertions to a new v2 contract and attempt to drain each resolvable v1 assertion under the exact rules of its deployed WASM. Do not reinterpret or transfer in-flight v1 bonds; v2 cannot rescue an unresolvable v1 dispute. |
 
-The timeout default and its separate settlement rule are economically material
-and remain the two highest-priority review points before an implementation issue
-is opened.
+The timeout default and its separate settlement rule are economically material.
+Both shipped exactly as proposed here; see questions 1 and 5 in "Questions for
+design review" below for how each was actually decided.
 
 ## Why v2 needs more than a weighted `resolve`
 
@@ -344,7 +354,8 @@ The cost is real: an evenly split dispute favors the asserter. The principal
 alternative is a terminal `Inconclusive` state that delegates fallback to the
 integrator. That avoids asserting truth on a tie, but breaks the promise that
 Tholos returns a boolean and moves resolution complexity outside the protocol.
-This choice must receive explicit maintainer approval before implementation.
+This choice was approved: the shipped `TimeoutDefaultRule` has only the
+boolean-preserving `AssertedOutcomeStands` variant (see question 1 below).
 
 Outcome and settlement are separate decisions. A timeout default has no bonded
 majority, so it must not label every position against the assertion as a losing
@@ -459,10 +470,9 @@ administratively. The recommended v2 pause blocks new assertions only. Dispute,
 registration, reveal, finalization, settlement, and withdrawals for already
 accepted assertions remain available. A stronger emergency mechanism would need
 to freeze every affected deadline symmetrically or cancel the round with deterministic refunds;
-that is a separate design and audit surface. Creation-only pause preserves voting
-neutrality but cannot contain an exploit in registration, reveal, settlement, or
-withdrawal, so this trade-off is blocking security review rather than a settled
-operational detail.
+that mechanism shipped as `cancel_round` (#71), a separate admin-only path
+distinct from creation-only pause. See question 9 below for how the two
+mechanisms now compose.
 
 ## Required invariants
 
@@ -660,19 +670,23 @@ instances.
 
 ## Future implementation work
 
-No item below is part of this design-only change. After this proposal is reviewed
-and accepted, implementation should be split into auditable issues for:
+This list scoped the work that followed this proposal. All items below are now
+implemented or otherwise resolved:
 
-1. versioned v2 state, policy pinning, registration, and authorization;
-2. commitment/reveal voting and weighted-majority property tests;
+1. versioned v2 state, policy pinning, registration, and authorization (#64, #65, #66);
+2. commitment/reveal voting and weighted-majority property tests (#67, #68);
 3. liability accounting, permissionless credit accrual, owner-authorized
-   withdrawals, rounding, and adversarial-token tests;
-4. TTL behavior for assertion, resolution, position, and credit records;
-5. v1/v2 consumer bindings and a blue/green migration runbook;
-6. testnet volume tests with many positions and concurrent disputes;
+   withdrawals, rounding, and adversarial-token tests (#69, #70);
+4. TTL behavior for assertion, resolution, position, and credit records (#72);
+5. v1/v2 consumer bindings and a blue/green migration runbook (#73);
+6. testnet volume tests with many positions and concurrent disputes (#74, closed);
 7. economic simulation for window lengths, minimum bonds, whale capture, and
-   default frequency; and
-8. an independent security audit before meaningful-value mainnet use.
+   default frequency (#75, see `docs/src/V2_BOND_SIZING.md`); and
+8. an independent security audit before meaningful-value mainnet use — not
+   done. Tracked privately as a maintainer procurement decision rather than on
+   the public issue tracker (see `SECURITY.md`'s Status section); this remains
+   a hard blocker on mainnet use regardless of everything else in this list
+   being complete.
 
 At minimum, randomized tests must cover address splitting, deposit aggregation,
 exact half versus half-plus-one, abstention, timeout, maximum amounts, overflow,
@@ -681,27 +695,82 @@ snapshots under attempted admin updates.
 
 ## Questions for design review
 
-1. Should timeout preserve the optimistic boolean result as proposed, or should
-   safety on split votes take priority through an `Inconclusive` result?
-2. Should the minimum external position always equal the base assertion bond, or
-   be a separately pinned parameter?
-3. Which deposits qualify for a bounded anti-sniping extension, and what hard
-   maximum prevents extension griefing?
-4. Should all non-revealed stake be forfeited and redistributed to the proposed
-   recipient set, or should its destination be independent of the outcome? What
-   happens during a symmetric operational cancellation?
-5. Is the separate timeout settlement (refund every revealed principal and share
-   only non-revealed stake) sufficient to deter frivolous disputes, or is a
-   distinct non-refundable fee required?
-6. Is perpetual, restorable credit entitlement acceptable, and who funds storage
-   restoration or keeper calls after the initial settlement/withdrawal grace?
-7. What canonical market/question identifier and evidence convention, if any,
-   must a separate dependency add for an open electorate?
-8. Should a later protocol tier allow a new, more highly bonded assertion after
-   an `Inconclusive` alternative, or is one weighted round the final tier?
-9. Is a creation-only pause acceptable despite its limited incident containment,
-   or must a separate symmetric freeze/cancel mechanism be designed first?
+Each question below is checked against the shipped `contracts/tholos-v2/src/lib.rs`
+implementation. "Answered" means the shipped code makes a specific, checkable
+choice; "still open" means the code is silent or leaves the question exactly
+where this document left it.
 
-Until those economic choices are approved and threat-modeled, this proposal must
-remain `Proposed` and no implementation issue should treat its interface sketch
-as final.
+1. **Should timeout preserve the optimistic boolean result, or should safety on
+   split votes take priority through an `Inconclusive` result? — Answered.**
+   `TimeoutDefaultRule` has exactly one variant, `AssertedOutcomeStands`
+   (`lib.rs:39-47`), applied by `close_reveal_if_ready`. The type stays an enum
+   so a future `Inconclusive`-style rule could be pinned per-deployment without
+   touching already-open assertions, but no such rule exists today: the
+   optimistic default was chosen as proposed.
+2. **Should the minimum external position always equal the base assertion bond,
+   or be a separately pinned parameter? — Answered: always equal to `base_bond`.**
+   `min_resolution_bond` remains a distinct `PolicySnapshotV2` field (`lib.rs:391`),
+   but `initialize` takes no parameter for it and hard-sets
+   `min_resolution_bond: base_bond` (`lib.rs:717-720`). It is structurally
+   separate but behaviorally pinned, not independently configurable per
+   deployment.
+3. **Which deposits qualify for the anti-sniping extension, and what hard
+   maximum prevents extension griefing? — Answered.** `PolicySnapshotV2` carries
+   `anti_snipe_extension_secs` and `anti_snipe_hard_max_secs` (`lib.rs:393-396`).
+   Any `register` call landing within `anti_snipe_extension_secs` of the current
+   soft deadline pushes it forward, capped at
+   `registration_hard_deadline` (`lib.rs:1222-1232`), itself bounded at
+   initialization by `MAX_ANTI_SNIPE_HARD_MAX_SECS` (29 days, `lib.rs:591`).
+4. **Should all non-revealed stake be forfeited to the recipient set, and what
+   happens on a symmetric operational cancellation? — Answered.** Non-revealed
+   weight is forfeited and redistributed pro rata via `settlement_pool`
+   (`lib.rs:1664-1676`) and `settle` (`lib.rs:1872-1880`), as proposed. The
+   symmetric cancellation this document flagged as a separate design surface is
+   implemented as `cancel_round` (`lib.rs:2069-2117`, tracked as #71): it
+   requires pause active first, and forfeits nothing (`TerminalCause::AdminCancelled`
+   makes `recipient_weight` equal to the full eligible total, so
+   `forfeited_pool` is always zero) — every position, on either side and in any
+   phase, gets its principal back.
+5. **Is refund-every-revealed-principal timeout settlement sufficient, or is a
+   distinct non-refundable dispute fee required? — Still open.** The shipped
+   rule is exactly the refund-all-revealed one this document proposed
+   (`lib.rs:1668`, `lib.rs:1858`). No separate non-refundable dispute fee exists
+   anywhere in `PolicySnapshotV2` or `initialize`. Whether that's sufficient
+   deterrence against frivolous disputes hasn't been separately economically
+   validated beyond the frequency modeling in `docs/src/V2_BOND_SIZING.md`.
+6. **Is perpetual, restorable credit entitlement acceptable, and who funds
+   storage restoration after the initial grace? — Partially answered.**
+   Perpetual, restorable `Credit` entitlement is implemented, and #72 (see
+   `record_bump`, `lib.rs:783-802`) sizes each record's TTL bump dynamically
+   from the pinned policy plus a 7-day settlement grace, rather than a flat
+   constant. A permissionless `bump_ttl(id, address)` exists (`lib.rs:1737-1776`)
+   so any interested off-chain indexer or the position owner can keep a record
+   live. But nothing in the protocol funds or requires those keeper calls — the
+   "who funds restoration" half of the question is exactly as open as this
+   document originally left it.
+7. **What canonical market/question identifier and evidence convention, if any,
+   is needed? — Still open, as expected.** No market/question identifier or
+   evidence field exists on `AssertionV2` or `PolicySnapshotV2` (only
+   `id: u64`, `outcome: bool`, and the policy/hash fields). This document
+   already framed this as "an adjacent design dependency, not a decision
+   approved by this issue" (see the Threat analysis table above); issue #76
+   tracks it separately and remains open.
+8. **Should a later protocol tier allow appeals, or is one weighted round the
+   final tier? — Answered: one round is final, by explicit design.**
+   `const ROUND: u32 = 0;` (`lib.rs:630-635`), with `round` included in the vote
+   commitment preimage purely as forward-compatibility scaffolding for a
+   possible future multi-round tier that does not otherwise exist in the
+   shipped contract.
+9. **Is a creation-only pause acceptable, or is a separate symmetric
+   freeze/cancel mechanism required? — Answered: both exist.** `set_paused_v2`
+   remains creation-only, matching this document's baseline recommendation.
+   The additional symmetric mechanism this document flagged as needing separate
+   design and audit is `cancel_round` (#71, `lib.rs:2069-2117`): admin-only,
+   requires pause first, and refunds every position across every open phase
+   with no forfeiture.
+
+Three questions (5, 6, 7) remain genuinely open in the shipped implementation.
+None of them affect the correctness of what's deployed, they are scope
+decisions the implementation made implicitly (no fee, no funded keeper
+incentive, no identifier convention) rather than ambiguities left unresolved in
+the code itself.
