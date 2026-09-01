@@ -961,6 +961,7 @@ impl TholosV2 {
     /// the new assertion id. Emits `Asserted`.
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         asserter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
         Self::require_not_paused(&env)?;
 
         let policy: PolicySnapshotV2 = env
@@ -975,7 +976,6 @@ impl TholosV2 {
         // not-yet-incremented id.
         let id = Self::create_pending_assertion(&env, asserter.clone(), outcome)?;
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &asserter,
             env.current_contract_address(),
@@ -1072,6 +1072,7 @@ impl TholosV2 {
     /// Emits `Disputed`.
     pub fn dispute(env: Env, disputer: Address, id: u64) -> Result<(), Error> {
         disputer.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let mut assertion: AssertionV2 = env
             .storage()
@@ -1138,7 +1139,6 @@ impl TholosV2 {
         };
         Self::set_resolution(&env, id, &resolution, &policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &disputer,
             env.current_contract_address(),
@@ -1185,6 +1185,7 @@ impl TholosV2 {
         commitment: BytesN<32>,
     ) -> Result<(), Error> {
         voter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -1280,7 +1281,6 @@ impl TholosV2 {
         resolution.eligible_total = new_total;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &voter,
             env.current_contract_address(),
@@ -1972,7 +1972,7 @@ impl TholosV2 {
         destination: Address,
     ) -> Result<i128, Error> {
         owner.require_auth();
-        Self::check_reentrancy_guard(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -2015,7 +2015,6 @@ impl TholosV2 {
             .ok_or(Error::SettlementArithmeticOverflow)?;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &env.current_contract_address(),
             &destination,

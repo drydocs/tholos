@@ -2585,11 +2585,6 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     // Simulates a stuck guard, as if a hostile token's transfer callback
     // reentered mid-transfer and never released it, without needing a
     // custom malicious-token contract to actually trigger reentrancy.
-    //
-    // dispute() and register() only check the guard right before their own
-    // transfer (after their other validation), so each needs its own state
-    // that would otherwise succeed, to prove the guard is what's actually
-    // blocking them rather than an unrelated validation error.
     let f = Fixture::new();
     let asserter = f.funded_address();
     let disputer = f.funded_address();
@@ -2680,6 +2675,47 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     });
     let cause = f.client.resolve_outcome(&id);
     assert_eq!(cause, TerminalCause::OptimisticTimeout);
+}
+
+#[test]
+fn test_reentrancy_guard_blocks_early_before_validation() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    // assert_outcome returns ReentrancyGuardActive even when paused
+    f.client.set_paused_v2(&true);
+    assert_eq!(
+        f.client.try_assert_outcome(&asserter, &true),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // dispute returns ReentrancyGuardActive before querying assertion storage
+    assert_eq!(
+        f.client.try_dispute(&disputer, &999_u64),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // register returns ReentrancyGuardActive before validating phase or amount
+    assert_eq!(
+        f.client
+            .try_register(&voter, &999_u64, &0_i128, &commitment(&f.env, 1)),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // withdraw returns ReentrancyGuardActive before checking assertion or credit
+    assert_eq!(
+        f.client.try_withdraw(&asserter, &999_u64, &asserter),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
 }
 
 #[test]
