@@ -205,6 +205,7 @@ only affect assertions created after the change.
 | `Paused` | `assert_outcome` called while `set_paused_v2` has paused new assertions. |
 | `NotPaused` | `cancel_round` called while not paused. |
 | `RoundAlreadyDecided` | `cancel_round` called on an assertion whose `terminal_cause` is already set, by a real outcome or an earlier cancellation. |
+| `RegistrationArithmeticOverflow` | A checked arithmetic operation in `register` would have overflowed `i128`. Not expected to be reachable given `initialize`'s bounds, but checked rather than relying on wrapping in release builds. |
 
 ## Functions
 
@@ -337,8 +338,10 @@ current deadline) pushes `registration_deadline` out by
 
 Requires `voter`'s signature. Fails with `AssertionNotFound`,
 `NotRegistration` if the assertion isn't in the registration phase,
-`RegistrationClosed` if `registration_deadline` has passed, or
-`InvalidPositionAmount` if `amount` isn't positive. Emits `PositionFunded`.
+`RegistrationClosed` if `registration_deadline` has passed,
+`InvalidPositionAmount` if `amount` isn't positive, or
+`RegistrationArithmeticOverflow` if position or total weight arithmetic
+overflows `i128`. Emits `PositionFunded`.
 
 ### `reveal(voter, id, choice, salt)`
 

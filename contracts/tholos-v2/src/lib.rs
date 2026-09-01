@@ -564,6 +564,11 @@ pub enum Error {
     /// Rejected outright rather than treated as a no-op, so this call can
     /// never be read as altering an already-decided result.
     RoundAlreadyDecided = 36,
+    /// A checked arithmetic operation in `register` would have overflowed
+    /// `i128`. Not expected to be reachable given `initialize`'s
+    /// `max_total_weight`/`max_position` bounds, but checked rather than
+    /// relying on wrapping in release builds.
+    RegistrationArithmeticOverflow = 37,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -1251,11 +1256,17 @@ impl TholosV2 {
             }
         };
 
-        let new_amount = previous_amount + amount;
+        let new_amount = previous_amount
+            .checked_add(amount)
+            .ok_or(Error::RegistrationArithmeticOverflow)?;
         if new_amount > assertion.policy.max_position {
             return Err(Error::PositionExceedsMax);
         }
-        let new_total = resolution.eligible_total - previous_amount + new_amount;
+        let new_total = resolution
+            .eligible_total
+            .checked_sub(previous_amount)
+            .and_then(|total| total.checked_add(new_amount))
+            .ok_or(Error::RegistrationArithmeticOverflow)?;
         if new_total > assertion.policy.max_total_weight {
             return Err(Error::EligibleTotalExceedsMax);
         }

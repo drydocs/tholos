@@ -1335,6 +1335,58 @@ fn test_register_exceeds_max_total_weight_fails() {
 }
 
 #[test]
+fn test_register_position_amount_overflow_returns_error() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let c = commitment(&f.env, 1);
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    let mut position = f.client.get_position(&id, &voter);
+    position.amount = i128::MAX;
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::Position(id, voter.clone()), &position);
+    });
+
+    let result = f.client.try_register(&voter, &id, &100, &c);
+    assert_eq!(result, Err(Ok(Error::RegistrationArithmeticOverflow)));
+}
+
+#[test]
+fn test_register_eligible_total_overflow_returns_error() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let mut resolution = f.client.get_resolution(&id);
+    resolution.eligible_total = i128::MAX;
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::Resolution(id), &resolution);
+    });
+
+    let c = commitment(&f.env, 1);
+    let result = f.client.try_register(&voter, &id, &DEFAULT_BOND, &c);
+    assert_eq!(result, Err(Ok(Error::RegistrationArithmeticOverflow)));
+}
+
+#[test]
 fn test_register_after_deadline_fails() {
     let f = Fixture::new();
     let asserter = f.funded_address();
