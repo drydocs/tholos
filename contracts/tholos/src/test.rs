@@ -2082,3 +2082,59 @@ mod proptest_initialize_bounds {
         }
     }
 }
+
+#[test]
+fn test_set_bond_amount_updates_storage_and_emits_event() {
+    let fixture = Fixture::new();
+    let new_bond = DEFAULT_BOND + 50;
+
+    fixture.client.set_bond_amount(&new_bond);
+
+    let stored: i128 = fixture
+        .env
+        .as_contract(&fixture.client.address, || {
+            fixture.env.storage().instance().get(&DataKey::BondAmount).unwrap()
+        });
+    assert_eq!(stored, new_bond);
+}
+
+#[test]
+fn test_set_bond_amount_rejects_zero() {
+    let fixture = Fixture::new();
+    let result = fixture.client.try_set_bond_amount(&0);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_set_bond_amount_rejects_negative() {
+    let fixture = Fixture::new();
+    let result = fixture.client.try_set_bond_amount(&-1);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_set_bond_amount_rejects_above_max() {
+    let fixture = Fixture::new();
+    let result = fixture.client.try_set_bond_amount(&(MAX_BOND_AMOUNT + 1));
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_set_bond_amount_rejects_non_admin() {
+    let fixture = Fixture::new();
+    let _attacker = Address::generate(&fixture.env);
+    fixture.env.set_auths(&[]);
+    let result = fixture.client.try_set_bond_amount(&(DEFAULT_BOND + 1));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_bond_amount_rejects_when_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let result = client.try_set_bond_amount(&(DEFAULT_BOND + 1));
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}

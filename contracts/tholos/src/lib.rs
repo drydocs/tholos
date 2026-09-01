@@ -51,6 +51,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct BondAmountUpdated {
+    pub old_bond_amount: i128,
+    pub new_bond_amount: i128,
+}
+
+#[contractevent]
 pub struct RotationProposed {
     pub old_resolver: Address,
     pub new_resolver: Address,
@@ -561,6 +567,40 @@ impl Tholos {
 
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Updates the bond amount required for new assertions. Only callable by
+    /// the admin set at initialization. Existing in-flight assertions retain
+    /// the bond amount they were created with; the new amount applies to
+    /// assertions created after this call.
+    pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        if new_bond_amount <= 0 || new_bond_amount > MAX_BOND_AMOUNT {
+            return Err(Error::InvalidBondAmount);
+        }
+
+        let old_bond_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondAmount)
+            .ok_or(Error::NotInitialized)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::BondAmount, &new_bond_amount);
+        BondAmountUpdated {
+            old_bond_amount,
+            new_bond_amount,
+        }
+        .publish(&env);
 
         Ok(())
     }
