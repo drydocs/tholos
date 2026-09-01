@@ -51,6 +51,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RotationProposed {
     pub old_resolver: Address,
     pub new_resolver: Address,
@@ -345,6 +351,28 @@ impl Tholos {
             .set(&DataKey::Resolvers, &new_resolvers);
         ResolversUpdated {
             resolvers: new_resolvers,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Rotates the contract admin. Only callable by the current admin set at
+    /// initialization or by the most recent `set_admin` call. Callable even
+    /// while paused.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        AdminUpdated {
+            old_admin: admin,
+            new_admin,
         }
         .publish(&env);
 

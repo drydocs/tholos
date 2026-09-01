@@ -98,6 +98,10 @@ present), so a committee-driven rotation can never execute against a committee i
 wasn't built for. Day-to-day committee changes go through `propose_rotation` /
 `vote_rotation` instead.
 
+### `set_admin(new_admin)`
+
+Rotates the contract admin address. Requires the current admin's signature. Callable even while paused, enabling emergency admin key rotation during an active incident. Emits `AdminUpdated`.
+
 ### `propose_rotation(resolver, old_resolver, new_resolver)`
 
 Proposes a single-slot committee rotation: remove `old_resolver` (must be a current
@@ -245,6 +249,7 @@ history without polling `get_assertion_state`:
 | `Finalized` | `finalize` | `id`, `outcome`, `finalizer` (`Address`), `reward` |
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
+| `AdminUpdated` | `set_admin` | `old_admin`, `new_admin` |
 | `PauseUpdated` | `set_paused` | `paused` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |

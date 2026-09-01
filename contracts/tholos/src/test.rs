@@ -1722,6 +1722,195 @@ fn test_finalize_is_not_reentrant() {
     assert_eq!(evil_token.balance(&asserter), 1_000);
 }
 
+#[test]
+fn test_admin_can_rotate_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+
+    client.initialize(
+        &admin1,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_admin(&admin2);
+
+    let auths = env.auths();
+    let admin1_authed = auths.iter().any(|(addr, _)| *addr == admin1);
+    assert!(
+        admin1_authed,
+        "old admin require_auth was not invoked during set_admin"
+    );
+
+    let stored_admin: Address = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin2);
+}
+
+#[test]
+fn test_old_admin_loses_authority_after_rotation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let admin3 = Address::generate(&env);
+
+    client.initialize(
+        &admin1,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_admin(&admin2);
+
+    // Now admin2 can rotate admin or update resolvers or pause
+    client.set_paused(&true);
+    let is_paused: bool = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Paused).unwrap()
+    });
+    assert!(is_paused);
+
+    let new_resolvers = Vec::from_array(
+        &env,
+        [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ],
+    );
+    client.update_resolvers(&new_resolvers);
+
+    client.set_admin(&admin3);
+    let stored_admin: Address = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin3);
+}
+
+#[test]
+fn test_set_admin_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+
+    client.initialize(
+        &admin1,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_admin(&admin2);
+
+    let stored_admin: Address = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin2);
+}
+
+#[test]
+fn test_set_admin_is_pause_exempt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+
+    client.initialize(
+        &admin1,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_paused(&true);
+    client.set_admin(&admin2);
+
+    let stored_admin: Address = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin2);
+}
+
+#[test]
+fn test_cannot_set_admin_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    assert_eq!(
+        client.try_set_admin(&new_admin),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_set_admin_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+
+    client.initialize(
+        &admin1,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    let instance_ttl = || env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    env.ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    client.set_admin(&admin2);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+}
+
 // ---------------------------------------------------------------------------
 // Property-based tests for resolver vote counting and majority logic
 // ---------------------------------------------------------------------------
