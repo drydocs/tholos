@@ -26,7 +26,8 @@ issue to be triaged and, where applicable, patched before any public disclosure.
 
 ## Scope
 
-In scope: the contracts under `contracts/` in this repository. Out of scope:
-third-party dependencies (`soroban-sdk`, the Stellar network itself), and the
-`contracts/demo-consumer` example, which exists to validate integration patterns
-and is not intended for production use on its own.
+In scope: the contracts under `contracts/` in this repository, including
+`contracts/tholos`, `contracts/tholos-v2`, and `contracts/asserter-consumer`.
+Out of scope: third-party dependencies (`soroban-sdk`, the Stellar network
+itself), and the `contracts/demo-consumer` example, which exists to validate
+integration patterns and is not intended for production use on its own.
