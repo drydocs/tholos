@@ -56,6 +56,12 @@ pub struct BondAmountUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RotationProposed {
     pub old_resolver: Address,
     pub new_resolver: Address,
@@ -303,6 +309,29 @@ impl Tholos {
             .instance()
             .set(&DataKey::FinalizeRewardBps, &finalize_reward_bps);
         Self::touch_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    /// Replaces the deployment admin. Only the current admin may authorize
+    /// the change. The old admin loses authority as soon as this call
+    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
+    /// `AdminUpdated` on success.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        old_admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        AdminUpdated {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
 
         Ok(())
     }

@@ -82,6 +82,13 @@ to whoever calls `finalize` as an incentive for prompt finalization; 0 disables 
 reward entirely and the full bond is returned to the asserter.
 Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
+### `set_admin(new_admin)`
+
+Rotates the deployment admin. Requires the currently stored admin's signature;
+the previous admin loses authority immediately after the call succeeds. Emits
+`AdminUpdated` with both addresses. Fails with `NotInitialized` before
+`initialize`.
+
 ### `update_resolvers(new_resolvers)`
 
 Replaces the resolver committee used for assertions disputed *after* this call.
@@ -260,6 +267,7 @@ history without polling `get_assertion_state`:
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
 | `BondAmountUpdated` | `set_bond_amount` | `bond_amount` (the new value) |
+| `AdminUpdated` | `set_admin` | `old_admin`, `new_admin` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
@@ -302,8 +310,9 @@ resolve.
 - No fee/reward mechanism for uncontested finalizes: the original design called for
   a small reward funded by market fees, but no fee-generating market layer exists
   yet, so `finalize` just returns the bond as-is.
-- `set_paused` is still a single-admin-key operation. `update_resolvers` is too,
-  but it's now an *emergency override*: a resolver self-rotation scheme
+- `set_paused` and `update_resolvers` are still single-admin-key operations at
+  any given moment, but `set_admin` lets the current admin rotate that key.
+  `update_resolvers` is now an *emergency override*: a resolver self-rotation scheme
   (`propose_rotation` / `vote_rotation` / `cancel_rotation`) lets the committee vote
   to replace one of its own by a strict majority, removing the admin as the only path
   to committee membership. `update_resolvers` stays as the break-glass for a
