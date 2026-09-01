@@ -240,6 +240,11 @@ capital already locked into that round rather than protect it.
 `cancel_round` is the mechanism for protecting an already-active round
 instead. Emits `PauseUpdated`.
 
+### `set_admin(new_admin)`
+
+Rotates the contract admin. Requires the current admin's signature. Callable
+even while paused. Emits `AdminUpdated`.
+
 ### `get_assertion(id) -> AssertionV2`
 
 Read-only lookup. Fails with `AssertionNotFound` if the id doesn't exist.
@@ -546,6 +551,7 @@ assertion's history without polling `get_assertion`:
 | `DustCredited` | `settle`, at most once per assertion, when that call closes out the recipient side with nonzero leftover dust | `id`, `address` (the deterministic dust recipient), `amount` |
 | `Withdrawn` | `withdraw` | `id`, `owner`, `destination`, `amount` |
 | `PauseUpdated` | `set_paused_v2` | `paused` |
+| `AdminUpdated` | `set_admin` | `old_admin`, `new_admin` |
 | `RoundCancelled` | `cancel_round` | `id` |
 | `Finalized` | `finalize` | `id`, `outcome`, `finalizer` (`Address`), `reward` |
 

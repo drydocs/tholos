@@ -212,6 +212,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RoundCancelled {
     #[topic]
     pub id: u64,
@@ -751,12 +757,12 @@ impl TholosV2 {
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
-    /// admin set at `initialize`. Does not affect any already-active
-    /// round: registration, reveal, `resolve_outcome`, `settle`, and
-    /// `withdraw` all continue normally while paused, since blocking them
-    /// would strand capital already locked into a round rather than
-    /// protect it. `cancel_round` is the mechanism for protecting an
-    /// already-active round instead. Emits `PauseUpdated`.
+    /// current admin set at `initialize` or by the most recent `set_admin`
+    /// call. Does not affect any already-active round: registration, reveal,
+    /// `resolve_outcome`, `settle`, and `withdraw` all continue normally while
+    /// paused, since blocking them would strand capital already locked into a
+    /// round rather than protect it. `cancel_round` is the mechanism for
+    /// protecting an already-active round instead. Emits `PauseUpdated`.
     pub fn set_paused_v2(env: Env, paused: bool) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -767,6 +773,30 @@ impl TholosV2 {
 
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Rotates the contract admin. Only callable by the current admin set at
+    /// `initialize` or by the most recent `set_admin` call. Callable even
+    /// while paused. Emits `AdminUpdated`.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        AdminUpdated {
+            old_admin: admin,
+            new_admin,
+        }
+        .publish(&env);
 
         Ok(())
     }

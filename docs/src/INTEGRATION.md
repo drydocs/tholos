@@ -233,6 +233,7 @@ assert_outcome -> [uncontested: finalize]
 | `withdraw(owner, id, destination) -> i128` | Pays out `owner`'s full credit balance to `destination` (any address, not necessarily `owner`). |
 | `get_credit(id, address) -> i128` | Read-only lookup of a withdrawable credit balance. |
 | `set_paused_v2(paused)` | Admin-only. Blocks new `assert_outcome` calls; unlike v1's pause, an already-active round keeps running (registration, reveal, settlement, withdrawal) even while paused. |
+| `set_admin(new_admin)` | Admin-only. Rotates the contract admin key. Callable even while paused. |
 | `cancel_round(id)` | Admin-only, and only while paused. Cancels a round before any terminal outcome has locked, refunding every funded position its exact principal. See [V2_RESOLUTION.md](V2_RESOLUTION.md) for why this exists and what it deliberately can't do. |
 
 Reading the outcome and reacting to state changes follows the same two

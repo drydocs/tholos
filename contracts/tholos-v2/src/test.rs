@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_CHALLENGE_WINDOW: u64 = 3600;
@@ -3398,4 +3398,132 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
         DEFAULT_MAX_TOTAL_WEIGHT,
     );
     assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_admin_can_rotate_admin() {
+    let f = Fixture::new();
+    let admin2 = f.generate();
+
+    f.client.set_admin(&admin2);
+
+    let auths = f.env.auths();
+    let admin1_authed = auths.iter().any(|(addr, _)| *addr == f.admin);
+    assert!(
+        admin1_authed,
+        "old admin require_auth was not invoked during set_admin"
+    );
+
+    let stored_admin: Address = f.env.as_contract(&f.client.address, || {
+        f.env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin2);
+}
+
+#[test]
+fn test_old_admin_loses_authority_after_rotation() {
+    let f = Fixture::new();
+    let admin2 = f.generate();
+    let admin3 = f.generate();
+
+    f.client.set_admin(&admin2);
+
+    let auths = f.env.auths();
+    let admin1_authed = auths.iter().any(|(addr, _)| *addr == f.admin);
+    assert!(
+        admin1_authed,
+        "old admin require_auth was not invoked during set_admin"
+    );
+
+    // Now admin2 can pause and rotate
+    f.client.set_paused_v2(&true);
+
+    let auths = f.env.auths();
+    let admin2_authed = auths.iter().any(|(addr, _)| *addr == admin2);
+    assert!(
+        admin2_authed,
+        "new admin require_auth was not invoked during set_paused_v2"
+    );
+
+    let is_paused: bool = f.env.as_contract(&f.client.address, || {
+        f.env.storage().instance().get(&DataKey::Paused).unwrap()
+    });
+    assert!(is_paused);
+
+    f.client.set_admin(&admin3);
+    let stored_admin: Address = f.env.as_contract(&f.client.address, || {
+        f.env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin3);
+}
+
+#[test]
+fn test_set_admin_emits_event() {
+    let f = Fixture::new();
+    let admin2 = f.generate();
+
+    f.client.set_admin(&admin2);
+
+    let filtered = f.env.events().all().filter_by_contract(&f.client.address);
+    let raw_events = filtered.events();
+    assert_eq!(raw_events.len(), 1);
+    assert_eq!(
+        raw_events[0].type_,
+        soroban_sdk::xdr::ContractEventType::Contract
+    );
+    let soroban_sdk::xdr::ContractEventBody::V0(v0) = &raw_events[0].body;
+    assert_eq!(v0.topics.len(), 1);
+    if let soroban_sdk::xdr::ScVal::Symbol(sym) = &v0.topics[0] {
+        assert_eq!(sym.to_utf8_string().unwrap(), "admin_updated");
+    } else {
+        panic!("expected symbol topic");
+    }
+}
+
+#[test]
+fn test_set_admin_is_pause_exempt() {
+    let f = Fixture::new();
+    let admin2 = f.generate();
+
+    f.client.set_paused_v2(&true);
+    f.client.set_admin(&admin2);
+
+    let stored_admin: Address = f.env.as_contract(&f.client.address, || {
+        f.env.storage().instance().get(&DataKey::Admin).unwrap()
+    });
+    assert_eq!(stored_admin, admin2);
+}
+
+#[test]
+fn test_cannot_set_admin_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+
+    let new_admin = Address::generate(&env);
+    assert_eq!(
+        client.try_set_admin(&new_admin),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_set_admin_extends_instance_ttl() {
+    let f = Fixture::new();
+    let admin2 = f.generate();
+
+    let instance_ttl = || {
+        f.env
+            .as_contract(&f.client.address, || f.env.storage().instance().get_ttl())
+    };
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_admin(&admin2);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
 }

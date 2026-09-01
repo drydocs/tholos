@@ -145,6 +145,16 @@ Use this path only in genuine emergency scenarios (e.g., a discovered bug in vot
 redeployment). Canceling a round is visible to users and affects the integrity of the record, so document
 why and coordinate with your users beforehand if possible.
 
+### Rotating the admin key
+
+If the admin key needs to be migrated to a new keypair or multisig:
+
+```sh
+stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- set_admin --new_admin <NEW_ADMIN>
+```
+
+This updates the admin in contract storage immediately and emits `AdminUpdated`. The previous admin key loses all authority immediately upon rotation.
+
 ### Checking state
 
 Read-only, no auth required:
