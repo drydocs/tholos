@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+use soroban_sdk::{xdr, IntoVal, Symbol, TryFromVal, Val};
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
@@ -1223,6 +1224,201 @@ fn test_rotation_requires_majority_then_executes() {
     f.client.resolve(&new_resolver, &id, &false);
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_rotation_vote_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let resolvers = Vec::from_array(
+        &env,
+        [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ],
+    );
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0,
+    );
+
+    let old_resolver = resolvers.get(0).unwrap();
+    let new_resolver = Address::generate(&env);
+
+    client.propose_rotation(&old_resolver, &old_resolver, &new_resolver);
+
+    // Vote 1: No-vote (approve = false) from resolver 1. Intermediate vote -> Ok(None).
+    let r1 = resolvers.get(1).unwrap();
+    let res1 = client.try_vote_rotation(&r1, &false);
+    assert_eq!(res1, Ok(Ok(None)));
+
+    let events = env.events().all().filter_by_contract(&contract_id);
+    let last_event = events.events().last().unwrap().clone();
+    let (topics, data) = match &last_event.body {
+        xdr::ContractEventBody::V0(body) => (&body.topics, &body.data),
+    };
+    let topic0 = Symbol::try_from_val(&env, topics.first().unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "rotation_voted"));
+    let data_val = Val::try_from_val(&env, data).unwrap();
+    let map: soroban_sdk::Map<Symbol, Val> = data_val.into_val(&env);
+    let old_r: Address = map
+        .get(Symbol::new(&env, "old_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let new_r: Address = map
+        .get(Symbol::new(&env, "new_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let voter: Address = map
+        .get(Symbol::new(&env, "resolver"))
+        .unwrap()
+        .into_val(&env);
+    let app: bool = map
+        .get(Symbol::new(&env, "approve"))
+        .unwrap()
+        .into_val(&env);
+    let yes: u32 = map
+        .get(Symbol::new(&env, "yes_votes"))
+        .unwrap()
+        .into_val(&env);
+    let no: u32 = map
+        .get(Symbol::new(&env, "no_votes"))
+        .unwrap()
+        .into_val(&env);
+    assert_eq!(old_r, old_resolver);
+    assert_eq!(new_r, new_resolver);
+    assert_eq!(voter, r1);
+    assert!(!app);
+    assert_eq!(yes, 0);
+    assert_eq!(no, 1);
+
+    // Vote 2: Yes-vote (approve = true) from resolver 2. Intermediate vote -> Ok(None).
+    let r2 = resolvers.get(2).unwrap();
+    let res2 = client.try_vote_rotation(&r2, &true);
+    assert_eq!(res2, Ok(Ok(None)));
+
+    let events = env.events().all().filter_by_contract(&contract_id);
+    let last_event = events.events().last().unwrap().clone();
+    let (topics, data) = match &last_event.body {
+        xdr::ContractEventBody::V0(body) => (&body.topics, &body.data),
+    };
+    let topic0 = Symbol::try_from_val(&env, topics.first().unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "rotation_voted"));
+    let data_val = Val::try_from_val(&env, data).unwrap();
+    let map: soroban_sdk::Map<Symbol, Val> = data_val.into_val(&env);
+    let old_r: Address = map
+        .get(Symbol::new(&env, "old_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let new_r: Address = map
+        .get(Symbol::new(&env, "new_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let voter: Address = map
+        .get(Symbol::new(&env, "resolver"))
+        .unwrap()
+        .into_val(&env);
+    let app: bool = map
+        .get(Symbol::new(&env, "approve"))
+        .unwrap()
+        .into_val(&env);
+    let yes: u32 = map
+        .get(Symbol::new(&env, "yes_votes"))
+        .unwrap()
+        .into_val(&env);
+    let no: u32 = map
+        .get(Symbol::new(&env, "no_votes"))
+        .unwrap()
+        .into_val(&env);
+    assert_eq!(old_r, old_resolver);
+    assert_eq!(new_r, new_resolver);
+    assert_eq!(voter, r2);
+    assert!(app);
+    assert_eq!(yes, 1);
+    assert_eq!(no, 1);
+
+    // Vote 3: Yes-vote (approve = true) from resolver 3. Intermediate vote -> Ok(None).
+    let r3 = resolvers.get(3).unwrap();
+    let res3 = client.try_vote_rotation(&r3, &true);
+    assert_eq!(res3, Ok(Ok(None)));
+
+    let events = env.events().all().filter_by_contract(&contract_id);
+    let last_event = events.events().last().unwrap().clone();
+    let (topics, data) = match &last_event.body {
+        xdr::ContractEventBody::V0(body) => (&body.topics, &body.data),
+    };
+    let topic0 = Symbol::try_from_val(&env, topics.first().unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "rotation_voted"));
+    let data_val = Val::try_from_val(&env, data).unwrap();
+    let map: soroban_sdk::Map<Symbol, Val> = data_val.into_val(&env);
+    let old_r: Address = map
+        .get(Symbol::new(&env, "old_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let new_r: Address = map
+        .get(Symbol::new(&env, "new_resolver"))
+        .unwrap()
+        .into_val(&env);
+    let voter: Address = map
+        .get(Symbol::new(&env, "resolver"))
+        .unwrap()
+        .into_val(&env);
+    let app: bool = map
+        .get(Symbol::new(&env, "approve"))
+        .unwrap()
+        .into_val(&env);
+    let yes: u32 = map
+        .get(Symbol::new(&env, "yes_votes"))
+        .unwrap()
+        .into_val(&env);
+    let no: u32 = map
+        .get(Symbol::new(&env, "no_votes"))
+        .unwrap()
+        .into_val(&env);
+    assert_eq!(old_r, old_resolver);
+    assert_eq!(new_r, new_resolver);
+    assert_eq!(voter, r3);
+    assert!(app);
+    assert_eq!(yes, 2);
+    assert_eq!(no, 1);
+
+    // Vote 4: Yes-vote (approve = true) from resolver 4. Reaches 3/5 majority -> Ok(Some(true)).
+    // Emits RotationExecuted and ResolversUpdated, NOT RotationVoted.
+    let r4 = resolvers.get(4).unwrap();
+    let res4 = client.try_vote_rotation(&r4, &true);
+    assert_eq!(res4, Ok(Ok(Some(true))));
+
+    let events = env.events().all().filter_by_contract(&contract_id);
+    let event_list = events.events();
+    let executed_event = event_list.get(event_list.len() - 2).unwrap().clone();
+    let (topics, _) = match &executed_event.body {
+        xdr::ContractEventBody::V0(body) => (&body.topics, &body.data),
+    };
+    let topic0 = Symbol::try_from_val(&env, topics.first().unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "rotation_executed"));
+
+    let resolvers_updated_event = event_list.last().unwrap().clone();
+    let (topics, _) = match &resolvers_updated_event.body {
+        xdr::ContractEventBody::V0(body) => (&body.topics, &body.data),
+    };
+    let topic0 = Symbol::try_from_val(&env, topics.first().unwrap()).unwrap();
+    assert_eq!(topic0, Symbol::new(&env, "resolvers_updated"));
 }
 
 #[test]

@@ -99,7 +99,7 @@ Three new functions, gated to one open rotation at a time:
   committee) and clears the proposal, emitting `RotationExecuted` and
   `ResolversUpdated`. A no-vote that makes the proposal mathematically impossible to
   pass auto-cancels it (liveness guard), emitting `RotationCancelled`. Otherwise the
-  vote is recorded and the proposal stays open. Returns `Some(true)` (executed),
+  vote is recorded, `RotationVoted` is emitted, and the proposal stays open. Returns `Some(true)` (executed),
   `Some(false)` (auto-cancelled as dead), or `None` (still open).
 - `cancel_rotation(resolver)` — the proposer may cancel any time; any current resolver
   may cancel once the proposal can no longer reach a majority. Emits `RotationCancelled`.

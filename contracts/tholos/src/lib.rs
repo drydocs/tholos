@@ -69,6 +69,16 @@ pub struct RotationCancelled {
     pub new_resolver: Address,
 }
 
+#[contractevent]
+pub struct RotationVoted {
+    pub old_resolver: Address,
+    pub new_resolver: Address,
+    pub resolver: Address,
+    pub approve: bool,
+    pub yes_votes: u32,
+    pub no_votes: u32,
+}
+
 /// An in-flight single-slot committee rotation proposed by a current resolver.
 /// Decided by a strict majority of the live committee via `vote_rotation`. Only
 /// one may be open at a time. See `docs/src/ROTATION_DESIGN.md`.
@@ -423,7 +433,8 @@ impl Tholos {
         // test_rotation_vote_twice_fails (AlreadyVoted),
         // test_non_resolver_cannot_vote_rotation (NotAResolver),
         // test_deadlock_autocancels_rotation (deadlock guard),
-        // test_cannot_vote_rotation_without_proposal (NoRotationProposal below).
+        // test_cannot_vote_rotation_without_proposal (NoRotationProposal below),
+        // test_rotation_vote_emits_event (RotationVoted event).
         let mut proposal: RotationProposal = env
             .storage()
             .instance()
@@ -442,9 +453,9 @@ impl Tholos {
         }
 
         if approve {
-            proposal.yes.push_back(resolver);
+            proposal.yes.push_back(resolver.clone());
         } else {
-            proposal.no.push_back(resolver);
+            proposal.no.push_back(resolver.clone());
         }
 
         let n = committee.len();
@@ -497,6 +508,15 @@ impl Tholos {
         env.storage()
             .instance()
             .set(&DataKey::RotationProposal, &proposal);
+        RotationVoted {
+            old_resolver: proposal.old_resolver.clone(),
+            new_resolver: proposal.new_resolver.clone(),
+            resolver,
+            approve,
+            yes_votes: proposal.yes.len(),
+            no_votes: proposal.no.len(),
+        }
+        .publish(&env);
         Ok(None)
     }
 

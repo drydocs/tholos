@@ -121,9 +121,9 @@ live committee, the proposal is cleared, `RotationExecuted` and `ResolversUpdate
 are emitted, and the function returns `Some(true)`. If the remaining unvoted
 resolvers can no longer supply enough yes-votes to reach a majority, the proposal is
 cancelled automatically (deadlock guard), `RotationCancelled` is emitted, and the
-function returns `Some(false)`. Otherwise the vote is recorded and the proposal stays
-open, returning `None`. Fails with `NoRotationProposal`, `NotAResolver`, or
-`AlreadyVoted` as appropriate. Pause-exempt.
+function returns `Some(false)`. Otherwise the vote is recorded, `RotationVoted` is
+emitted, and the proposal stays open, returning `None`. Fails with `NoRotationProposal`,
+`NotAResolver`, or `AlreadyVoted` as appropriate. Pause-exempt.
 
 ### `cancel_rotation(resolver)`
 
@@ -247,6 +247,7 @@ history without polling `get_assertion_state`:
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
+| `RotationVoted` | `vote_rotation` (intermediate vote) | `old_resolver`, `new_resolver`, `resolver`, `approve`, `yes_votes`, `no_votes` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
 
