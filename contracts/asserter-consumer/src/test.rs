@@ -4,8 +4,16 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{token, IntoVal};
 
-#[test]
-fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
+struct Fixture {
+    env: Env,
+    tholos_id: Address,
+    token_id: Address,
+    admin: Address,
+    bond_amount: i128,
+    consumer_id: Address,
+}
+
+fn setup() -> Fixture {
     let env = Env::default();
 
     // Deliberately not using mock_all_auths(): this test exists specifically to
@@ -53,7 +61,6 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     tholos_client.initialize(&admin, &token_id, &bond_amount, &3600, &resolvers, &0u32);
 
     let consumer_id = env.register(AsserterConsumer, ());
-    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
 
     // The bond comes from this contract's own balance, not an end user's.
     env.mock_auths(&[MockAuth {
@@ -67,13 +74,120 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     }]);
     token_asset_client.mint(&consumer_id, &1_000);
 
-    let id = consumer_client.create_assertion_as_self(&tholos_id, &token_id, &bond_amount, &true);
+    Fixture {
+        env,
+        tholos_id,
+        token_id,
+        admin,
+        bond_amount,
+        consumer_id,
+    }
+}
 
-    let state = consumer_client.get_status(&tholos_id, &id);
+#[test]
+fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
+    let f = setup();
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    let id =
+        consumer_client.create_assertion_as_self(&f.tholos_id, &f.token_id, &f.bond_amount, &true);
+
+    let state = consumer_client.get_status(&f.tholos_id, &id);
     assert!(state.outcome);
-    assert_eq!(state.asserter, consumer_id);
+    assert_eq!(state.asserter, f.consumer_id);
     assert_eq!(
-        token::Client::new(&env, &token_id).balance(&consumer_id),
+        token::Client::new(&f.env, &f.token_id).balance(&f.consumer_id),
         900
     );
+}
+
+#[test]
+fn test_asserter_consumer_fails_when_tholos_is_paused() {
+    let f = setup();
+    let tholos_client = tholos::Client::new(&f.env, &f.tholos_id);
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    f.env.mock_auths(&[MockAuth {
+        address: &f.admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.tholos_id,
+            fn_name: "set_paused",
+            args: (true,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    tholos_client.set_paused(&true);
+
+    let result = consumer_client.try_create_assertion_as_self(
+        &f.tholos_id,
+        &f.token_id,
+        &f.bond_amount,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(Error::Paused)));
+}
+
+#[test]
+fn test_asserter_consumer_fails_when_tholos_not_initialized() {
+    let f = setup();
+    let uninit_tholos_id = f.env.register(tholos::WASM, ());
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    let result = consumer_client.try_create_assertion_as_self(
+        &uninit_tholos_id,
+        &f.token_id,
+        &f.bond_amount,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_asserter_consumer_fails_when_tholos_id_invalid() {
+    let f = setup();
+    let invalid_tholos_id = Address::generate(&f.env);
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    let result = consumer_client.try_create_assertion_as_self(
+        &invalid_tholos_id,
+        &f.token_id,
+        &f.bond_amount,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(Error::TholosCallFailed)));
+}
+
+#[test]
+fn test_asserter_consumer_fails_when_token_transfer_fails() {
+    let f = setup();
+    // Register an unfunded consumer (0 balance) so token transfer fails inside Tholos
+    let unfunded_consumer_id = f.env.register(AsserterConsumer, ());
+    let unfunded_consumer_client = AsserterConsumerClient::new(&f.env, &unfunded_consumer_id);
+
+    let result = unfunded_consumer_client.try_create_assertion_as_self(
+        &f.tholos_id,
+        &f.token_id,
+        &f.bond_amount,
+        &true,
+    );
+    assert_eq!(result, Err(Ok(Error::TholosError)));
+}
+
+#[test]
+fn test_asserter_consumer_get_status_assertion_not_found() {
+    let f = setup();
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    let result = consumer_client.try_get_status(&f.tholos_id, &999u64);
+    assert_eq!(result, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_asserter_consumer_get_status_fails_on_invalid_tholos_id() {
+    let f = setup();
+    let invalid_tholos_id = Address::generate(&f.env);
+    let consumer_client = AsserterConsumerClient::new(&f.env, &f.consumer_id);
+
+    let result = consumer_client.try_get_status(&invalid_tholos_id, &0u64);
+    assert_eq!(result, Err(Ok(Error::TholosCallFailed)));
 }
