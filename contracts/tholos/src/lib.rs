@@ -69,6 +69,12 @@ pub struct RotationCancelled {
     pub new_resolver: Address,
 }
 
+#[contractevent]
+pub struct BondAmountUpdated {
+    pub old_bond_amount: i128,
+    pub new_bond_amount: i128,
+}
+
 /// An in-flight single-slot committee rotation proposed by a current resolver.
 /// Decided by a strict majority of the live committee via `vote_rotation`. Only
 /// one may be open at a time. See `docs/src/ROTATION_DESIGN.md`.
@@ -345,6 +351,48 @@ impl Tholos {
             .set(&DataKey::Resolvers, &new_resolvers);
         ResolversUpdated {
             resolvers: new_resolvers,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Sets a new default bond required for assertions created after this call.
+    /// Only callable by the admin set at initialization. Validated against the
+    /// same bounds `initialize` enforces (`new_bond_amount > 0` and
+    /// `new_bond_amount <= MAX_BOND_AMOUNT`). Pause-exempt, matching
+    /// `update_resolvers`.
+    ///
+    /// Changes apply only to assertions created *after* this call. Existing
+    /// in-flight assertions (`Pending` or `Disputed`) retain their snapshotted
+    /// `Assertion.bond` amount at creation time, preserving dispute matching and
+    /// settlement payouts intact.
+    pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        if new_bond_amount <= 0 || new_bond_amount > MAX_BOND_AMOUNT {
+            return Err(Error::InvalidBondAmount);
+        }
+
+        let old_bond_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondAmount)
+            .ok_or(Error::NotInitialized)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BondAmount, &new_bond_amount);
+
+        BondAmountUpdated {
+            old_bond_amount,
+            new_bond_amount,
         }
         .publish(&env);
 

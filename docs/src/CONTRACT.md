@@ -98,6 +98,18 @@ present), so a committee-driven rotation can never execute against a committee i
 wasn't built for. Day-to-day committee changes go through `propose_rotation` /
 `vote_rotation` instead.
 
+### `set_bond_amount(new_bond_amount)`
+
+Updates the default bond required for assertions created *after* this call.
+Requires the stored admin's signature. Same bounds as `initialize` (`new_bond_amount > 0`
+and `new_bond_amount <= MAX_BOND_AMOUNT`). Emits `BondAmountUpdated`. Pause-exempt, like
+`update_resolvers`.
+
+Has no effect on existing in-flight assertions (`Pending` or `Disputed`): each assertion
+snapshots its required bond amount when created (see `Assertion.bond`), and dispute matching,
+uncontested finalize rewards/refunds, and settlement payouts for that assertion are computed
+against that snapshotted bond for its entire lifetime.
+
 ### `propose_rotation(resolver, old_resolver, new_resolver)`
 
 Proposes a single-slot committee rotation: remove `old_resolver` (must be a current
@@ -245,6 +257,7 @@ history without polling `get_assertion_state`:
 | `Finalized` | `finalize` | `id`, `outcome`, `finalizer` (`Address`), `reward` |
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
+| `BondAmountUpdated` | `set_bond_amount` | `old_bond_amount`, `new_bond_amount` |
 | `PauseUpdated` | `set_paused` | `paused` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |

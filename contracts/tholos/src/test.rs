@@ -1722,6 +1722,171 @@ fn test_finalize_is_not_reentrant() {
     assert_eq!(evil_token.balance(&asserter), 1_000);
 }
 
+#[test]
+fn test_admin_can_set_bond_amount() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id1 = f.client.assert_outcome(&asserter, &true);
+    let state1 = f.client.get_assertion_state(&id1);
+    assert_eq!(state1.bond, DEFAULT_BOND);
+
+    f.client.set_bond_amount(&250);
+
+    let id2 = f.client.assert_outcome(&asserter, &false);
+    let state2 = f.client.get_assertion_state(&id2);
+    assert_eq!(state2.bond, 250);
+
+    // Initial 1000 - 100 (id1) - 250 (id2) = 650
+    assert_eq!(f.token.balance(&asserter), 650);
+}
+
+#[test]
+fn test_set_bond_amount_does_not_affect_in_flight_assertions() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    // Create assertion #1 with old bond amount (100).
+    let id1 = f.client.assert_outcome(&asserter, &true);
+    assert_eq!(f.token.balance(&asserter), 900);
+
+    // Admin updates bond to 300.
+    f.client.set_bond_amount(&300);
+
+    // Disputer disputes assertion #1 -> matches old bond of 100.
+    f.client.dispute(&disputer, &id1);
+    assert_eq!(f.token.balance(&disputer), 900);
+
+    // Create assertion #2 with new bond amount (300).
+    let id2 = f.client.assert_outcome(&asserter, &true);
+    assert_eq!(f.token.balance(&asserter), 600);
+
+    // Disputer disputes assertion #2 -> matches new bond of 300.
+    f.client.dispute(&disputer, &id2);
+    assert_eq!(f.token.balance(&disputer), 600);
+
+    // Resolvers resolve assertion #1 in disputer's favor -> disputer gets 100 * 2 = 200 (600 + 200 = 800).
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id1, &false);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id1, &false);
+    assert_eq!(f.token.balance(&disputer), 800);
+
+    // Resolvers resolve assertion #2 in asserter's favor -> asserter gets 300 * 2 = 600.
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id2, &true);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id2, &true);
+    assert_eq!(f.token.balance(&asserter), 1200);
+}
+
+#[test]
+fn test_set_bond_amount_in_flight_finalize_reward() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let token = token::Client::new(&env, &token_id);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // 10% finalize reward (1000 bps)
+    client.initialize(&admin, &token_id, &100, &3600, &resolvers, &1000);
+
+    let asserter = Address::generate(&env);
+    let finalizer = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &1_000);
+
+    // Create assertion #1 under bond 100
+    let id1 = client.assert_outcome(&asserter, &true);
+
+    // Update bond to 500
+    client.set_bond_amount(&500);
+
+    // Finalize assertion #1 after window: reward is 10% of 100 = 10, asserter gets 90
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    client.finalize(&finalizer, &id1);
+
+    assert_eq!(token.balance(&finalizer), 10);
+    assert_eq!(token.balance(&asserter), 990);
+}
+
+#[test]
+fn test_cannot_set_bond_amount_to_zero() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&0);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_to_negative() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&-1);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_over_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&(MAX_BOND_AMOUNT + 1));
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_set_bond_amount_accepts_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&MAX_BOND_AMOUNT);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let result = client.try_set_bond_amount(&200);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_set_bond_amount_is_pause_exempt() {
+    let f = Fixture::new();
+    f.client.set_paused(&true);
+
+    let result = f.client.try_set_bond_amount(&250);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_set_bond_amount_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_bond_amount(&200);
+
+    let auths = env.auths();
+    let admin_was_authed = auths.iter().any(|(addr, _)| *addr == admin);
+    assert!(
+        admin_was_authed,
+        "admin require_auth was not invoked during set_bond_amount"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Property-based tests for resolver vote counting and majority logic
 // ---------------------------------------------------------------------------
@@ -2078,6 +2243,32 @@ mod proptest_initialize_bounds {
                     "bond {}, window {}",
                     bond_amount, challenge_window_secs
                 ),
+            }
+        }
+
+        /// For any `new_bond_amount` drawn from the full i128 domain,
+        /// `set_bond_amount` returns exactly what the reference validation
+        /// predicts and never panics.
+        #[test]
+        fn prop_set_bond_amount_matches_reference_validation(
+            new_bond_amount in any::<i128>(),
+        ) {
+            let f = Fixture::new();
+            let result = f.client.try_set_bond_amount(&new_bond_amount);
+
+            if new_bond_amount > 0 && new_bond_amount <= MAX_BOND_AMOUNT {
+                prop_assert!(
+                    result.is_ok(),
+                    "bond {}: expected success, got {:?}",
+                    new_bond_amount, result
+                );
+            } else {
+                prop_assert_eq!(
+                    result,
+                    Err(Ok(Error::InvalidBondAmount)),
+                    "bond {}",
+                    new_bond_amount
+                );
             }
         }
     }
