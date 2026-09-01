@@ -212,6 +212,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RoundCancelled {
     #[topic]
     pub id: u64,
@@ -748,6 +754,31 @@ impl TholosV2 {
             .instance()
             .get(&DataKey::Policy)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Replaces the deployment admin. Only the current admin may authorize
+    /// the change. The old admin loses authority as soon as this call
+    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
+    /// `AdminUpdated` on success.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        old_admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        AdminUpdated {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
