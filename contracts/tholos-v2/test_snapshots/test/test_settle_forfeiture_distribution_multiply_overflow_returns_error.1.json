@@ -206,25 +206,9 @@
     ],
     [],
     [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "set_paused_v2",
-              "args": [
-                {
-                  "bool": true
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -328,26 +312,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "8370022561469687789"
                 }
               },
               "durability": "temporary",
@@ -641,7 +605,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "85070591730234615865843651857942052863"
                     }
                   },
                   {
@@ -786,7 +750,7 @@
                       "symbol": "agree_weight"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "85070591730234615865843651857942052863"
                     }
                   },
                   {
@@ -794,7 +758,7 @@
                       "symbol": "disagree_weight"
                     },
                     "val": {
-                      "i128": "100"
+                      "i128": "0"
                     }
                   },
                   {
@@ -802,7 +766,7 @@
                       "symbol": "eligible_total"
                     },
                     "val": {
-                      "i128": "200"
+                      "i128": "170141183460469231731687303715884105727"
                     }
                   },
                   {
@@ -933,7 +897,7 @@
                         ]
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {

@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 5,
+    "address": 4,
     "nonce": 0,
     "mux_id": 0
   },
@@ -25,6 +25,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
@@ -32,49 +33,14 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "__constructor",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL"
-                },
-                {
-                  "i128": "100"
-                },
-                {
-                  "u64": "3600"
-                },
-                {
-                  "u32": 0
-                },
-                {
-                  "u64": "3600"
-                },
-                {
-                  "u64": "300"
-                },
-                {
-                  "u64": "3900"
-                },
-                {
-                  "u64": "3600"
-                },
-                {
-                  "i128": "1000000"
-                },
-                {
-                  "i128": "10000000"
-                }
-              ]
+              "function_name": "",
+              "args": []
             }
           },
           "sub_invocations": []
         }
       ]
-    ],
-    []
+    ]
   ],
   "ledger": {
     "protocol_version": 26,
@@ -221,7 +187,7 @@
                               "symbol": "anti_snipe_hard_max_secs"
                             },
                             "val": {
-                              "u64": "3900"
+                              "u64": "2505600"
                             }
                           },
                           {

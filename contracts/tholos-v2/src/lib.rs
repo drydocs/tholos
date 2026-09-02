@@ -639,6 +639,39 @@ pub struct TholosV2;
 
 #[contractimpl]
 impl TholosV2 {
+    /// Atomic constructor called during contract deployment. Initializes the
+    /// deployment-wide defaults and pins the admin.
+    #[allow(clippy::too_many_arguments)]
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        token: Address,
+        base_bond: i128,
+        challenge_window_secs: u64,
+        finalize_reward_bps: u32,
+        registration_duration_secs: u64,
+        anti_snipe_extension_secs: u64,
+        anti_snipe_hard_max_secs: u64,
+        reveal_duration_secs: u64,
+        max_position: i128,
+        max_total_weight: i128,
+    ) -> Result<(), Error> {
+        Self::initialize(
+            env,
+            admin,
+            token,
+            base_bond,
+            challenge_window_secs,
+            finalize_reward_bps,
+            registration_duration_secs,
+            anti_snipe_extension_secs,
+            anti_snipe_hard_max_secs,
+            reveal_duration_secs,
+            max_position,
+            max_total_weight,
+        )
+    }
+
     /// One-time setup, pinning the deployment-wide defaults every future
     /// assertion's `PolicySnapshotV2` is built from. Requires `admin`'s
     /// signature. Fails with `AlreadyInitialized` if called twice.
