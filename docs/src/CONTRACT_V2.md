@@ -186,7 +186,7 @@ only affect assertions created after the change.
 | `NotRegistration` | Action requires `PhaseV2::Registration` but the assertion isn't. |
 | `CannotRegisterAsFixedParty` | `register` called by the assertion's own asserter or disputer; they already have fixed positions from `dispute`. |
 | `InvalidPositionAmount` | `register`'s `amount` isn't positive. |
-| `BelowMinimumResolutionBond` | A first-time `register` deposit is below `policy.min_resolution_bond`. |
+| `BelowMinimumResolutionBond` | A `register` deposit (first-time or top-up) is below `policy.min_resolution_bond`. |
 | `PositionExceedsMax` | A position's total after this deposit would exceed `policy.max_position`. |
 | `EligibleTotalExceedsMax` | The eligible total `W` after this deposit would exceed `policy.max_total_weight`. |
 | `CommitmentMismatch` | A top-up's `commitment` doesn't match the one this position was created with. |
@@ -322,12 +322,12 @@ assertion, committing to a side without revealing it. Not callable by the
 assertion's own asserter or disputer (`CannotRegisterAsFixedParty`) — they
 already have fixed positions from `dispute`.
 
-A first-time deposit must be at least `policy.min_resolution_bond`
-(`BelowMinimumResolutionBond` otherwise). A top-up (same voter, same
-assertion) aggregates into the existing position and must reuse its
-original `commitment` (`CommitmentMismatch` otherwise) — a position's
-committed side can never change after funding. Rejects atomically, with no
-position or weight created, if the resulting position size would exceed
+A deposit (both first-time and top-up) must be at least
+`policy.min_resolution_bond` (`BelowMinimumResolutionBond` otherwise).
+A top-up (same voter, same assertion) aggregates into the existing position
+and must reuse its original `commitment` (`CommitmentMismatch` otherwise) —
+a position's committed side can never change after funding. Rejects atomically,
+with no position or weight created, if the resulting position size would exceed
 `policy.max_position` (`PositionExceedsMax`) or the eligible total would
 exceed `policy.max_total_weight` (`EligibleTotalExceedsMax`).
 

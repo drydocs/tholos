@@ -506,7 +506,8 @@ pub enum Error {
     /// separately from this issue's third-party registration path).
     CannotRegisterAsFixedParty = 16,
     InvalidPositionAmount = 17,
-    /// A new position's amount was below `policy.min_resolution_bond`.
+    /// A deposit amount (initial or top-up) was below
+    /// `policy.min_resolution_bond`.
     BelowMinimumResolutionBond = 18,
     /// A position's total (after aggregating this deposit) exceeded
     /// `policy.max_position`.
@@ -1162,13 +1163,13 @@ impl TholosV2 {
     /// already have fixed positions from `dispute`; a way for them to top up
     /// those positions is tracked separately from this issue.
     ///
-    /// A first-time deposit must be at least `policy.min_resolution_bond`.
-    /// A top-up (same voter, same assertion) aggregates into the existing
-    /// position and must reuse its original `commitment`, a position's
-    /// committed side can never change after funding. Rejects atomically,
-    /// with no position or weight created, if the resulting position size or
-    /// eligible total would exceed `policy.max_position` /
-    /// `policy.max_total_weight`.
+    /// A deposit (both first-time and top-up) must be at least
+    /// `policy.min_resolution_bond`. A top-up (same voter, same assertion)
+    /// aggregates into the existing position and must reuse its original
+    /// `commitment`, a position's committed side can never change after
+    /// funding. Rejects atomically, with no position or weight created, if the
+    /// resulting position size or eligible total would exceed
+    /// `policy.max_position` / `policy.max_total_weight`.
     ///
     /// A qualifying deposit (one landing within `anti_snipe_extension_secs`
     /// of the current deadline) pushes the registration deadline out by
@@ -1208,6 +1209,9 @@ impl TholosV2 {
         if amount <= 0 {
             return Err(Error::InvalidPositionAmount);
         }
+        if amount < assertion.policy.min_resolution_bond {
+            return Err(Error::BelowMinimumResolutionBond);
+        }
 
         let mut resolution: Resolution = env
             .storage()
@@ -1243,12 +1247,7 @@ impl TholosV2 {
                 }
                 position.amount
             }
-            None => {
-                if amount < assertion.policy.min_resolution_bond {
-                    return Err(Error::BelowMinimumResolutionBond);
-                }
-                0
-            }
+            None => 0,
         };
 
         let new_amount = previous_amount + amount;
