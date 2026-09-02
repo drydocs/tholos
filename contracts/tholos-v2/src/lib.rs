@@ -1354,6 +1354,18 @@ impl TholosV2 {
             position.revealed = true;
             position.agrees_with_outcome = Some(agrees_with_asserter);
             Self::set_position(env, id, fixed_voter, &position, &assertion.policy);
+
+            let choice = if agrees_with_asserter {
+                assertion.outcome
+            } else {
+                !assertion.outcome
+            };
+            Revealed {
+                id,
+                voter: (*fixed_voter).clone(),
+                choice,
+            }
+            .publish(env);
         }
 
         Self::set_resolution(env, id, &resolution, &assertion.policy);

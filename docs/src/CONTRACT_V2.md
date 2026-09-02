@@ -540,7 +540,7 @@ assertion's history without polling `get_assertion`:
 | `Disputed` | `dispute` | `id`, `disputer`, `registration_deadline` |
 | `PositionFunded` | `register` | `id`, `voter`, `amount` (position's new total), `eligible_total` (running `W`) |
 | `RevealOpened` | `reveal`, `resolve_outcome` (on the lazy `Registration -> Reveal` transition) | `id`, `reveal_deadline` |
-| `Revealed` | `reveal` | `id`, `voter`, `choice` |
+| `Revealed` | `reveal`, `resolve_outcome` (for each caller in `reveal`, and for both fixed positions on the lazy `Registration -> Reveal` transition) | `id`, `voter`, `choice` |
 | `Resolved` | `reveal`, `resolve_outcome` (once the assertion closes to `Resolved`) | `id`, `terminal_cause`, `final_outcome` |
 | `Settled` | `settle` | `id`, `address`, `payout` (principal plus reward, or 0; excludes any dust routed in the same call) |
 | `DustCredited` | `settle`, at most once per assertion, when that call closes out the recipient side with nonzero leftover dust | `id`, `address` (the deterministic dust recipient), `amount` |

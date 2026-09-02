@@ -1,8 +1,11 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+use soroban_sdk::TryFromVal;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_CHALLENGE_WINDOW: u64 = 3600;
@@ -1460,6 +1463,170 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
     assert!(disputer_position.revealed);
     let voter_position = f.client.get_position(&id, &voter);
     assert!(voter_position.revealed);
+}
+
+#[test]
+fn test_open_reveal_phase_emits_revealed_and_reveal_opened_events() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+    let other_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        true,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+    let other_commitment = commitment(&f.env, 9);
+    f.client
+        .register(&other_voter, &id, &DEFAULT_BOND, &other_commitment);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let contract_events: std::vec::Vec<_> = f
+        .env
+        .events()
+        .all()
+        .events()
+        .iter()
+        .filter(|e| e.type_ == soroban_sdk::xdr::ContractEventType::Contract)
+        .cloned()
+        .collect();
+
+    // Verify 4 contract events emitted during reveal invocation:
+    // 2x Revealed (asserter and disputer auto-revealed on open_reveal_phase),
+    // 1x RevealOpened, 1x Revealed (voter).
+    assert_eq!(contract_events.len(), 4);
+
+    let mut revealed_details = std::vec::Vec::new();
+    let mut reveal_opened_count = 0;
+
+    for event in &contract_events {
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+        if let Some(soroban_sdk::xdr::ScVal::Symbol(topic_sym)) = body.topics.first() {
+            if topic_sym.0.as_slice() == b"revealed" {
+                if let Some(soroban_sdk::xdr::ScVal::U64(event_id)) = body.topics.get(1) {
+                    assert_eq!(*event_id, id);
+                }
+                if let soroban_sdk::xdr::ScVal::Map(Some(entries)) = &body.data {
+                    let mut choice = None;
+                    let mut voter_addr = None;
+                    for entry in entries.iter() {
+                        if let soroban_sdk::xdr::ScVal::Symbol(k) = &entry.key {
+                            if k.0.as_slice() == b"choice" {
+                                if let soroban_sdk::xdr::ScVal::Bool(b) = entry.val {
+                                    choice = Some(b);
+                                }
+                            } else if k.0.as_slice() == b"voter" {
+                                if let soroban_sdk::xdr::ScVal::Address(a) = &entry.val {
+                                    voter_addr = Some(Address::try_from_val(&f.env, a).unwrap());
+                                }
+                            }
+                        }
+                    }
+                    revealed_details.push((voter_addr.unwrap(), choice.unwrap()));
+                }
+            } else if topic_sym.0.as_slice() == b"reveal_opened" {
+                if let Some(soroban_sdk::xdr::ScVal::U64(event_id)) = body.topics.get(1) {
+                    assert_eq!(*event_id, id);
+                }
+                reveal_opened_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(reveal_opened_count, 1);
+    // Asserter (true), Disputer (false), Voter (true)
+    assert_eq!(
+        revealed_details,
+        std::vec![(asserter, true), (disputer, false), (voter, true),]
+    );
+}
+
+#[test]
+fn test_open_reveal_phase_emits_revealed_events_for_false_assertion() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    // Asserter asserts false.
+    let id = f.client.assert_outcome(&asserter, &false);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &voter,
+        false,
+        &s,
+    );
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &false, &s);
+
+    let contract_events: std::vec::Vec<_> = f
+        .env
+        .events()
+        .all()
+        .events()
+        .iter()
+        .filter(|e| e.type_ == soroban_sdk::xdr::ContractEventType::Contract)
+        .cloned()
+        .collect();
+
+    // 5 contract events: 2x Revealed (fixed positions), RevealOpened, 1x Revealed (voter), Resolved.
+    assert_eq!(contract_events.len(), 5);
+
+    let mut revealed_details = std::vec::Vec::new();
+    for event in &contract_events {
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+        if let Some(soroban_sdk::xdr::ScVal::Symbol(topic_sym)) = body.topics.first() {
+            if topic_sym.0.as_slice() == b"revealed" {
+                if let soroban_sdk::xdr::ScVal::Map(Some(entries)) = &body.data {
+                    let mut choice = None;
+                    let mut voter_addr = None;
+                    for entry in entries.iter() {
+                        if let soroban_sdk::xdr::ScVal::Symbol(k) = &entry.key {
+                            if k.0.as_slice() == b"choice" {
+                                if let soroban_sdk::xdr::ScVal::Bool(b) = entry.val {
+                                    choice = Some(b);
+                                }
+                            } else if k.0.as_slice() == b"voter" {
+                                if let soroban_sdk::xdr::ScVal::Address(a) = &entry.val {
+                                    voter_addr = Some(Address::try_from_val(&f.env, a).unwrap());
+                                }
+                            }
+                        }
+                    }
+                    revealed_details.push((voter_addr.unwrap(), choice.unwrap()));
+                }
+            }
+        }
+    }
+
+    // Asserter (outcome=false -> choice=false)
+    // Disputer (opposite of outcome -> choice=true)
+    // Voter (choice=false)
+    assert_eq!(
+        revealed_details,
+        std::vec![(asserter, false), (disputer, true), (voter, false),]
+    );
 }
 
 #[test]

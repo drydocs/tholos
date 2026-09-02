@@ -5,6 +5,13 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `tholos-v2`: emit `Revealed` events on `open_reveal_phase` auto-reveal path for
+  both asserter and disputer fixed positions when transitioning from `Registration`
+  to `Reveal`, ensuring indexers receive a complete stream of position reveals
+  without requiring special cases for protocol-fixed positions. Closes #156.
+
 ### Added
 
 - `contracts/tholos-v2`: a new, wholly separate contract crate for protocol

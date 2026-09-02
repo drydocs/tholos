@@ -154,7 +154,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 }
               ]
             }
@@ -247,7 +247,7 @@
                   "i128": "100"
                 },
                 {
-                  "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                  "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
                 }
               ]
             }
@@ -278,7 +278,34 @@
       ]
     ],
     [],
-    []
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "function_name": "reveal",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                },
+                {
+                  "u64": "0"
+                },
+                {
+                  "bool": false
+                },
+                {
+                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ]
   ],
   "ledger": {
     "protocol_version": 26,
@@ -431,7 +458,9 @@
                     "key": {
                       "symbol": "final_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": false
+                    }
                   },
                   {
                     "key": {
@@ -460,7 +489,7 @@
                       "symbol": "outcome"
                     },
                     "val": {
-                      "bool": true
+                      "bool": false
                     }
                   },
                   {
@@ -470,7 +499,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "Registration"
+                          "symbol": "Resolved"
                         }
                       ]
                     }
@@ -623,7 +652,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "NotYetDecided"
+                          "symbol": "StrictMajorityFor"
                         }
                       ]
                     }
@@ -663,7 +692,9 @@
                     "key": {
                       "symbol": "agrees_with_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": true
+                    }
                   },
                   {
                     "key": {
@@ -693,7 +724,7 @@
                       "symbol": "revealed"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -739,7 +770,9 @@
                     "key": {
                       "symbol": "agrees_with_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": false
+                    }
                   },
                   {
                     "key": {
@@ -769,7 +802,7 @@
                       "symbol": "revealed"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -815,7 +848,9 @@
                     "key": {
                       "symbol": "agrees_with_outcome"
                     },
-                    "val": "void"
+                    "val": {
+                      "bool": true
+                    }
                   },
                   {
                     "key": {
@@ -835,7 +870,7 @@
                           "symbol": "External"
                         },
                         {
-                          "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                          "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
                         }
                       ]
                     }
@@ -845,7 +880,7 @@
                       "symbol": "revealed"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -889,7 +924,7 @@
                       "symbol": "agree_weight"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "200"
                     }
                   },
                   {
@@ -897,7 +932,7 @@
                       "symbol": "disagree_weight"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "100"
                     }
                   },
                   {
@@ -945,7 +980,7 @@
                       "symbol": "reveal_deadline"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "7201"
                     }
                   },
                   {
@@ -953,7 +988,7 @@
                       "symbol": "reveal_opened_at"
                     },
                     "val": {
-                      "u64": "0"
+                      "u64": "3601"
                     }
                   },
                   {
@@ -1247,6 +1282,26 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "8370022561469687789"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "5806905060045992000"
                 }
               },
               "durability": "temporary",
@@ -1627,7 +1682,7 @@
                     "symbol": "choice"
                   },
                   "val": {
-                    "bool": true
+                    "bool": false
                   }
                 },
                 {
@@ -1643,7 +1698,7 @@
           }
         }
       },
-      "failed_call": true
+      "failed_call": false
     },
     {
       "event": {
@@ -1667,7 +1722,7 @@
                     "symbol": "choice"
                   },
                   "val": {
-                    "bool": false
+                    "bool": true
                   }
                 },
                 {
@@ -1683,7 +1738,7 @@
           }
         }
       },
-      "failed_call": true
+      "failed_call": false
     },
     {
       "event": {
@@ -1715,7 +1770,91 @@
           }
         }
       },
-      "failed_call": true
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "resolved"
+              },
+              {
+                "u64": "0"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "final_outcome"
+                  },
+                  "val": {
+                    "bool": false
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "terminal_cause"
+                  },
+                  "val": {
+                    "vec": [
+                      {
+                        "symbol": "StrictMajorityFor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "revealed"
+              },
+              {
+                "u64": "0"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "choice"
+                  },
+                  "val": {
+                    "bool": false
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "voter"
+                  },
+                  "val": {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
     }
   ]
 }
