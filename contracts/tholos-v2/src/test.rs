@@ -1255,6 +1255,112 @@ fn test_register_top_up_with_different_commitment_fails() {
     assert_eq!(result, Err(Ok(Error::CommitmentMismatch)));
 }
 
+
+#[test]
+fn test_register_position_amount_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // Lift the position and weight caps so the only bound crossed is
+    // i128::MAX itself, exercising the checked_add in register().
+    init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        i128::MAX,
+        i128::MAX,
+    )
+    .unwrap()
+    .unwrap();
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let voter = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+    // Only need the small top-up amount on hand.
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &10);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    let voter_commitment = commitment(&env, 1);
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::Position(id, voter.clone()),
+            &Position {
+                amount: i128::MAX - 1,
+                kind: PositionKind::External(voter_commitment.clone()),
+                revealed: false,
+                agrees_with_outcome: None,
+                settled: false,
+            },
+        );
+    });
+
+    let result = client.try_register(&voter, &id, &2, &voter_commitment);
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
+
+#[test]
+fn test_register_eligible_total_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // Lift the position and weight caps so the only bound crossed is
+    // i128::MAX itself, exercising the checked_sub/checked_add chain.
+    init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        i128::MAX,
+        i128::MAX,
+    )
+    .unwrap()
+    .unwrap();
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let voter = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &10);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    // eligible_total already at i128::MAX; adding any new position must
+    // overflow the total-weight arithmetic even though the position
+    // amount itself is tiny.
+    env.as_contract(&client.address, || {
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .unwrap();
+        resolution.eligible_total = i128::MAX;
+        env.storage().persistent().set(&DataKey::Resolution(id), &resolution);
+    });
+
+    let result = client.try_register(&voter, &id, &1, &commitment(&env, 1));
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
 #[test]
 fn test_register_exceeds_max_position_fails() {
     let env = Env::default();

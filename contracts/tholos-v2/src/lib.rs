@@ -1251,11 +1251,18 @@ impl TholosV2 {
             }
         };
 
-        let new_amount = previous_amount + amount;
+        let new_amount = previous_amount
+            .checked_add(amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
         if new_amount > assertion.policy.max_position {
             return Err(Error::PositionExceedsMax);
         }
-        let new_total = resolution.eligible_total - previous_amount + new_amount;
+        let new_total = resolution
+            .eligible_total
+            .checked_sub(previous_amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?
+            .checked_add(new_amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
         if new_total > assertion.policy.max_total_weight {
             return Err(Error::EligibleTotalExceedsMax);
         }
