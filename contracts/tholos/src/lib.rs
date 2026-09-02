@@ -238,6 +238,29 @@ pub struct Tholos;
 
 #[contractimpl]
 impl Tholos {
+    /// Atomic constructor called during contract deployment. Initializes the
+    /// contract and pins the admin, token, bond, challenge window, resolvers,
+    /// and finalize reward.
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        token: Address,
+        bond_amount: i128,
+        challenge_window_secs: u64,
+        resolvers: Vec<Address>,
+        finalize_reward_bps: u32,
+    ) -> Result<(), Error> {
+        Self::initialize(
+            env,
+            admin,
+            token,
+            bond_amount,
+            challenge_window_secs,
+            resolvers,
+            finalize_reward_bps,
+        )
+    }
+
     /// Initializes the contract. `resolvers` must have an odd length so a
     /// simple majority vote can never tie. `finalize_reward_bps` sets the
     /// fraction of the bond (in basis points, 0–1000) paid to whoever calls

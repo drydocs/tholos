@@ -8,6 +8,57 @@ const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
 const DEFAULT_MINT: i128 = 1_000;
 
+#[contract]
+struct DummyContract;
+
+#[contractimpl]
+impl DummyContract {}
+
+fn register_contract(
+    env: &Env,
+    admin: &Address,
+    token_id: &Address,
+    bond_amount: i128,
+    challenge_window_secs: u64,
+    resolvers: &Vec<Address>,
+    finalize_reward_bps: u32,
+) -> Address {
+    env.register(
+        Tholos,
+        (
+            admin.clone(),
+            token_id.clone(),
+            bond_amount,
+            challenge_window_secs,
+            resolvers.clone(),
+            finalize_reward_bps,
+        ),
+    )
+}
+
+fn init(
+    env: &Env,
+    admin: &Address,
+    token_id: &Address,
+    bond_amount: i128,
+    challenge_window_secs: u64,
+    resolvers: &Vec<Address>,
+    finalize_reward_bps: u32,
+) -> Result<(), Error> {
+    let dummy_id = env.register(DummyContract, ());
+    env.as_contract(&dummy_id, || {
+        Tholos::initialize(
+            env.clone(),
+            admin.clone(),
+            token_id.clone(),
+            bond_amount,
+            challenge_window_secs,
+            resolvers.clone(),
+            finalize_reward_bps,
+        )
+    })
+}
+
 /// A registered but uninitialized token and resolver committee, for the
 /// handful of tests that need to call `initialize` themselves (to test bad
 /// init parameters, or that it can't be called twice).
@@ -46,19 +97,18 @@ impl Fixture {
 
         let (token_id, resolvers) = setup(&env);
         let token = token::Client::new(&env, &token_id);
-
-        let contract_id = env.register(Tholos, ());
-        let client = TholosClient::new(&env, &contract_id);
-
         let admin = Address::generate(&env);
-        client.initialize(
+
+        let contract_id = register_contract(
+            &env,
             &admin,
             &token_id,
-            &DEFAULT_BOND,
-            &DEFAULT_WINDOW,
+            DEFAULT_BOND,
+            DEFAULT_WINDOW,
             &resolvers,
-            &0u32,
+            0u32,
         );
+        let client = TholosClient::new(&env, &contract_id);
 
         Fixture {
             env,
@@ -206,21 +256,19 @@ fn test_cannot_initialize_with_even_resolver_count() {
     env.mock_all_auths();
 
     let (token_id, _resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
     let even_resolvers = Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &even_resolvers,
-        &0u32,
+        0u32,
     );
-    assert!(result.is_err());
+    assert_eq!(result, Err(Error::InvalidResolverCount));
 }
 
 #[test]
@@ -229,26 +277,22 @@ fn test_cannot_initialize_with_too_many_resolvers() {
     env.mock_all_auths();
 
     let (token_id, _resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    // +2, not +1: must stay odd (MAX_RESOLVERS is odd) so this isolates the
-    // TooManyResolvers check rather than tripping InvalidResolverCount first.
     let mut too_many = Vec::new(&env);
     for _ in 0..(MAX_RESOLVERS + 2) {
         too_many.push_back(Address::generate(&env));
     }
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &too_many,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::TooManyResolvers)));
+    assert_eq!(result, Err(Error::TooManyResolvers));
 }
 
 #[test]
@@ -257,12 +301,9 @@ fn test_cannot_initialize_with_zero_bond_amount() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &0, &DEFAULT_WINDOW, &resolvers, &0u32);
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+    let result = init(&env, &admin, &token_id, 0, DEFAULT_WINDOW, &resolvers, 0u32);
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
 #[test]
@@ -271,12 +312,17 @@ fn test_cannot_initialize_with_negative_bond_amount() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &-1, &DEFAULT_WINDOW, &resolvers, &0u32);
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+    let result = init(
+        &env,
+        &admin,
+        &token_id,
+        -1,
+        DEFAULT_WINDOW,
+        &resolvers,
+        0u32,
+    );
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
 #[test]
@@ -285,19 +331,17 @@ fn test_cannot_initialize_with_bond_amount_above_max() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &(MAX_BOND_AMOUNT + 1),
-        &DEFAULT_WINDOW,
+        MAX_BOND_AMOUNT + 1,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
 #[test]
@@ -306,134 +350,80 @@ fn test_can_initialize_with_bond_amount_exactly_at_max() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &MAX_BOND_AMOUNT,
-        &DEFAULT_WINDOW,
+        MAX_BOND_AMOUNT,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(result, Ok(()));
 }
 
-/// A third boundary-check variant on top of
-/// `test_cannot_initialize_with_bond_amount_above_max`: rejecting
-/// `MAX_BOND_AMOUNT + 1` doesn't just return the right error, it also
-/// leaves the contract's storage untouched (still uninitialized), so no
-/// partial state survives a rejected `initialize` call. This does not
-/// exercise `assert_outcome`, `dispute`, `resolve`, or `finalize` — for
-/// confirmation that the guard actually prevents the overflows it exists to
-/// stop, see `test_bond_amount_overflow_blocked_before_dispute_balance_accumulation`
-/// (dispute-balance-sum) and
-/// `test_finalize_reward_multiply_does_not_overflow_at_max_bond_and_max_reward_bps`
-/// (finalize reward-multiply).
 #[test]
 fn test_rejecting_overflow_prone_bond_amount_leaves_contract_uninitialized() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
     let overflowing_bond = MAX_BOND_AMOUNT + 1;
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &overflowing_bond,
-        &DEFAULT_WINDOW,
+        overflowing_bond,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
-
-    // Nothing was persisted: the contract is still uninitialized.
-    assert_eq!(client.try_set_paused(&true), Err(Ok(Error::NotInitialized)));
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
-/// Confirmed by direct experiment (temporarily reverting `initialize`'s
-/// `MAX_BOND_AMOUNT` check and driving a real `assert_outcome` -> `dispute`
-/// -> `resolve` sequence with `overflowing_bond`): the panic this bound
-/// exists to prevent does not happen in `resolve`'s
-/// `assertion.bond * 2`. It happens one step earlier, inside `dispute`,
-/// when the SAC token's `receive_balance` sums the asserter's and
-/// disputer's bonds and that sum exceeds `i128::MAX` — `HostError:
-/// Error(Contract, #12)`, "balance overflow in receive_balance". `resolve`
-/// is never reached; the assertion never leaves the disputed state.
-///
-/// This test proves `initialize`'s guard closes the door before any of
-/// that can happen: the overflow-prone `bond_amount` is rejected up
-/// front, so no `assert_outcome`, `dispute`, or `resolve` call referencing
-/// it can ever run.
 #[test]
 fn test_bond_amount_overflow_blocked_before_dispute_balance_accumulation() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
-    // One more than the configured limit. `MAX_BOND_AMOUNT` is now sized by
-    // the tighter of two constraints (see its doc comment in lib.rs), but
-    // this test's concern is specifically the dispute-balance-sum one: even
-    // at the old, looser `i128::MAX / 2` bound this value's doubling --  via
-    // the asserter's and disputer's bonds both landing in the contract's
-    // token balance across assert_outcome and dispute -- would overflow
-    // i128.
     let overflowing_bond = MAX_BOND_AMOUNT + 1;
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &overflowing_bond,
-        &DEFAULT_WINDOW,
+        overflowing_bond,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
-
-    // Nothing was persisted, so assert_outcome -- which would fund the
-    // first half of the overflowing sum -- can't even be called.
-    assert_eq!(client.try_set_paused(&true), Err(Ok(Error::NotInitialized)));
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
-/// Regression test for the finalize reward-multiply overflow found when
-/// this branch's `MAX_BOND_AMOUNT` bound (`i128::MAX / 2`, sized only for
-/// the dispute-balance-sum constraint) was merged alongside
-/// `finalize_reward_bps` (which multiplies `assertion.bond` by `reward_bps`
-/// before dividing by `10_000`). `i128::MAX / 2` was the pre-fix
-/// `MAX_BOND_AMOUNT` and was accepted on its own (see the now-updated
-/// `test_can_initialize_with_bond_amount_exactly_at_max`), but combined with
-/// a nonzero `finalize_reward_bps` it overflows the reward multiply well
-/// before `finalize` gets to divide. It must be rejected now that
-/// `MAX_BOND_AMOUNT` accounts for both constraints.
 #[test]
 fn test_cannot_initialize_with_bond_amount_safe_under_old_bound_but_unsafe_for_reward_multiply() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
     let old_bound_bond_amount = i128::MAX / 2;
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &old_bound_bond_amount,
-        &DEFAULT_WINDOW,
+        old_bound_bond_amount,
+        DEFAULT_WINDOW,
         &resolvers,
-        &MAX_FINALIZE_REWARD_BPS,
+        MAX_FINALIZE_REWARD_BPS,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+    assert_eq!(result, Err(Error::InvalidBondAmount));
 }
 
 #[test]
@@ -442,12 +432,9 @@ fn test_cannot_initialize_with_zero_challenge_window() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &0, &resolvers, &0u32);
-    assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
+    let result = init(&env, &admin, &token_id, DEFAULT_BOND, 0, &resolvers, 0u32);
+    assert_eq!(result, Err(Error::InvalidChallengeWindow));
 }
 
 #[test]
@@ -456,19 +443,17 @@ fn test_cannot_initialize_with_challenge_window_too_large() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &(MAX_CHALLENGE_WINDOW_SECS + 1),
+        DEFAULT_BOND,
+        MAX_CHALLENGE_WINDOW_SECS + 1,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
+    assert_eq!(result, Err(Error::InvalidChallengeWindow));
 }
 
 #[test]
@@ -484,6 +469,23 @@ fn test_cannot_initialize_twice() {
         &f.resolvers,
         &0u32,
     );
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn test_initialize_by_arbitrary_caller_fails() {
+    let f = Fixture::new();
+    let attacker = Address::generate(&f.env);
+
+    let result = f.client.try_initialize(
+        &attacker,
+        &f.token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &f.resolvers,
+        &0u32,
+    );
+
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
@@ -720,10 +722,10 @@ fn test_cannot_pause_before_initialization() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
+    let dummy_id = env.register(DummyContract, ());
+    let result = env.as_contract(&dummy_id, || Tholos::set_paused(env.clone(), true));
 
-    assert_eq!(client.try_set_paused(&true), Err(Ok(Error::NotInitialized)));
+    assert_eq!(result, Err(Error::NotInitialized));
 }
 
 #[test]
@@ -753,9 +755,7 @@ fn test_cannot_update_resolvers_before_initialization() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
+    let dummy_id = env.register(DummyContract, ());
     let resolvers = Vec::from_array(
         &env,
         [
@@ -764,8 +764,10 @@ fn test_cannot_update_resolvers_before_initialization() {
             Address::generate(&env),
         ],
     );
-    let result = client.try_update_resolvers(&resolvers);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    let result = env.as_contract(&dummy_id, || {
+        Tholos::update_resolvers(env.clone(), resolvers)
+    });
+    assert_eq!(result, Err(Error::NotInitialized));
 }
 
 #[test]
@@ -774,61 +776,48 @@ fn test_cannot_initialize_with_duplicate_resolvers() {
     env.mock_all_auths();
 
     let (token_id, _resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    // The same address twice, plus a third: odd length and within
-    // MAX_RESOLVERS, so this isolates the duplicate check.
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let duplicated = Vec::from_array(&env, [a.clone(), a.clone(), b]);
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &duplicated,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
+    assert_eq!(result, Err(Error::DuplicateResolvers));
 }
 
 #[test]
 fn test_initialize_accepts_distinct_committee() {
-    // Sanity check that the duplicate rejection doesn't reject the happy path:
-    // a fully distinct committee still initializes successfully.
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(result, Ok(()));
 }
 
 #[test]
 fn test_initialize_rejects_duplicate_at_end_of_vector() {
-    // A duplicate at the very end of an otherwise-distinct, odd-length,
-    // within-bounds committee, to prove the inner scan runs to the end.
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, _resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
     let d = Address::generate(&env);
     let resolvers = Vec::from_array(
@@ -842,42 +831,38 @@ fn test_initialize_rejects_duplicate_at_end_of_vector() {
         ],
     );
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
+    assert_eq!(result, Err(Error::DuplicateResolvers));
 }
 
 #[test]
 fn test_initialize_reports_invalid_count_before_duplicates() {
-    // `[A, A]` is both even-length and duplicate-heavy. The even-length check
-    // runs first, so InvalidResolverCount is reported, not DuplicateResolvers.
-    // Documents the precedence of the cheaper check over the O(n²) scan.
     let env = Env::default();
     env.mock_all_auths();
 
     let (token_id, _resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
-
     let admin = Address::generate(&env);
     let a = Address::generate(&env);
     let even_and_duplicated = Vec::from_array(&env, [a.clone(), a.clone()]);
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &even_and_duplicated,
-        &0u32,
+        0u32,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidResolverCount)));
+    assert_eq!(result, Err(Error::InvalidResolverCount));
 }
 
 #[test]
@@ -937,17 +922,17 @@ fn fixture_with_reward(bps: u32) -> (Fixture, Address) {
 
     let (token_id, resolvers) = setup(&env);
     let token = token::Client::new(&env, &token_id);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(
+    let contract_id = register_contract(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &resolvers,
-        &bps,
+        bps,
     );
+    let client = TholosClient::new(&env, &contract_id);
     let f = Fixture {
         env,
         client,
@@ -1015,14 +1000,6 @@ fn test_finalize_max_reward_bps() {
     assert_eq!(f.token.balance(&asserter), 990);
 }
 
-/// The test that would have caught the finalize reward-multiply overflow
-/// before this merge: `finalize` computes
-/// `assertion.bond * (reward_bps as i128) / 10_000`, multiplying before it
-/// divides. With `bond_amount` at `MAX_BOND_AMOUNT` and `reward_bps` at
-/// `MAX_FINALIZE_REWARD_BPS`, that intermediate product must not overflow
-/// `i128`. Unlike the dispute/resolve overflow this bound also guards
-/// against, this path never touches `dispute` or `resolve` at all --
-/// `assert_outcome` straight into `finalize` is enough to hit it.
 #[test]
 fn test_finalize_reward_multiply_does_not_overflow_at_max_bond_and_max_reward_bps() {
     let env = Env::default();
@@ -1030,17 +1007,17 @@ fn test_finalize_reward_multiply_does_not_overflow_at_max_bond_and_max_reward_bp
 
     let (token_id, resolvers) = setup(&env);
     let token = token::Client::new(&env, &token_id);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(
+    let contract_id = register_contract(
+        &env,
         &admin,
         &token_id,
-        &MAX_BOND_AMOUNT,
-        &DEFAULT_WINDOW,
+        MAX_BOND_AMOUNT,
+        DEFAULT_WINDOW,
         &resolvers,
-        &MAX_FINALIZE_REWARD_BPS,
+        MAX_FINALIZE_REWARD_BPS,
     );
+    let client = TholosClient::new(&env, &contract_id);
 
     let asserter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &MAX_BOND_AMOUNT);
@@ -1051,8 +1028,6 @@ fn test_finalize_reward_multiply_does_not_overflow_at_max_bond_and_max_reward_bp
     let outcome = client.finalize(&caller, &id);
 
     assert!(outcome);
-    // 1000 bps of MAX_BOND_AMOUNT = MAX_BOND_AMOUNT / 10, computed without
-    // overflowing the intermediate `bond * reward_bps` product.
     let expected_reward = MAX_BOND_AMOUNT / 10;
     assert_eq!(token.balance(&caller), expected_reward);
     assert_eq!(token.balance(&asserter), MAX_BOND_AMOUNT - expected_reward);
@@ -1064,19 +1039,18 @@ fn test_cannot_initialize_with_reward_bps_over_max() {
     env.mock_all_auths();
 
     let (token_id, resolvers) = setup(&env);
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
-    let result = client.try_initialize(
+    let result = init(
+        &env,
         &admin,
         &token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &resolvers,
-        &(MAX_FINALIZE_REWARD_BPS + 1),
+        MAX_FINALIZE_REWARD_BPS + 1,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidFinalizeReward)));
+    assert_eq!(result, Err(Error::InvalidFinalizeReward));
 }
 
 #[test]
@@ -1565,18 +1539,17 @@ fn evil_fixture(
             Address::generate(env),
         ],
     );
-    let contract_id = env.register(Tholos, ());
-    let client = TholosClient::new(env, &contract_id);
-
     let admin = Address::generate(env);
-    client.initialize(
+    let contract_id = register_contract(
+        env,
         &admin,
         &evil_token_id,
-        &DEFAULT_BOND,
-        &DEFAULT_WINDOW,
+        DEFAULT_BOND,
+        DEFAULT_WINDOW,
         &resolvers,
-        &0u32,
+        0u32,
     );
+    let client = TholosClient::new(env, &contract_id);
 
     (evil_token, client, contract_id, resolvers)
 }
@@ -1779,19 +1752,18 @@ mod proptest_vote_counting {
             resolvers_std.push(addr);
         }
 
-        let contract_id = env.register(Tholos, ());
-        let client = TholosClient::new(&env, &contract_id);
-        let token = token::Client::new(&env, &token_id);
         let admin = Address::generate(&env);
-
-        client.initialize(
+        let contract_id = register_contract(
+            &env,
             &admin,
             &token_id,
-            &DEFAULT_BOND,
-            &DEFAULT_WINDOW,
+            DEFAULT_BOND,
+            DEFAULT_WINDOW,
             &resolvers_sdk,
-            &0u32,
+            0u32,
         );
+        let client = TholosClient::new(&env, &contract_id);
+        let token = token::Client::new(&env, &token_id);
 
         let fixture = Fixture {
             env,
@@ -2010,17 +1982,16 @@ mod proptest_initialize_bounds {
             env.mock_all_auths();
 
             let (token_id, resolvers) = setup(&env);
-            let contract_id = env.register(Tholos, ());
-            let client = TholosClient::new(&env, &contract_id);
             let admin = Address::generate(&env);
 
-            let result = client.try_initialize(
+            let result = init(
+                &env,
                 &admin,
                 &token_id,
-                &bond_amount,
-                &challenge_window_secs,
+                bond_amount,
+                challenge_window_secs,
                 &resolvers,
-                &0u32,
+                0u32,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {
@@ -2031,7 +2002,7 @@ mod proptest_initialize_bounds {
                 ),
                 Err(expected_err) => prop_assert_eq!(
                     result,
-                    Err(Ok(expected_err)),
+                    Err(expected_err),
                     "bond {}, window {}",
                     bond_amount, challenge_window_secs
                 ),
@@ -2053,17 +2024,16 @@ mod proptest_initialize_bounds {
             env.mock_all_auths();
 
             let (token_id, resolvers) = setup(&env);
-            let contract_id = env.register(Tholos, ());
-            let client = TholosClient::new(&env, &contract_id);
             let admin = Address::generate(&env);
 
-            let result = client.try_initialize(
+            let result = init(
+                &env,
                 &admin,
                 &token_id,
-                &bond_amount,
-                &challenge_window_secs,
+                bond_amount,
+                challenge_window_secs,
                 &resolvers,
-                &0u32,
+                0u32,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {
@@ -2074,7 +2044,7 @@ mod proptest_initialize_bounds {
                 ),
                 Err(expected_err) => prop_assert_eq!(
                     result,
-                    Err(Ok(expected_err)),
+                    Err(expected_err),
                     "bond {}, window {}",
                     bond_amount, challenge_window_secs
                 ),
