@@ -171,6 +171,9 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
+    /// The incoming token transfer did not increase the contract's balance by
+    /// the full requested bond amount.
+    TransferShortfall = 23,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -607,11 +610,15 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &asserter,
-            env.current_contract_address(),
-            &bond_amount,
-        );
+        let token_client = token::Client::new(&env, &token_id);
+        let contract_address = env.current_contract_address();
+        let balance_before = token_client.balance(&contract_address);
+        token_client.transfer(&asserter, &contract_address, &bond_amount);
+        let balance_after = token_client.balance(&contract_address);
+        let delta = balance_after - balance_before;
+        if delta < bond_amount {
+            return Err(Error::TransferShortfall);
+        }
 
         Asserted {
             id,
@@ -662,11 +669,15 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &disputer,
-            env.current_contract_address(),
-            &assertion.bond,
-        );
+        let token_client = token::Client::new(&env, &token_id);
+        let contract_address = env.current_contract_address();
+        let balance_before = token_client.balance(&contract_address);
+        token_client.transfer(&disputer, &contract_address, &assertion.bond);
+        let balance_after = token_client.balance(&contract_address);
+        let delta = balance_after - balance_before;
+        if delta < assertion.bond {
+            return Err(Error::TransferShortfall);
+        }
 
         Disputed { id, disputer }.publish(&env);
 
@@ -724,20 +735,31 @@ impl Tholos {
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         let token_client = token::Client::new(&env, &token_id);
+        let contract_address = env.current_contract_address();
+        let contract_balance = token_client.balance(&contract_address);
+
+        let reward = if reward > contract_balance {
+            contract_balance
+        } else {
+            reward
+        };
 
         if reward > 0 {
             // Pay the caller their reward first, then pay the asserter the
             // remainder. Both transfers happen after the state write above, so
             // a reentrant token can't trigger a second finalize on the same id.
-            token_client.transfer(&env.current_contract_address(), &caller, &reward);
+            token_client.transfer(&contract_address, &caller, &reward);
         }
 
+        let remaining_balance = token_client.balance(&contract_address);
         let asserter_payout = assertion.bond - reward;
-        token_client.transfer(
-            &env.current_contract_address(),
-            &assertion.asserter,
-            &asserter_payout,
-        );
+        let asserter_payout = if asserter_payout > remaining_balance {
+            remaining_balance
+        } else {
+            asserter_payout
+        };
+
+        token_client.transfer(&contract_address, &assertion.asserter, &asserter_payout);
 
         Finalized {
             id,
@@ -798,7 +820,6 @@ impl Tholos {
             return Ok(None);
         };
 
-        let payout = assertion.bond * 2;
         let winner = if winner_is_asserter {
             assertion.asserter.clone()
         } else {
@@ -822,11 +843,17 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &env.current_contract_address(),
-            &winner,
-            &payout,
-        );
+        let token_client = token::Client::new(&env, &token_id);
+        let contract_address = env.current_contract_address();
+        let contract_balance = token_client.balance(&contract_address);
+        let nominal_payout = assertion.bond * 2;
+        let payout = if nominal_payout > contract_balance {
+            contract_balance
+        } else {
+            nominal_payout
+        };
+
+        token_client.transfer(&contract_address, &winner, &payout);
         Resolved {
             id,
             outcome: final_outcome,

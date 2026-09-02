@@ -67,7 +67,12 @@ export const Errors = {
    * slot without any economic risk (they receive both bonds back regardless
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
-  22: {message:"SelfDispute"}
+  22: {message:"SelfDispute"},
+  /**
+   * The incoming token transfer did not increase the contract's balance by
+   * the full requested bond amount.
+   */
+  23: {message:"TransferShortfall"}
 }
 
 export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
