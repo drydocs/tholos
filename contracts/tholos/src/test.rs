@@ -576,6 +576,78 @@ fn test_non_resolver_cannot_vote() {
 }
 
 #[test]
+fn test_resolver_who_is_asserter_cannot_vote() {
+    let f = Fixture::new();
+    let asserter = f.resolvers.get(0).unwrap();
+    f.mint(&asserter, DEFAULT_MINT);
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result_agree = f.client.try_resolve(&asserter, &id, &true);
+    assert_eq!(result_agree, Err(Ok(Error::ConflictOfInterest)));
+
+    let result_disagree = f.client.try_resolve(&asserter, &id, &false);
+    assert_eq!(result_disagree, Err(Ok(Error::ConflictOfInterest)));
+
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.voted.len(), 0);
+    assert_eq!(state.votes_for_outcome, 0);
+    assert_eq!(state.votes_against_outcome, 0);
+    assert_eq!(state.status, Status::Disputed);
+}
+
+#[test]
+fn test_resolver_who_is_disputer_cannot_vote() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.resolvers.get(0).unwrap();
+    f.mint(&disputer, DEFAULT_MINT);
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result_agree = f.client.try_resolve(&disputer, &id, &true);
+    assert_eq!(result_agree, Err(Ok(Error::ConflictOfInterest)));
+
+    let result_disagree = f.client.try_resolve(&disputer, &id, &false);
+    assert_eq!(result_disagree, Err(Ok(Error::ConflictOfInterest)));
+
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.voted.len(), 0);
+    assert_eq!(state.votes_for_outcome, 0);
+    assert_eq!(state.votes_against_outcome, 0);
+    assert_eq!(state.status, Status::Disputed);
+}
+
+#[test]
+fn test_non_conflicted_resolvers_can_resolve_when_one_resolver_is_party() {
+    let f = Fixture::new();
+    let asserter = f.resolvers.get(0).unwrap();
+    f.mint(&asserter, DEFAULT_MINT);
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let resolver_2 = f.resolvers.get(1).unwrap();
+    let resolver_3 = f.resolvers.get(2).unwrap();
+
+    let res1 = f.client.resolve(&resolver_2, &id, &true);
+    assert_eq!(res1, None);
+
+    let res2 = f.client.resolve(&resolver_3, &id, &true);
+    assert_eq!(res2, Some(true));
+
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Resolved);
+    assert_eq!(state.votes_for_outcome, 2);
+    assert_eq!(state.votes_against_outcome, 0);
+    assert_eq!(f.token.balance(&asserter), DEFAULT_MINT + DEFAULT_BOND);
+}
+
+#[test]
 fn test_resolver_cannot_vote_twice() {
     let f = Fixture::new();
     let asserter = f.funded_address();

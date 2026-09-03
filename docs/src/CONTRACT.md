@@ -185,8 +185,10 @@ Returns the asserted outcome. Fails with `ChallengeWindowOpen` if called too ear
 
 Casts one resolver's vote on a `Disputed` assertion. Requires `resolver`'s signature
 and that they're in the committee snapshotted when this assertion was disputed
-(`Assertion.resolvers`), not necessarily the live committee. Fails with `Paused` if
-paused, `NotAResolver`, `NotDisputed`, or `AlreadyVoted` as appropriate.
+(`Assertion.resolvers`), not necessarily the live committee. A resolver who is also
+the asserter or disputer of the assertion cannot vote in their own case. Fails with
+`Paused` if paused, `NotAResolver`, `NotDisputed`, `AlreadyVoted`, or
+`ConflictOfInterest` as appropriate.
 
 Returns `None` if no side has reached a strict majority yet. Once a majority agrees,
 the winning side (asserter if the majority agreed with them, disputer otherwise)
