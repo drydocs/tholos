@@ -2683,9 +2683,15 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
 
 #[test]
 fn test_reentrancy_guard_blocks_calls_before_validation() {
-    // Tests that assert_outcome, dispute, register, and withdraw enter the
-    // reentrancy guard immediately upon entry (after require_auth), returning
-    // ReentrancyGuardActive before any other validation or state lookups run.
+    // This regression test does not simulate an external callback. Instead, it
+    // holds the reentrancy guard before each entrypoint call and deliberately
+    // supplies inputs that would fail at the old pre-guard validation points:
+    // assert_outcome is paused, while dispute/register/withdraw use invalid or
+    // nonexistent assertion state. If any of those validations runs before the
+    // guard, a different error would be returned. ReentrancyGuardActive winning
+    // in every case therefore pins down the required ordering: after
+    // require_auth(), the guard must be acquired before validation or state
+    // lookups.
     let f = Fixture::new();
     let asserter = f.funded_address();
     let disputer = f.funded_address();
@@ -2702,26 +2708,28 @@ fn test_reentrancy_guard_blocks_calls_before_validation() {
             .set(&DataKey::ReentrancyGuard, &true);
     });
 
-    // assert_outcome: fails with ReentrancyGuardActive before checking pause status
+    // Without the early guard this would return Paused first.
     assert_eq!(
         f.client.try_assert_outcome(&asserter, &true),
         Err(Ok(Error::ReentrancyGuardActive))
     );
 
-    // dispute: fails with ReentrancyGuardActive before assertion lookup
+    // Without the early guard this would return AssertionNotFound first.
     assert_eq!(
         f.client.try_dispute(&disputer, &999_999),
         Err(Ok(Error::ReentrancyGuardActive))
     );
 
-    // register: fails with ReentrancyGuardActive before validation / assertion lookup
+    // Without the early guard this would reach the invalid amount/assertion
+    // validation first.
     assert_eq!(
         f.client
             .try_register(&voter, &999_999, &0i128, &commitment(&f.env, 1)),
         Err(Ok(Error::ReentrancyGuardActive))
     );
 
-    // withdraw: fails with ReentrancyGuardActive before credit check / assertion lookup
+    // Without the early guard this would reach the assertion lookup/credit
+    // validation first.
     assert_eq!(
         f.client.try_withdraw(&asserter, &999_999, &asserter),
         Err(Ok(Error::ReentrancyGuardActive))

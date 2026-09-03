@@ -852,21 +852,15 @@ impl TholosV2 {
     }
 
     /// Acquires the contract-wide reentrancy mutex, failing with
-    /// `ReentrancyGuardActive` if it's already held. Every function that
-    /// initiates an external token transfer calls this immediately before
-    /// that transfer (after writing whatever state the transfer follows,
-    /// matching the existing state-before-external-call ordering) and
-    /// `exit_reentrancy_guard` immediately after. A non-standard token
-    /// whose `transfer` implementation calls back into this contract mid-
-    /// transfer, instead of a well-behaved SEP-41 token that just updates
-    /// balances, would otherwise be able to act on state that looks
-    /// complete (because it was written before the transfer) while the
-    /// tokens backing it haven't actually moved yet.
+    /// `ReentrancyGuardActive` if it's already held. Guarded entrypoints
+    /// should call this immediately after authentication, before validation
+    /// or any state changes that a reentrant call could observe or act on.
+    /// The guard remains held through any external token transfer and must
+    /// be released with `exit_reentrancy_guard` afterward.
     ///
     /// `reveal`, `resolve_outcome`, `settle`, and `cancel_round` also check
-    /// this at their own entry, even though none of them move tokens
-    /// themselves: all four can act on a position's weight, credit, or
-    /// terminal state, which the guard above exists specifically to keep
+    /// this guard on entry so they cannot act on partially completed state
+    /// while a guarded entrypoint is in progress.
     /// provisional until its funding transfer actually completes.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
         Self::check_reentrancy_guard(env)?;
