@@ -66,7 +66,7 @@
                   "i128": "150"
                 },
                 {
-                  "i128": "10000000"
+                  "i128": "1500"
                 }
               ]
             }
@@ -483,7 +483,7 @@
                             "symbol": "max_total_weight"
                           },
                           "val": {
-                            "i128": "10000000"
+                            "i128": "1500"
                           }
                         },
                         {
@@ -562,7 +562,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "bea16dd2b9c07d0117fd494aca3f5351976ffbed6c9fd7d6946bd14c5d342278"
+                      "bytes": "4e8a18a6733c6797b89d20f8b8c8f702bc74b120ee73891bf2ada8ca3e1dbb65"
                     }
                   },
                   {
@@ -975,7 +975,7 @@
                               "symbol": "max_total_weight"
                             },
                             "val": {
-                              "i128": "10000000"
+                              "i128": "1500"
                             }
                           },
                           {

@@ -147,7 +147,7 @@ only affect assertions created after the change.
 | `timeout_default` | `TimeoutDefaultRule` | Always `AssertedOutcomeStands` today. |
 | `payout_rule` | `PayoutRuleVersion` | Always `ProRataV1` today. |
 | `max_position` | `i128` | Upper bound on any single position's size, so settlement arithmetic can't overflow. |
-| `max_total_weight` | `i128` | Upper bound on the frozen eligible total `W`, for the same reason. |
+| `max_total_weight` | `i128` | Upper bound on the frozen eligible total `W`. Also bounded by `MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position` so a single actor must split across many positions to dominate. |
 
 ### `AssertionV2`
 
@@ -178,6 +178,7 @@ only affect assertions created after the change.
 | `InvalidAntiSnipeParams` | `anti_snipe_extension_secs` exceeds `anti_snipe_hard_max_secs`, `anti_snipe_hard_max_secs` is shorter than `registration_duration_secs`, or `anti_snipe_hard_max_secs` exceeds `MAX_ANTI_SNIPE_HARD_MAX_SECS` (29 days). |
 | `InvalidMaxPosition` | `max_position` isn't positive, or exceeds `max_total_weight`. |
 | `InvalidMaxTotalWeight` | `max_total_weight` isn't positive, or exceeds `MAX_SETTLEMENT_TOTAL_WEIGHT`. |
+| `InvalidWeightRatio` | `max_total_weight` exceeds `MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position`. |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or exceeds 7 days. |
 | `InvalidFinalizeReward` | `finalize_reward_bps` exceeds `MAX_FINALIZE_REWARD_BPS` (1000). |
 | `NotPending` | Action requires `PhaseV2::Pending` but the assertion isn't. |
@@ -226,6 +227,12 @@ than `max_total_weight`. `min_resolution_bond` is always set equal to
 matching `Invalid*` error for any out-of-range parameter.
 
 ### `get_policy() -> PolicySnapshotV2`
+
+The `max_total_weight / max_position` ratio is capped at
+`MAX_TOTAL_WEIGHT_TO_POSITION_RATIO` (10). This raises the cost of
+Sybil-style address splitting but does not eliminate plutocracy: a
+coalition controlling more than half of the eligible bonded capital can
+still determine the result. See issue #168.
 
 Read-only lookup of the deployment-wide policy defaults new assertions are
 currently pinned from. Fails with `NotInitialized` before `initialize`.

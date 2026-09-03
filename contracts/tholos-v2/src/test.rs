@@ -548,6 +548,52 @@ fn test_initialize_rejects_max_total_weight_over_max_bond() {
     assert_eq!(result, Err(Ok(Error::InvalidMaxTotalWeight)));
 }
 
+
+#[test]
+fn test_initialize_accepts_max_total_weight_at_ratio_bound() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        1000i128,
+        10000i128,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_initialize_rejects_max_total_weight_above_ratio_bound() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        1000i128,
+        10001i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidWeightRatio)));
+}
 #[test]
 fn test_initialize_rejects_zero_challenge_window() {
     let env = Env::default();
@@ -1276,7 +1322,7 @@ fn test_register_exceeds_max_position_fails() {
         DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
         DEFAULT_REVEAL_SECS,
         DEFAULT_BOND + 50,
-        DEFAULT_MAX_TOTAL_WEIGHT,
+        (DEFAULT_BOND + 50) * 10,
     )
     .unwrap()
     .unwrap();
