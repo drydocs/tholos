@@ -1264,8 +1264,10 @@ fn test_register_position_amount_overflow_fails() {
     let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
-    // Lift the position and weight caps so the only bound crossed is
-    // i128::MAX itself, exercising the checked_add in register().
+    // Lift the position and weight caps to the contract's legal maximum
+    // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
+    // the only bound crossed is i128::MAX itself, exercising the
+    // checked_add in register().
     init_full(
         &client,
         &admin,
@@ -1318,8 +1320,10 @@ fn test_register_eligible_total_overflow_fails() {
     let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
 
-    // Lift the position and weight caps so the only bound crossed is
-    // i128::MAX itself, exercising the checked_sub/checked_add chain.
+    // Lift the position and weight caps to the contract's legal maximum
+    // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
+    // the only bound crossed is i128::MAX itself, exercising the
+    // checked_sub/checked_add chain.
     init_full(
         &client,
         &admin,
@@ -1339,7 +1343,9 @@ fn test_register_eligible_total_overflow_fails() {
     let voter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
     token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
-    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &1_000);
+    // Enough to clear the min-resolution-bond gate; the transfer never
+    // executes because the arithmetic overflows first.
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &DEFAULT_BOND);
 
     let id = client.assert_outcome(&asserter, &true);
     client.dispute(&disputer, &id);
