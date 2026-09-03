@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Events, Ledger};
+use soroban_sdk::xdr;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_CHALLENGE_WINDOW: u64 = 3600;
@@ -1443,6 +1444,24 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
 
     f.advance_past_registration_deadline(id);
     f.client.reveal(&voter, &id, &true, &s);
+
+    // Auto-reveal of the asserter and disputer fixed positions must each emit
+    // a Revealed event, in addition to the explicit Revealed event from the
+    // external voter's reveal() call.
+    let contract_events = f.env.events().all();
+    let all_events = contract_events.events();
+    let mut revealed_count: u32 = 0;
+    for event in all_events.iter() {
+        let xdr::ContractEventBody::V0(event_data) = &event.body;
+        if event_data.topics.len() == 2 {
+            if let xdr::ScVal::Symbol(topic0) = &event_data.topics[0] {
+                if topic0.to_utf8_string().unwrap_or_default() == "revealed" {
+                    revealed_count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(revealed_count, 3, "expected asserter, disputer, and voter Revealed events");
 
     let assertion = f.client.get_assertion(&id);
     assert_eq!(assertion.phase, PhaseV2::Reveal);
