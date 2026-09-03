@@ -147,7 +147,7 @@ only affect assertions created after the change.
 | `timeout_default` | `TimeoutDefaultRule` | Always `AssertedOutcomeStands` today. |
 | `payout_rule` | `PayoutRuleVersion` | Always `ProRataV1` today. |
 | `max_position` | `i128` | Upper bound on any single position's size, so settlement arithmetic can't overflow. |
-| `max_total_weight` | `i128` | Upper bound on the frozen eligible total `W`, for the same reason. |
+| `max_total_weight` | `i128` | Upper bound on the frozen eligible total `W`, for the same reason. Also bounded by `MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position`. |
 
 ### `AssertionV2`
 
@@ -178,6 +178,7 @@ only affect assertions created after the change.
 | `InvalidAntiSnipeParams` | `anti_snipe_extension_secs` exceeds `anti_snipe_hard_max_secs`, `anti_snipe_hard_max_secs` is shorter than `registration_duration_secs`, or `anti_snipe_hard_max_secs` exceeds `MAX_ANTI_SNIPE_HARD_MAX_SECS` (29 days). |
 | `InvalidMaxPosition` | `max_position` isn't positive, or exceeds `max_total_weight`. |
 | `InvalidMaxTotalWeight` | `max_total_weight` isn't positive, or exceeds `MAX_SETTLEMENT_TOTAL_WEIGHT`. |
+| `InvalidWeightRatio` | `max_total_weight` exceeds `MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position`. |
 | `InvalidChallengeWindow` | `challenge_window_secs` is zero or exceeds 7 days. |
 | `InvalidFinalizeReward` | `finalize_reward_bps` exceeds `MAX_FINALIZE_REWARD_BPS` (1000). |
 | `NotPending` | Action requires `PhaseV2::Pending` but the assertion isn't. |
@@ -221,7 +222,9 @@ and at most 7 days. `finalize_reward_bps` must be at most 1000.
 `max_total_weight` must be positive and no greater than
 `MAX_SETTLEMENT_TOTAL_WEIGHT` (so settlement's forfeiture-distribution
 multiply can't overflow); `max_position` must be positive and no greater
-than `max_total_weight`. `min_resolution_bond` is always set equal to
+than `max_total_weight`. In addition, `max_total_weight` must not exceed
+`MAX_TOTAL_WEIGHT_TO_POSITION_RATIO` (10) multiplied by `max_position`
+(raising Sybil-splitting cost). `min_resolution_bond` is always set equal to
 `base_bond`. Fails with `AlreadyInitialized` if called twice, or the
 matching `Invalid*` error for any out-of-range parameter.
 
@@ -553,6 +556,19 @@ assertion's history without polling `get_assertion`:
 is required unconditionally, so this value is always verified regardless
 of whether `finalize_reward_bps` is non-zero, the same guarantee v1's
 `Finalized` event carries.
+
+## Sybil resistance and residual plutocratic risk
+
+`initialize` enforces `max_total_weight <= MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position`
+(with ratio = 10). This caps the number of maximum-sized "seats" a single participant can occupy
+in a dispute, requiring an attacker seeking a strict majority (>50% of `W`) to fund and coordinate
+across at least 6 distinct maximum-stake accounts.
+
+As documented in `docs/src/V2_RESOLUTION.md`, linear stake-weighting without external identity
+verification cannot eliminate plutocratic risk: an actor or coalition controlling more than half
+of the eligible bonded capital can always dictate the resolution outcome. Bounding the ratio
+ensures that deployments enforce a minimum capital fragmentation cost on attackers while retaining
+flexibility for legitimate participants.
 
 ## Known gaps
 
