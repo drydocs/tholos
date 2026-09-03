@@ -171,6 +171,10 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
+    /// A resolver attempted to vote on an assertion where they are also the
+    /// asserter or the disputer. Voting in their own case is a conflict of
+    /// interest and, in a size-1 committee, lets them guarantee the outcome.
+    SelfVote = 23,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -775,6 +779,11 @@ impl Tholos {
         }
         if assertion.voted.contains(&resolver) {
             return Err(Error::AlreadyVoted);
+        }
+
+        // A resolver may not vote on their own case.
+        if resolver == assertion.asserter || assertion.disputer.as_ref() == Some(&resolver) {
+            return Err(Error::SelfVote);
         }
 
         assertion.voted.push_back(resolver);

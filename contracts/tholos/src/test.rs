@@ -201,6 +201,74 @@ fn test_resolve_records_asserted_outcome_when_asserter_wins() {
 }
 
 #[test]
+fn test_asserter_resolver_cannot_vote_on_own_case() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, mut resolvers) = setup(&env);
+    let _token = token::Client::new(&env, &token_id);
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    // Make the asserter the first resolver so they are in the committee.
+    resolvers.set(0, asserter.clone());
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    let result = client.try_resolve(&asserter, &id, &true);
+    assert_eq!(result, Err(Ok(Error::SelfVote)));
+}
+
+#[test]
+fn test_disputer_resolver_cannot_vote_on_own_case() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, mut resolvers) = setup(&env);
+    let _token = token::Client::new(&env, &token_id);
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    // Make the disputer the first resolver so they are in the committee.
+    resolvers.set(0, disputer.clone());
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    let result = client.try_resolve(&disputer, &id, &false);
+    assert_eq!(result, Err(Ok(Error::SelfVote)));
+}
+
+#[test]
 fn test_cannot_initialize_with_even_resolver_count() {
     let env = Env::default();
     env.mock_all_auths();
