@@ -67,6 +67,9 @@
                 },
                 {
                   "i128": "10000000"
+                },
+                {
+                  "u32": 5000
                 }
               ]
             }
@@ -269,7 +272,7 @@
                   "i128": "100"
                 },
                 {
-                  "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                  "bytes": "e653efc50334a39b095b1b133998e0d7a8f7e9dbcb167db3dba4875c2d68bf31"
                 }
               ]
             }
@@ -318,7 +321,7 @@
                   "i128": "100"
                 },
                 {
-                  "bytes": "be42486cce715c0383b3232c3162b59ade73a259a39105b5020698642367181d"
+                  "bytes": "ab1635c9cf3f334cad74ae1651dfce15aaa2d0e83a588f042687eec503bf6da8"
                 }
               ]
             }
@@ -695,6 +698,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "reveal_quorum_bps"
+                          },
+                          "val": {
+                            "u32": 5000
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "timeout_default"
                           },
                           "val": {
@@ -733,7 +744,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "d447481bc4436059290521fcb6e05656686b9e86e5523def087dd10087e291d4"
+                      "bytes": "9e2ee2a3c227a71c041c479f4dbb38092989179bea8c407baca3704a77d38955"
                     }
                   },
                   {
@@ -961,7 +972,7 @@
                           "symbol": "External"
                         },
                         {
-                          "bytes": "190ffe35062c9c53c24c4548b4d21d3c998ff1cca1e40aee8f4205c31c41aba0"
+                          "bytes": "e653efc50334a39b095b1b133998e0d7a8f7e9dbcb167db3dba4875c2d68bf31"
                         }
                       ]
                     }
@@ -1037,7 +1048,7 @@
                           "symbol": "External"
                         },
                         {
-                          "bytes": "be42486cce715c0383b3232c3162b59ade73a259a39105b5020698642367181d"
+                          "bytes": "ab1635c9cf3f334cad74ae1651dfce15aaa2d0e83a588f042687eec503bf6da8"
                         }
                       ]
                     }
@@ -1341,6 +1352,14 @@
                             },
                             "val": {
                               "u64": "3600"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "reveal_quorum_bps"
+                            },
+                            "val": {
+                              "u32": 5000
                             }
                           },
                           {

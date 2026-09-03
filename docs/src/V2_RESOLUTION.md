@@ -335,20 +335,33 @@ revealed but the tallies are tied, the optimistic default is already irreversibl
 and can be applied immediately.
 
 If neither side crosses the threshold before the reveal deadline, the asserted
-outcome stands. This optimistic default is recommended because it:
+outcome stands under the optimistic timeout default, provided that total revealed
+weight satisfies the policy's reveal quorum:
 
-- gives every dispute a bounded terminal result;
+```text
+revealed_weight x 10_000 >= eligible_total x reveal_quorum_bps
+```
+
+If revealed weight meets this quorum, `OptimisticTimeout` locks and the asserted
+outcome stands. If revealed weight falls below `reveal_quorum_bps`, `resolve_outcome`
+rejects the transition with `Error::RevealQuorumNotMet`. This bounds the asymmetry:
+a malicious asserter cannot register massive unrevealed stake to dilute honest
+voters below `W / 2` while forcing an optimistic default, unless it is also willing
+to reveal enough weight to satisfy the quorum. When quorum fails, the round remains
+in `PhaseV2::Reveal`, allowing the administrator to pause and cancel the round via
+`cancel_round`, refunding all participants.
+
+This optimistic default is recommended because it:
+
+- gives every dispute a bounded terminal result when quorum is satisfied;
 - does not restore an admin or committee as a tie-breaker;
 - makes a challenger bear the burden of assembling more bonded weight against an
   assertion; and
 - is consistent with the existing rule that an uncontested assertion finalizes
   as stated.
 
-This asymmetry is broader than tie-breaking. For example, if 1% of eligible
-weight reveals for the assertion, 49% reveals against, and 50% does not reveal,
-the assertion still stands because neither revealed side exceeded half of `W`.
-Non-revealed weight is therefore functionally delegated to the status quo for the
-outcome, even though its positions are penalized in settlement.
+When `reveal_quorum_bps` is satisfied, non-revealed weight functionally delegates
+to the status quo for the outcome, while losing positions forfeit under settlement.
 
 The cost is real: an evenly split dispute favors the asserter. The principal
 alternative is a terminal `Inconclusive` state that delegates fallback to the

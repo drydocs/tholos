@@ -67,6 +67,9 @@
                 },
                 {
                   "i128": "10000000"
+                },
+                {
+                  "u32": 5000
                 }
               ]
             }
@@ -484,6 +487,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "reveal_quorum_bps"
+                          },
+                          "val": {
+                            "u32": 5000
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "timeout_default"
                           },
                           "val": {
@@ -522,7 +533,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "2224b08733df84ca9ba9c6b4b514eb330eb3fd29499beaa6b6956480eef0eb81"
+                      "bytes": "845b71c7b5329260d1c9fc87fa40dc003d241afb480242968ef26fd6d773da6e"
                     }
                   },
                   {
@@ -972,6 +983,14 @@
                             },
                             "val": {
                               "u64": "604800"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "reveal_quorum_bps"
+                            },
+                            "val": {
+                              "u32": 5000
                             }
                           },
                           {

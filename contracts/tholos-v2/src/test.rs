@@ -17,6 +17,7 @@ const DEFAULT_ANTI_SNIPE_HARD_MAX_SECS: u64 = 3900;
 const DEFAULT_REVEAL_SECS: u64 = 3600;
 const DEFAULT_MAX_POSITION: i128 = 1_000_000;
 const DEFAULT_MAX_TOTAL_WEIGHT: i128 = 10_000_000;
+const DEFAULT_REVEAL_QUORUM_BPS: u32 = 5_000;
 const DEFAULT_MINT: i128 = 1_000;
 
 fn setup(env: &Env) -> Address {
@@ -57,6 +58,7 @@ fn init(
         &DEFAULT_REVEAL_SECS,
         &DEFAULT_MAX_POSITION,
         &DEFAULT_MAX_TOTAL_WEIGHT,
+        &DEFAULT_REVEAL_QUORUM_BPS,
     )
 }
 
@@ -87,11 +89,12 @@ fn init_full(
         &reveal_duration_secs,
         &max_position,
         &max_total_weight,
+        &DEFAULT_REVEAL_QUORUM_BPS,
     )
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn with_quorum(reveal_quorum_bps: u32) -> Self {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -102,16 +105,23 @@ impl Fixture {
         let client = TholosV2Client::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
-        init(
-            &client,
-            &admin,
-            &token_id,
-            DEFAULT_BOND,
-            DEFAULT_CHALLENGE_WINDOW,
-            DEFAULT_FINALIZE_REWARD_BPS,
-        )
-        .unwrap()
-        .unwrap();
+        client
+            .try_initialize(
+                &admin,
+                &token_id,
+                &DEFAULT_BOND,
+                &DEFAULT_CHALLENGE_WINDOW,
+                &DEFAULT_FINALIZE_REWARD_BPS,
+                &DEFAULT_REGISTRATION_SECS,
+                &DEFAULT_ANTI_SNIPE_EXT_SECS,
+                &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+                &DEFAULT_REVEAL_SECS,
+                &DEFAULT_MAX_POSITION,
+                &DEFAULT_MAX_TOTAL_WEIGHT,
+                &reveal_quorum_bps,
+            )
+            .unwrap()
+            .unwrap();
 
         Fixture {
             env,
@@ -119,6 +129,10 @@ impl Fixture {
             token,
             admin,
         }
+    }
+
+    fn new() -> Self {
+        Self::with_quorum(DEFAULT_REVEAL_QUORUM_BPS)
     }
 
     fn generate(&self) -> Address {
@@ -227,6 +241,7 @@ fn test_initialize_pins_expected_policy() {
     assert_eq!(policy.payout_rule, PayoutRuleVersion::ProRataV1);
     assert_eq!(policy.max_position, DEFAULT_MAX_POSITION);
     assert_eq!(policy.max_total_weight, DEFAULT_MAX_TOTAL_WEIGHT);
+    assert_eq!(policy.reveal_quorum_bps, DEFAULT_REVEAL_QUORUM_BPS);
 }
 
 #[test]
@@ -545,6 +560,86 @@ fn test_initialize_rejects_max_total_weight_over_max_bond() {
         MAX_BOND_AMOUNT + 1,
     );
     assert_eq!(result, Err(Ok(Error::InvalidMaxTotalWeight)));
+}
+
+#[test]
+fn test_initialize_rejects_reveal_quorum_over_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_CHALLENGE_WINDOW,
+        &DEFAULT_FINALIZE_REWARD_BPS,
+        &DEFAULT_REGISTRATION_SECS,
+        &DEFAULT_ANTI_SNIPE_EXT_SECS,
+        &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        &DEFAULT_REVEAL_SECS,
+        &DEFAULT_MAX_POSITION,
+        &DEFAULT_MAX_TOTAL_WEIGHT,
+        &(MAX_REVEAL_QUORUM_BPS + 1),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidRevealQuorum)));
+}
+
+#[test]
+fn test_initialize_accepts_reveal_quorum_at_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_CHALLENGE_WINDOW,
+        &DEFAULT_FINALIZE_REWARD_BPS,
+        &DEFAULT_REGISTRATION_SECS,
+        &DEFAULT_ANTI_SNIPE_EXT_SECS,
+        &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        &DEFAULT_REVEAL_SECS,
+        &DEFAULT_MAX_POSITION,
+        &DEFAULT_MAX_TOTAL_WEIGHT,
+        &MAX_REVEAL_QUORUM_BPS,
+    );
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_policy().reveal_quorum_bps, MAX_REVEAL_QUORUM_BPS);
+}
+
+#[test]
+fn test_initialize_accepts_reveal_quorum_at_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_CHALLENGE_WINDOW,
+        &DEFAULT_FINALIZE_REWARD_BPS,
+        &DEFAULT_REGISTRATION_SECS,
+        &DEFAULT_ANTI_SNIPE_EXT_SECS,
+        &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        &DEFAULT_REVEAL_SECS,
+        &DEFAULT_MAX_POSITION,
+        &DEFAULT_MAX_TOTAL_WEIGHT,
+        &0,
+    );
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_policy().reveal_quorum_bps, 0);
 }
 
 #[test]
@@ -2014,6 +2109,198 @@ fn test_optimistic_timeout_when_neither_side_reaches_majority_by_deadline() {
 }
 
 #[test]
+fn test_optimistic_timeout_fails_when_reveal_quorum_not_met() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let revealed_voter = f.funded_address();
+    let never_revealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let v_salt = salt(&f.env, 1);
+    let v_comm = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &revealed_voter,
+        true,
+        &v_salt,
+    );
+
+    f.client.register(&revealed_voter, &id, &200, &v_comm);
+    f.client
+        .register(&never_revealed_voter, &id, &600, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&revealed_voter, &id, &true, &v_salt);
+
+    let mid_assertion = f.client.get_assertion(&id);
+    assert_eq!(mid_assertion.phase, PhaseV2::Reveal);
+    assert_eq!(mid_assertion.terminal_cause, TerminalCause::NotYetDecided);
+
+    f.advance_past_reveal_deadline(id);
+    let result = f.client.try_resolve_outcome(&id);
+    assert_eq!(result, Err(Ok(Error::RevealQuorumNotMet)));
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Reveal);
+    assert_eq!(assertion.terminal_cause, TerminalCause::NotYetDecided);
+    assert_eq!(assertion.final_outcome, None);
+}
+
+#[test]
+fn test_admin_cancel_recovers_funds_when_quorum_deadlocked() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let revealed_voter = f.funded_address();
+    let attacker = f.funded_address();
+
+    let asserter_initial = f.token.balance(&asserter);
+    let disputer_initial = f.token.balance(&disputer);
+    let voter_initial = f.token.balance(&revealed_voter);
+    let attacker_initial = f.token.balance(&attacker);
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let v_salt = salt(&f.env, 1);
+    let v_comm = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &revealed_voter,
+        true,
+        &v_salt,
+    );
+
+    f.client.register(&revealed_voter, &id, &200, &v_comm);
+    f.client
+        .register(&attacker, &id, &600, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&revealed_voter, &id, &true, &v_salt);
+    f.advance_past_reveal_deadline(id);
+
+    let res = f.client.try_resolve_outcome(&id);
+    assert_eq!(res, Err(Ok(Error::RevealQuorumNotMet)));
+
+    f.client.set_paused_v2(&true);
+    let cancel_res = f.client.try_cancel_round(&id);
+    assert_eq!(cancel_res, Ok(Ok(())));
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.terminal_cause, TerminalCause::AdminCancelled);
+
+    f.client.settle(&id, &asserter);
+    f.client.settle(&id, &disputer);
+    f.client.settle(&id, &revealed_voter);
+    f.client.settle(&id, &attacker);
+
+    f.client.withdraw(&asserter, &id, &asserter);
+    f.client.withdraw(&disputer, &id, &disputer);
+    f.client.withdraw(&revealed_voter, &id, &revealed_voter);
+    f.client.withdraw(&attacker, &id, &attacker);
+
+    assert_eq!(f.token.balance(&asserter), asserter_initial);
+    assert_eq!(f.token.balance(&disputer), disputer_initial);
+    assert_eq!(f.token.balance(&revealed_voter), voter_initial);
+    assert_eq!(f.token.balance(&attacker), attacker_initial);
+}
+
+#[test]
+fn test_strict_majority_resolves_even_if_below_reveal_quorum() {
+    let f = Fixture::with_quorum(8_000);
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let agree_voter = f.funded_address();
+    let never_revealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let agree_salt = salt(&f.env, 1);
+    let agree_commitment = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &agree_voter,
+        true,
+        &agree_salt,
+    );
+
+    f.client
+        .register(&agree_voter, &id, &500, &agree_commitment);
+    f.client
+        .register(&never_revealed_voter, &id, &300, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&agree_voter, &id, &true, &agree_salt);
+
+    let mid_assertion = f.client.get_assertion(&id);
+    assert_eq!(
+        mid_assertion.terminal_cause,
+        TerminalCause::StrictMajorityFor
+    );
+
+    f.advance_past_reveal_deadline(id);
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::StrictMajorityFor);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.final_outcome, Some(true));
+}
+
+#[test]
+fn test_zero_reveal_quorum_permits_optimistic_timeout_with_low_reveals() {
+    let f = Fixture::with_quorum(0);
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let revealed_voter = f.funded_address();
+    let never_revealed_voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+    let v_salt = salt(&f.env, 1);
+    let v_comm = compute_commitment(
+        &f.env,
+        &f.client.address,
+        &policy_hash,
+        id,
+        &revealed_voter,
+        true,
+        &v_salt,
+    );
+
+    f.client.register(&revealed_voter, &id, &200, &v_comm);
+    f.client
+        .register(&never_revealed_voter, &id, &600, &commitment(&f.env, 9));
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&revealed_voter, &id, &true, &v_salt);
+    f.advance_past_reveal_deadline(id);
+
+    let cause = f.client.resolve_outcome(&id);
+    assert_eq!(cause, TerminalCause::OptimisticTimeout);
+
+    let assertion = f.client.get_assertion(&id);
+    assert_eq!(assertion.phase, PhaseV2::Resolved);
+    assert_eq!(assertion.final_outcome, Some(true));
+}
+
+#[test]
 fn test_settle_strict_majority_conserves_pool_and_pays_dust_to_asserter() {
     let f = Fixture::new();
     let asserter = f.funded_address();
@@ -3050,7 +3337,7 @@ mod proptest_settlement {
     /// disputer, and every registered voter) for the caller to compute
     /// expected payouts from and settle.
     fn run_scenario(voter_specs: &[Voter]) -> (Fixture, u64, StdVec<SettledPosition>) {
-        let f = Fixture::new();
+        let f = Fixture::with_quorum(0);
         let asserter = f.funded_address();
         let disputer = f.funded_address();
 
@@ -3398,4 +3685,94 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
         DEFAULT_MAX_TOTAL_WEIGHT,
     );
     assert_eq!(result, Ok(Ok(())));
+}
+
+mod proptest_reveal_quorum {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 25,
+            fork: false,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_reveal_quorum_boundary(
+            quorum_bps in 0u32..=10_000u32,
+            voter2_amount in DEFAULT_BOND..=600i128,
+            voter2_reveals in any::<bool>(),
+        ) {
+            let f = Fixture::with_quorum(quorum_bps);
+            let asserter = f.funded_address();
+            let disputer = f.funded_address();
+            let voter1 = f.funded_address();
+            let voter2 = f.funded_address();
+
+            let id = f.asserted(&asserter);
+            f.client.dispute(&disputer, &id);
+            let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+            let v1_salt = salt(&f.env, 41);
+            let v1_comm = compute_commitment(
+                &f.env,
+                &f.client.address,
+                &policy_hash,
+                id,
+                &voter1,
+                false,
+                &v1_salt,
+            );
+            f.client.register(&voter1, &id, &200, &v1_comm);
+
+            let v2_salt = salt(&f.env, 42);
+            let v2_comm = compute_commitment(
+                &f.env,
+                &f.client.address,
+                &policy_hash,
+                id,
+                &voter2,
+                false,
+                &v2_salt,
+            );
+            f.client.register(&voter2, &id, &voter2_amount, &v2_comm);
+
+            f.advance_past_registration_deadline(id);
+
+            f.client.reveal(&voter1, &id, &false, &v1_salt);
+            if voter2_reveals {
+                f.client.reveal(&voter2, &id, &false, &v2_salt);
+            }
+
+            f.advance_past_reveal_deadline(id);
+
+            let eligible = DEFAULT_BOND + DEFAULT_BOND + 200 + voter2_amount;
+            let revealed = if voter2_reveals {
+                DEFAULT_BOND + DEFAULT_BOND + 200 + voter2_amount
+            } else {
+                DEFAULT_BOND + DEFAULT_BOND + 200
+            };
+
+            let res = f.client.try_resolve_outcome(&id);
+
+            let disagree_total = if voter2_reveals {
+                DEFAULT_BOND + 200 + voter2_amount
+            } else {
+                DEFAULT_BOND + 200
+            };
+            let strict_majority = disagree_total > eligible - disagree_total;
+
+            if strict_majority {
+                prop_assert_eq!(res, Ok(Ok(TerminalCause::StrictMajorityAgainst)));
+            } else {
+                let quorum_met = revealed.saturating_mul(10_000) >= eligible.saturating_mul(quorum_bps as i128);
+                if quorum_met {
+                    prop_assert_eq!(res, Ok(Ok(TerminalCause::OptimisticTimeout)));
+                } else {
+                    prop_assert_eq!(res, Err(Ok(Error::RevealQuorumNotMet)));
+                }
+            }
+        }
+    }
 }

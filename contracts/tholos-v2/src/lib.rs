@@ -403,6 +403,9 @@ pub struct PolicySnapshotV2 {
     pub max_position: i128,
     /// Upper bound on the frozen eligible total `W`, for the same reason.
     pub max_total_weight: i128,
+    /// Minimum revealed weight in basis points (0-10,000) of frozen eligible
+    /// total `W` required for the optimistic timeout default to apply.
+    pub reveal_quorum_bps: u32,
 }
 
 #[contracttype]
@@ -564,6 +567,12 @@ pub enum Error {
     /// Rejected outright rather than treated as a no-op, so this call can
     /// never be read as altering an already-decided result.
     RoundAlreadyDecided = 36,
+    /// `initialize` called with `reveal_quorum_bps > MAX_REVEAL_QUORUM_BPS`.
+    InvalidRevealQuorum = 37,
+    /// `resolve_outcome` called after `reveal_deadline` passed without either
+    /// side assembling a strict majority, and the revealed weight is below the
+    /// policy's `reveal_quorum_bps` threshold.
+    RevealQuorumNotMet = 38,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -600,6 +609,9 @@ const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 /// here since the uncontested-finalize case works identically in both
 /// versions.
 const MAX_FINALIZE_REWARD_BPS: u32 = 1_000;
+/// 10_000 bps (100%) is the maximum possible reveal quorum: every registered
+/// position must reveal for the optimistic timeout default to apply.
+const MAX_REVEAL_QUORUM_BPS: u32 = 10_000;
 
 /// Bound on `base_bond` so `finalize`'s reward-multiply
 /// (`bond * finalize_reward_bps`, computed before the divide by 10,000) can't
@@ -656,6 +668,7 @@ impl TholosV2 {
         reveal_duration_secs: u64,
         max_position: i128,
         max_total_weight: i128,
+        reveal_quorum_bps: u32,
     ) -> Result<(), Error> {
         admin.require_auth();
 
@@ -708,6 +721,9 @@ impl TholosV2 {
         if max_position <= 0 || max_position > max_total_weight {
             return Err(Error::InvalidMaxPosition);
         }
+        if reveal_quorum_bps > MAX_REVEAL_QUORUM_BPS {
+            return Err(Error::InvalidRevealQuorum);
+        }
 
         let policy = PolicySnapshotV2 {
             token,
@@ -727,6 +743,7 @@ impl TholosV2 {
             payout_rule: PayoutRuleVersion::ProRataV1,
             max_position,
             max_total_weight,
+            reveal_quorum_bps,
         };
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -1324,7 +1341,7 @@ impl TholosV2 {
         id: u64,
         mut assertion: AssertionV2,
         mut resolution: Resolution,
-    ) -> (AssertionV2, Resolution) {
+    ) -> Result<(AssertionV2, Resolution), Error> {
         let now = env.ledger().timestamp();
 
         assertion.phase = PhaseV2::Reveal;
@@ -1364,9 +1381,9 @@ impl TholosV2 {
         }
         .publish(env);
 
-        assertion = Self::close_reveal_if_ready(env, id, assertion, &resolution, false);
+        assertion = Self::close_reveal_if_ready(env, id, assertion, &resolution, false)?;
 
-        (assertion, resolution)
+        Ok((assertion, resolution))
     }
 
     /// Locks `assertion.terminal_cause`/`final_outcome` the moment either
@@ -1399,29 +1416,32 @@ impl TholosV2 {
     /// frozen eligible total `W` (nothing left that could still change the
     /// result). Always attempts `lock_outcome_if_undecided` first; if
     /// neither side ever reached strict majority by the time it closes,
-    /// applies `TimeoutDefaultRule::AssertedOutcomeStands`
+    /// checks that `revealed_weight` meets the policy's `reveal_quorum_bps`
+    /// before applying `TimeoutDefaultRule::AssertedOutcomeStands`
     /// (`terminal_cause = OptimisticTimeout`, `final_outcome = outcome`) as
-    /// the fallback. Always persists `assertion` (an early lock, or the
-    /// phase change a caller made before calling this, must survive even on
-    /// a call that doesn't close: see `PhaseV2::Reveal`'s doc comment on why
-    /// an early lock doesn't by itself stop further reveals); only emits
-    /// `Resolved` when it actually closes.
+    /// the fallback. If quorum is not met, returns `Error::RevealQuorumNotMet`.
     fn close_reveal_if_ready(
         env: &Env,
         id: u64,
         mut assertion: AssertionV2,
         resolution: &Resolution,
         force_close: bool,
-    ) -> AssertionV2 {
+    ) -> Result<AssertionV2, Error> {
         Self::lock_outcome_if_undecided(&mut assertion, resolution);
 
         let ready = force_close || resolution.revealed_weight() >= resolution.eligible_total;
         if !ready {
             Self::set_assertion(env, id, &assertion);
-            return assertion;
+            return Ok(assertion);
         }
 
         if assertion.terminal_cause == TerminalCause::NotYetDecided {
+            let revealed = resolution.revealed_weight();
+            let eligible = resolution.eligible_total;
+            let quorum_bps = assertion.policy.reveal_quorum_bps as i128;
+            if revealed.saturating_mul(10_000) < eligible.saturating_mul(quorum_bps) {
+                return Err(Error::RevealQuorumNotMet);
+            }
             assertion.terminal_cause = TerminalCause::OptimisticTimeout;
             assertion.final_outcome = Some(assertion.outcome);
         }
@@ -1437,7 +1457,7 @@ impl TholosV2 {
         }
         .publish(env);
 
-        assertion
+        Ok(assertion)
     }
 
     /// Discloses the side an `External` position committed to during
@@ -1504,7 +1524,7 @@ impl TholosV2 {
             if env.ledger().timestamp() <= resolution.registration_deadline {
                 return Err(Error::RegistrationNotClosed);
             }
-            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution);
+            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution)?;
         }
 
         if env.ledger().timestamp() > resolution.reveal_deadline {
@@ -1554,10 +1574,7 @@ impl TholosV2 {
         }
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        // Not force_close: this reveal happened before reveal_deadline (the
-        // check above already ruled out the alternative), so closing here
-        // only happens if this reveal was the last weight outstanding.
-        Self::close_reveal_if_ready(&env, id, assertion, &resolution, false);
+        Self::close_reveal_if_ready(&env, id, assertion, &resolution, false)?;
 
         Revealed { id, voter, choice }.publish(&env);
 
@@ -1616,7 +1633,7 @@ impl TholosV2 {
             if env.ledger().timestamp() <= resolution.registration_deadline {
                 return Err(Error::RegistrationNotClosed);
             }
-            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution);
+            (assertion, resolution) = Self::open_reveal_phase(&env, id, assertion, resolution)?;
         }
 
         if assertion.phase == PhaseV2::Resolved {
@@ -1628,7 +1645,7 @@ impl TholosV2 {
             return Err(Error::RevealNotClosed);
         }
 
-        assertion = Self::close_reveal_if_ready(&env, id, assertion, &resolution, true);
+        assertion = Self::close_reveal_if_ready(&env, id, assertion, &resolution, true)?;
 
         Ok(assertion.terminal_cause)
     }

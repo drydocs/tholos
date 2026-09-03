@@ -568,6 +568,177 @@ increase `T_rev`. If `T_hard` would exceed your acceptable total dispute lifetim
 
 ---
 
+## Part 4: Withheld-reveal manipulation and reveal-quorum analysis
+
+### The withheld-reveal attack vector
+
+In protocol v2, an assertion disputed by a counterparty enters registration, where third
+parties can bond additional stake. When registration closes, the eligible total `W` is
+frozen. Outcome determination relies on two distinct mechanisms:
+
+1. **Strict majority**: if either side reveals strictly more than `W / 2`, that side locks
+   immediately as `StrictMajorityFor` or `StrictMajorityAgainst`.
+2. **Optimistic timeout default**: if neither side reaches strict majority before
+   `reveal_deadline`, the originally asserted outcome stands as `OptimisticTimeout`.
+
+Without a reveal quorum, this structure introduces a strategic withholding vulnerability
+for malicious asserters. Consider an attacker who asserts a false claim and faces an honest
+challenger:
+
+- Asserter posts `base_bond = B`.
+- Disputer posts `base_bond = B`.
+- Honest third-party participants observe the false assertion and register stake `S_H` on the
+  disagreeing side.
+- To prevent honest defenders from reaching strict majority, the attacker registers stake
+  `S_A` during registration under sybil addresses.
+- At the registration cutoff, eligible weight is frozen at:
+  ```text
+  W = 2B + S_H + S_A
+  ```
+
+For honest defenders to overturn the false claim by strict majority, revealed disagreeing
+weight must exceed `W / 2`:
+```text
+B + S_H > W / 2 = B + (S_H + S_A) / 2
+  -> S_H > S_A
+```
+
+If the attacker has bonded `S_A >= S_H`, honest defenders cannot reach strict majority.
+Now consider the reveal phase:
+- If the attacker reveals `S_A` for the assertion, it risks honest voters observing the
+  proceedings or counter-reveals occurring. More importantly, if `S_A < B + S_H`, revealing
+  does not guarantee victory.
+- If the attacker **intentionally withholds revealing** `S_A`, then `S_A` remains silent. It
+  sits in the denominator `W` without casting votes.
+- Disagreeing revealed weight is `B + S_H <= W / 2`.
+- Agreeing revealed weight is `B < W / 2`.
+- When `reveal_deadline` passes, neither side has reached a strict majority.
+
+Without a reveal quorum, `resolve_outcome` resolves as `OptimisticTimeout`. The false assertion
+stands. Under timeout settlement:
+- All revealed positions (`2B + S_H`) recover principal and share the forfeited silent stake `S_A`.
+- The attacker forfeits `S_A`.
+- However, if the external value `V` extracted by finalizing the false assertion exceeds the
+  forfeited stake `S_A` (`V > S_A`), the attack yields a net positive profit of `V - S_A`.
+
+By flooding registration with silent capital, an attacker could artificially suppress honest
+voters below `W / 2` and force an optimistic timeout victory.
+
+---
+
+### Mathematical model and quorum defense
+
+To eliminate this manipulation vector, `PolicySnapshotV2` introduces `reveal_quorum_bps`:
+a minimum basis point threshold (where `10_000 bps = 100%`) of eligible weight `W` that must
+be revealed before an optimistic timeout default is permitted to resolve.
+
+Let:
+- `Q = reveal_quorum_bps / 10_000` (where `0 <= Q <= 1`).
+- `R = F + A` be total revealed weight at deadline expiration.
+
+The contract enforces:
+```text
+R x 10_000 >= W x reveal_quorum_bps
+```
+
+If `terminal_cause == NotYetDecided` at `reveal_deadline` and `R < Q x W`, `resolve_outcome`
+aborts with `Error::RevealQuorumNotMet`.
+
+#### Proof of defense against withheld-reveal suppression
+
+Assume an attacker attempts to suppress an honest majority `S_H` by withholding stake `S_A`.
+At the deadline, revealed weight is at most:
+```text
+R = 2B + S_H
+```
+(assuming both fixed parties and all honest third-party voters reveal).
+
+For the attack to succeed, the attacker must simultaneously satisfy two conflicting conditions:
+
+1. **Suppression condition (prevent strict majority)**:
+   ```text
+   B + S_H <= W / 2 = B + (S_H + S_A) / 2
+     -> S_A >= S_H
+   ```
+
+2. **Quorum condition (allow optimistic timeout to resolve)**:
+   ```text
+   R >= Q x W
+     -> 2B + S_H >= Q x (2B + S_H + S_A)
+     -> (1 - Q)(2B + S_H) >= Q x S_A
+     -> S_A <= ((1 - Q) / Q) x (2B + S_H)
+   ```
+
+Combining both bounds yields the attacker's feasible withholding interval:
+```text
+S_H <= S_A <= ((1 - Q) / Q) x (2B + S_H)
+```
+
+A non-empty feasible interval requires:
+```text
+S_H <= ((1 - Q) / Q) x (2B + S_H)
+  -> Q x S_H <= (1 - Q)(2B + S_H) = 2B(1 - Q) + S_H - Q x S_H
+  -> (2Q - 1) x S_H <= 2B(1 - Q)
+```
+
+#### Analysis for standard parameter `Q = 0.5` (`reveal_quorum_bps = 5_000`):
+
+When `Q = 0.5`:
+```text
+(2(0.5) - 1) x S_H <= 2B(1 - 0.5)
+  -> 0 <= B
+```
+This is trivially satisfied, but examine the upper bound on `S_A`:
+```text
+S_A <= ((1 - 0.5) / 0.5) x (2B + S_H) = 2B + S_H
+```
+Together with the suppression condition `S_A >= S_H`, the attacker is restricted to:
+```text
+S_H <= S_A <= S_H + 2B
+```
+
+If honest participants register significant stake relative to the base bond (`S_H >> 2B`),
+any meaningful suppression requires `S_A` significantly exceeding `S_H`. Specifically, if
+`S_A > 2B + S_H`, total revealed turnout strictly satisfies:
+```text
+R / W = (2B + S_H) / (2B + S_H + S_A) < (2B + S_H) / (2B + S_H + 2B + S_H) = 1/2
+```
+Turnout strictly drops below 50%. Quorum fails (`R x 10_000 < W x 5_000`).
+
+#### Consequence of quorum failure
+
+When quorum fails:
+1. `resolve_outcome` fails with `RevealQuorumNotMet`.
+2. The assertion remains undecided in `PhaseV2::Reveal`.
+3. The malicious claim **does not resolve** and cannot finalize.
+4. The admin can invoke `set_paused_v2(true)` followed by `cancel_round(id)`. Under
+   `cancel_round`, every participant (including honest voters and the disputer) is refunded
+   their exact bonded principal in full. The attacker gains nothing, external capture is
+   thwarted, and defender capital is protected.
+
+If the attacker instead reveals `S_A` to satisfy quorum, the withholding attack is broken:
+its revealed votes enter the tallies, allowing defenders to contest the dispute directly
+via strict majority.
+
+---
+
+### Guidance on choosing `reveal_quorum_bps`
+
+The choice of `reveal_quorum_bps` trades off attack resistance against dispute liveness.
+
+| `reveal_quorum_bps` | Quorum % | Liveness vs. Security Tradeoff | Recommended Use Case |
+| ------------------- | -------- | ------------------------------ | -------------------- |
+| `5_000` | 50% | **Standard Default**: Aligns quorum with the strict-majority threshold (50%). Guarantees that at least half of the locked capital participates before status-quo timeout can bind. Eliminates large-scale silent withholding. | General-purpose oracle deployments, price feeds, prediction markets. |
+| `6_000` – `7_500` | 60% – 75% | **High Security / Low Tolerance**: Requires substantial turnout. Narrows the attacker's withholding window to near zero even for small third-party stakes. Increases the risk of deadlock if benign voter apathy occurs. | High-value assertions securing large TVL, bridge settlements, governance gates. |
+| `2_500` – `3_300` | 25% – 33% | **High Liveness / Apathy Permissive**: Allows timeout resolution even under low turnout. Reduces deadlock risk from uncoordinated small voters, but allows larger withholding bands before quorum triggers. | Micro-claims, high-frequency assertions with small capital at risk. |
+| `0` | 0% | **Unconstrained Timeout (Legacy v2)**: Quorum check is disabled. Optimistic timeout fires whenever deadline passes regardless of turnout. Fully vulnerable to withheld-reveal suppression. | Private/consortium chains or testing environments where all participants are trusted. |
+
+**Recommendation**: Set `reveal_quorum_bps = 5_000` (50%) for standard production deployments.
+Pair this with a reveal duration `T_rev` that gives registered participants ample time and keeper
+tooling to submit reveals.
+
+---
+
 ## Monitoring and adjustment
 
 Review after every testnet campaign and before mainnet launch:

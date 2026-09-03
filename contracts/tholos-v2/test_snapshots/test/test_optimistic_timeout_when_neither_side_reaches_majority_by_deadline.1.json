@@ -67,6 +67,9 @@
                 },
                 {
                   "i128": "10000000"
+                },
+                {
+                  "u32": 5000
                 }
               ]
             }
@@ -269,7 +272,7 @@
                   "i128": "400"
                 },
                 {
-                  "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
+                  "bytes": "696d720dbed6baa41f36d4450301b880262c0ee4ebb27ef40d2196e6b04984a1"
                 }
               ]
             }
@@ -699,6 +702,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "reveal_quorum_bps"
+                          },
+                          "val": {
+                            "u32": 5000
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "timeout_default"
                           },
                           "val": {
@@ -737,7 +748,7 @@
                       "symbol": "policy_hash"
                     },
                     "val": {
-                      "bytes": "d447481bc4436059290521fcb6e05656686b9e86e5523def087dd10087e291d4"
+                      "bytes": "9e2ee2a3c227a71c041c479f4dbb38092989179bea8c407baca3704a77d38955"
                     }
                   },
                   {
@@ -965,7 +976,7 @@
                           "symbol": "External"
                         },
                         {
-                          "bytes": "dcc6b48476fcd0c69e492590c929140ecb5539778987ddfd3a70903640aa8646"
+                          "bytes": "696d720dbed6baa41f36d4450301b880262c0ee4ebb27ef40d2196e6b04984a1"
                         }
                       ]
                     }
@@ -1345,6 +1356,14 @@
                             },
                             "val": {
                               "u64": "3600"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "reveal_quorum_bps"
+                            },
+                            "val": {
+                              "u32": 5000
                             }
                           },
                           {

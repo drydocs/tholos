@@ -143,6 +143,7 @@ only affect assertions created after the change.
 | `anti_snipe_extension_secs` | `u64` | How far a qualifying late deposit pushes the soft registration deadline out. |
 | `anti_snipe_hard_max_secs` | `u64` | Absolute cap on the registration window, from `registration_opened_at`. |
 | `reveal_duration_secs` | `u64` | Length of the reveal window once it opens. |
+| `reveal_quorum_bps` | `u32` | Minimum basis points (0–10000) of `eligible_total` that must be revealed for `OptimisticTimeout` to resolve upon deadline timeout. |
 | `weight_rule` | `WeightRuleVersion` | Always `LinearStakeV1` today. |
 | `timeout_default` | `TimeoutDefaultRule` | Always `AssertedOutcomeStands` today. |
 | `payout_rule` | `PayoutRuleVersion` | Always `ProRataV1` today. |
@@ -197,6 +198,8 @@ only affect assertions created after the change.
 | `AlreadyRevealed` | This position's weight is already counted — a prior `reveal` call, reveal opening for a `Fixed` position, or a `Fixed` voter calling `reveal` themselves (nothing to reveal). |
 | `CommitmentVerificationFailed` | The supplied `(choice, salt)` didn't hash to the stored commitment. |
 | `RevealNotClosed` | `resolve_outcome` called while still `Reveal`, before `reveal_deadline` and before all eligible weight has revealed. |
+| `InvalidRevealQuorum` | `reveal_quorum_bps` exceeds `MAX_REVEAL_QUORUM_BPS` (10000). |
+| `RevealQuorumNotMet` | `resolve_outcome` reached timeout default without strict majority, but total revealed weight did not meet `policy.reveal_quorum_bps` of `eligible_total`. |
 | `NotResolved` | `settle` called before `phase == Resolved`, or on an `UncontestedFinalize` assertion (which never had a `Resolution`/`Position` created). |
 | `AlreadySettled` | `settle` called on a position that's already settled. |
 | `SettlementArithmeticOverflow` | A checked arithmetic operation in `settle`/`withdraw`/`add_credit` would have overflowed `i128`. Not expected to be reachable given `initialize`'s bounds, but checked since settlement moves real funds. |
@@ -208,7 +211,7 @@ only affect assertions created after the change.
 
 ## Functions
 
-### `initialize(admin, token, base_bond, challenge_window_secs, finalize_reward_bps, registration_duration_secs, anti_snipe_extension_secs, anti_snipe_hard_max_secs, reveal_duration_secs, max_position, max_total_weight)`
+### `initialize(admin, token, base_bond, challenge_window_secs, finalize_reward_bps, registration_duration_secs, anti_snipe_extension_secs, anti_snipe_hard_max_secs, reveal_duration_secs, reveal_quorum_bps, max_position, max_total_weight)`
 
 One-time setup, pinning the deployment-wide defaults every future
 assertion's `PolicySnapshotV2` is built from. Requires `admin`'s signature.
@@ -218,6 +221,7 @@ assertion's `PolicySnapshotV2` is built from. Requires `admin`'s signature.
 and at most 7 days. `finalize_reward_bps` must be at most 1000.
 `anti_snipe_extension_secs` must not exceed `anti_snipe_hard_max_secs`, and
 `anti_snipe_hard_max_secs` must be at least `registration_duration_secs`.
+`reveal_quorum_bps` must not exceed `MAX_REVEAL_QUORUM_BPS` (10000).
 `max_total_weight` must be positive and no greater than
 `MAX_SETTLEMENT_TOTAL_WEIGHT` (so settlement's forfeiture-distribution
 multiply can't overflow); `max_position` must be positive and no greater
@@ -384,16 +388,20 @@ Lazily transitions `Registration` to `Reveal` first if
 `registration_deadline` has passed; that step alone may already close the
 assertion out. Otherwise requires `Reveal` phase; if `reveal_deadline` has
 passed or `revealed_weight` has caught up with the frozen eligible total
-`W`, locks the outcome (strict majority if reached, `OptimisticTimeout`
-otherwise) and moves the assertion to `Resolved`. Idempotent: calling it
-again on an already-`Resolved` assertion just returns the already-decided
-`terminal_cause`.
+`W`, locks the outcome (strict majority if reached, or `OptimisticTimeout`
+if total revealed weight meets or exceeds `policy.reveal_quorum_bps` of `eligible_total`)
+and moves the assertion to `Resolved`. If strict majority is not reached and
+reveal quorum is not met upon deadline timeout, returns `RevealQuorumNotMet`
+without resolving the assertion, keeping it open for administrative intervention (e.g.
+via `set_paused_v2` and `cancel_round`). Idempotent: calling it again on an
+already-`Resolved` assertion just returns the already-decided `terminal_cause`.
 
 Fails with `AssertionNotFound`, `NotReveal` if the assertion is `Pending`,
-`RegistrationNotClosed` if still `Registration` before its deadline, or
+`RegistrationNotClosed` if still `Registration` before its deadline,
 `RevealNotClosed` if still `Reveal` before its deadline with unrevealed
-weight remaining. Emits `RevealOpened` and/or `Resolved` as those
-transitions actually happen.
+weight remaining, or `RevealQuorumNotMet` if the deadline has passed without
+either a strict majority or sufficient revealed quorum. Emits `RevealOpened`
+and/or `Resolved` as those transitions actually happen.
 
 ### `settle(id, address) -> i128`
 
