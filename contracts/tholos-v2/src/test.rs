@@ -1255,7 +1255,6 @@ fn test_register_top_up_with_different_commitment_fails() {
     assert_eq!(result, Err(Ok(Error::CommitmentMismatch)));
 }
 
-
 #[test]
 fn test_register_position_amount_overflow_fails() {
     let env = Env::default();
@@ -1275,8 +1274,8 @@ fn test_register_position_amount_overflow_fails() {
         DEFAULT_ANTI_SNIPE_EXT_SECS,
         DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
         DEFAULT_REVEAL_SECS,
-        i128::MAX,
-        i128::MAX,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
     )
     .unwrap()
     .unwrap();
@@ -1329,8 +1328,8 @@ fn test_register_eligible_total_overflow_fails() {
         DEFAULT_ANTI_SNIPE_EXT_SECS,
         DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
         DEFAULT_REVEAL_SECS,
-        i128::MAX,
-        i128::MAX,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
     )
     .unwrap()
     .unwrap();
@@ -1340,7 +1339,7 @@ fn test_register_eligible_total_overflow_fails() {
     let voter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
     token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
-    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &10);
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &1_000);
 
     let id = client.assert_outcome(&asserter, &true);
     client.dispute(&disputer, &id);
@@ -1355,10 +1354,12 @@ fn test_register_eligible_total_overflow_fails() {
             .get(&DataKey::Resolution(id))
             .unwrap();
         resolution.eligible_total = i128::MAX;
-        env.storage().persistent().set(&DataKey::Resolution(id), &resolution);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Resolution(id), &resolution);
     });
 
-    let result = client.try_register(&voter, &id, &1, &commitment(&env, 1));
+    let result = client.try_register(&voter, &id, &DEFAULT_BOND, &commitment(&env, 1));
     assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
 }
 #[test]
