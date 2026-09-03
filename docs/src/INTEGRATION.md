@@ -160,8 +160,15 @@ in slowly.
 let state = client.get_assertion_state(&id);
 match state.status {
     tholos::Status::Resolved => {
-        // `final_outcome` is guaranteed to be set when status is Resolved.
-        let final_outcome = state.final_outcome.unwrap();
+        match state.final_outcome {
+            Some(outcome) => {
+                // Resolved with consensus via `resolve` or uncontested via `finalize`.
+            }
+            None => {
+                // Dispute timed out without committee majority consensus and was reclaimed
+                // via `reclaim_stalled_dispute`. Bonds were refunded to both parties.
+            }
+        }
     }
     _ => { /* not resolved yet */ }
 }
@@ -169,7 +176,9 @@ match state.status {
 
 `Assertion.outcome` always remains the claim made at assertion time. Read
 `Assertion.final_outcome` for the authoritative result once the assertion is
-resolved; it is `None` while the assertion is still `Pending` or `Disputed`.
+resolved: `Some(bool)` when decided by uncontested finalization or committee consensus,
+`None` if reclaimed after a stalled dispute timeout, and `None` while the assertion
+is still `Pending` or `Disputed`.
 
 ## Parameters you're choosing when you initialize
 
@@ -180,6 +189,7 @@ resolved; it is `None` while the assertion is still `Pending` or `Disputed`.
 | `challenge_window_secs` | Longer windows give more time to catch bad assertions but delay uncontested finalization. |
 | `resolvers` | Must be odd-length, non-zero, distinct, and at most 21 addresses; v1 rejects duplicates with `DuplicateResolvers`. See [CONTRACT.md](CONTRACT.md) for what `update_resolvers` can and can't change mid-dispute. |
 | `finalize_reward_bps` | 0–1000 basis points of the bond paid to whoever calls `finalize`. Auth is always required from the caller, regardless of this value. 0 (default) returns the full bond to the asserter with no reward; non-zero values incentivize prompt finalization. |
+| `stalled_dispute_timeout_secs` | 1 second to 21 days (`MAX_STALLED_DISPUTE_TIMEOUT_SECS`). Duration after which an unresolved dispute can be permissionlessly reclaimed and refunded. |
 
 ## Tholos v2
 

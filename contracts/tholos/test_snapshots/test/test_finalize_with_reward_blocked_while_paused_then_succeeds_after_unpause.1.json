@@ -62,6 +62,9 @@
                 },
                 {
                   "u32": 200
+                },
+                {
+                  "u64": "604800"
                 }
               ]
             }
@@ -308,6 +311,12 @@
                   },
                   {
                     "key": {
+                      "symbol": "disputed_at"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "disputer"
                     },
                     "val": "void"
@@ -503,6 +512,18 @@
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StalledDisputeTimeout"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "604800"
                       }
                     },
                     {

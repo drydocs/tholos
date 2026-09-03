@@ -43,6 +43,9 @@
                 },
                 {
                   "u32": 0
+                },
+                {
+                  "u64": "604800"
                 }
               ]
             }
@@ -244,6 +247,14 @@
                     },
                     "val": {
                       "i128": "100"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "disputed_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -451,6 +462,18 @@
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StalledDisputeTimeout"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "604800"
                       }
                     },
                     {

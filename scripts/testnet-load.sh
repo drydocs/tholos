@@ -55,7 +55,9 @@ invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- initialize \
   --token "$TOKEN" \
   --bond_amount "$BOND_AMOUNT" \
   --challenge_window_secs "$CHALLENGE_WINDOW_SECS" \
-  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" >/dev/null
+  --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" \
+  --finalize_reward_bps 0 \
+  --stalled_dispute_timeout_secs 604800 >/dev/null
 setup_end=$(get_time)
 setup_duration=$(elapsed_time "$setup_start" "$setup_end")
 log_success "Setup completed in ${setup_duration}s."

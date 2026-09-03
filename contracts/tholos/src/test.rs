@@ -7,6 +7,7 @@ use soroban_sdk::testutils::{Address as _, Ledger};
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
 const DEFAULT_MINT: i128 = 1_000;
+const DEFAULT_STALLED_TIMEOUT: u64 = 7 * 24 * 60 * 60;
 
 /// A registered but uninitialized token and resolver committee, for the
 /// handful of tests that need to call `initialize` themselves (to test bad
@@ -58,6 +59,7 @@ impl Fixture {
             &DEFAULT_WINDOW,
             &resolvers,
             &0u32,
+            &DEFAULT_STALLED_TIMEOUT,
         );
 
         Fixture {
@@ -219,6 +221,7 @@ fn test_cannot_initialize_with_even_resolver_count() {
         &DEFAULT_WINDOW,
         &even_resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert!(result.is_err());
 }
@@ -247,6 +250,7 @@ fn test_cannot_initialize_with_too_many_resolvers() {
         &DEFAULT_WINDOW,
         &too_many,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::TooManyResolvers)));
 }
@@ -261,7 +265,15 @@ fn test_cannot_initialize_with_zero_bond_amount() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &0, &DEFAULT_WINDOW, &resolvers, &0u32);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &0,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
+    );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
 
@@ -275,7 +287,15 @@ fn test_cannot_initialize_with_negative_bond_amount() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &-1, &DEFAULT_WINDOW, &resolvers, &0u32);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &-1,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
+    );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
 
@@ -296,6 +316,7 @@ fn test_cannot_initialize_with_bond_amount_above_max() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
@@ -317,6 +338,7 @@ fn test_can_initialize_with_bond_amount_exactly_at_max() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -350,6 +372,7 @@ fn test_rejecting_overflow_prone_bond_amount_leaves_contract_uninitialized() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 
@@ -396,6 +419,7 @@ fn test_bond_amount_overflow_blocked_before_dispute_balance_accumulation() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 
@@ -432,6 +456,7 @@ fn test_cannot_initialize_with_bond_amount_safe_under_old_bound_but_unsafe_for_r
         &DEFAULT_WINDOW,
         &resolvers,
         &MAX_FINALIZE_REWARD_BPS,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
 }
@@ -446,7 +471,15 @@ fn test_cannot_initialize_with_zero_challenge_window() {
     let client = TholosClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let result = client.try_initialize(&admin, &token_id, &DEFAULT_BOND, &0, &resolvers, &0u32);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &0,
+        &resolvers,
+        &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
+    );
     assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
 }
 
@@ -467,8 +500,75 @@ fn test_cannot_initialize_with_challenge_window_too_large() {
         &(MAX_CHALLENGE_WINDOW_SECS + 1),
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidChallengeWindow)));
+}
+
+#[test]
+fn test_cannot_initialize_with_zero_stalled_dispute_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+        &0,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidStalledDisputeTimeout)));
+}
+
+#[test]
+fn test_cannot_initialize_with_stalled_dispute_timeout_above_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+        &(MAX_STALLED_DISPUTE_TIMEOUT_SECS + 1),
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidStalledDisputeTimeout)));
+}
+
+#[test]
+fn test_can_initialize_with_stalled_dispute_timeout_exactly_at_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let result = client.try_initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+        &MAX_STALLED_DISPUTE_TIMEOUT_SECS,
+    );
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
@@ -483,6 +583,7 @@ fn test_cannot_initialize_twice() {
         &DEFAULT_WINDOW,
         &f.resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
@@ -716,6 +817,135 @@ fn test_paused_blocks_assert_dispute_and_finalize() {
 }
 
 #[test]
+fn test_get_and_set_stalled_dispute_timeout() {
+    let f = Fixture::new();
+    assert_eq!(
+        f.client.get_stalled_dispute_timeout(),
+        DEFAULT_STALLED_TIMEOUT
+    );
+
+    let new_timeout = 10 * 24 * 60 * 60;
+    f.client.set_stalled_dispute_timeout(&new_timeout);
+    assert_eq!(f.client.get_stalled_dispute_timeout(), new_timeout);
+
+    let zero_res = f.client.try_set_stalled_dispute_timeout(&0);
+    assert_eq!(zero_res, Err(Ok(Error::InvalidStalledDisputeTimeout)));
+
+    let over_res = f
+        .client
+        .try_set_stalled_dispute_timeout(&(MAX_STALLED_DISPUTE_TIMEOUT_SECS + 1));
+    assert_eq!(over_res, Err(Ok(Error::InvalidStalledDisputeTimeout)));
+}
+
+#[test]
+fn test_reclaim_stalled_dispute_fails_if_not_disputed() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    let res = f.client.try_reclaim_stalled_dispute(&id);
+    assert_eq!(res, Err(Ok(Error::NotDisputed)));
+
+    let non_existent_res = f.client.try_reclaim_stalled_dispute(&999);
+    assert_eq!(non_existent_res, Err(Ok(Error::AssertionNotFound)));
+}
+
+#[test]
+fn test_reclaim_stalled_dispute_fails_before_timeout_elapses() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp += DEFAULT_STALLED_TIMEOUT);
+    let res = f.client.try_reclaim_stalled_dispute(&id);
+    assert_eq!(res, Err(Ok(Error::DisputeTimeoutNotElapsed)));
+}
+
+#[test]
+fn test_reclaim_stalled_dispute_succeeds_after_timeout_refunds_both() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    assert_eq!(f.token.balance(&asserter), 900);
+    assert_eq!(f.token.balance(&disputer), 900);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp += DEFAULT_STALLED_TIMEOUT + 1);
+
+    f.client.reclaim_stalled_dispute(&id);
+
+    assert_eq!(f.token.balance(&asserter), 1_000);
+    assert_eq!(f.token.balance(&disputer), 1_000);
+
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Resolved);
+    assert_eq!(state.final_outcome, None);
+    assert_eq!(state.finalizer, None);
+
+    let second_reclaim = f.client.try_reclaim_stalled_dispute(&id);
+    assert_eq!(second_reclaim, Err(Ok(Error::NotDisputed)));
+
+    let late_resolve = f
+        .client
+        .try_resolve(&f.resolvers.get(0).unwrap(), &id, &true);
+    assert_eq!(late_resolve, Err(Ok(Error::NotDisputed)));
+}
+
+#[test]
+fn test_reclaim_stalled_dispute_blocked_when_paused() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp += DEFAULT_STALLED_TIMEOUT + 1);
+    f.client.set_paused(&true);
+
+    let res = f.client.try_reclaim_stalled_dispute(&id);
+    assert_eq!(res, Err(Ok(Error::Paused)));
+
+    f.client.set_paused(&false);
+    f.client.reclaim_stalled_dispute(&id);
+    assert_eq!(f.token.balance(&asserter), 1_000);
+    assert_eq!(f.token.balance(&disputer), 1_000);
+}
+
+#[test]
+fn test_resolve_before_timeout_prevents_stalled_dispute_reclaim() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &true);
+    f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &true);
+
+    assert_eq!(f.token.balance(&asserter), 1_100);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp += DEFAULT_STALLED_TIMEOUT + 1);
+    let res = f.client.try_reclaim_stalled_dispute(&id);
+    assert_eq!(res, Err(Ok(Error::NotDisputed)));
+}
+
+#[test]
 fn test_cannot_pause_before_initialization() {
     let env = Env::default();
     env.mock_all_auths();
@@ -791,6 +1021,7 @@ fn test_cannot_initialize_with_duplicate_resolvers() {
         &DEFAULT_WINDOW,
         &duplicated,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
 }
@@ -814,6 +1045,7 @@ fn test_initialize_accepts_distinct_committee() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Ok(Ok(())));
 }
@@ -849,6 +1081,7 @@ fn test_initialize_rejects_duplicate_at_end_of_vector() {
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::DuplicateResolvers)));
 }
@@ -876,6 +1109,7 @@ fn test_initialize_reports_invalid_count_before_duplicates() {
         &DEFAULT_WINDOW,
         &even_and_duplicated,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidResolverCount)));
 }
@@ -947,6 +1181,7 @@ fn fixture_with_reward(bps: u32) -> (Fixture, Address) {
         &DEFAULT_WINDOW,
         &resolvers,
         &bps,
+        &DEFAULT_STALLED_TIMEOUT,
     );
     let f = Fixture {
         env,
@@ -1040,6 +1275,7 @@ fn test_finalize_reward_multiply_does_not_overflow_at_max_bond_and_max_reward_bp
         &DEFAULT_WINDOW,
         &resolvers,
         &MAX_FINALIZE_REWARD_BPS,
+        &DEFAULT_STALLED_TIMEOUT,
     );
 
     let asserter = Address::generate(&env);
@@ -1075,6 +1311,7 @@ fn test_cannot_initialize_with_reward_bps_over_max() {
         &DEFAULT_WINDOW,
         &resolvers,
         &(MAX_FINALIZE_REWARD_BPS + 1),
+        &DEFAULT_STALLED_TIMEOUT,
     );
     assert_eq!(result, Err(Ok(Error::InvalidFinalizeReward)));
 }
@@ -1576,6 +1813,7 @@ fn evil_fixture(
         &DEFAULT_WINDOW,
         &resolvers,
         &0u32,
+        &DEFAULT_STALLED_TIMEOUT,
     );
 
     (evil_token, client, contract_id, resolvers)
@@ -1791,6 +2029,7 @@ mod proptest_vote_counting {
             &DEFAULT_WINDOW,
             &resolvers_sdk,
             &0u32,
+            &DEFAULT_STALLED_TIMEOUT,
         );
 
         let fixture = Fixture {
@@ -2021,6 +2260,7 @@ mod proptest_initialize_bounds {
                 &challenge_window_secs,
                 &resolvers,
                 &0u32,
+                &DEFAULT_STALLED_TIMEOUT,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {
@@ -2064,6 +2304,7 @@ mod proptest_initialize_bounds {
                 &challenge_window_secs,
                 &resolvers,
                 &0u32,
+                &DEFAULT_STALLED_TIMEOUT,
             );
 
             match expected_result(bond_amount, challenge_window_secs) {

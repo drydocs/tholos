@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 //! Second integration example: this contract's own address as the asserter,
 //! demonstrating the "Your contract's own address as asserter" pattern from

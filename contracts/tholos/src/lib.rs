@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Env, Vec,
@@ -48,6 +49,20 @@ pub struct ResolversUpdated {
 #[contractevent]
 pub struct PauseUpdated {
     pub paused: bool,
+}
+
+#[contractevent]
+pub struct StalledDisputeReclaimed {
+    #[topic]
+    pub id: u64,
+    pub asserter: Address,
+    pub disputer: Address,
+    pub bond: i128,
+}
+
+#[contractevent]
+pub struct StalledDisputeTimeoutUpdated {
+    pub stalled_dispute_timeout_secs: u64,
 }
 
 #[contractevent]
@@ -121,6 +136,9 @@ pub struct Assertion {
     /// `Some` after `finalize` completes — the caller must authorize the call
     /// unconditionally, so this is always a verified address.
     pub finalizer: Option<Address>,
+    /// The ledger timestamp when this assertion was disputed via `dispute`.
+    /// `None` until disputed.
+    pub disputed_at: Option<u64>,
 }
 
 #[contracttype]
@@ -138,6 +156,7 @@ pub enum DataKey {
     /// full bond is returned to the asserter (original behavior).
     FinalizeRewardBps,
     RotationProposal,
+    StalledDisputeTimeout,
 }
 
 #[contracterror]
@@ -171,6 +190,10 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
+    /// `stalled_dispute_timeout_secs` was 0 or exceeded `MAX_STALLED_DISPUTE_TIMEOUT_SECS`.
+    InvalidStalledDisputeTimeout = 23,
+    /// `reclaim_stalled_dispute` was called before the dispute timeout elapsed.
+    DisputeTimeoutNotElapsed = 24,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -185,6 +208,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const ASSERTION_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const ASSERTION_LIFETIME_THRESHOLD: u32 = ASSERTION_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+pub const MAX_STALLED_DISPUTE_TIMEOUT_SECS: u64 = 21 * 24 * 60 * 60;
 
 /// A resolver committee larger than this gets copied in full onto every
 /// disputed assertion (see `Assertion.resolvers`), so an unbounded size
@@ -243,7 +267,8 @@ impl Tholos {
     /// fraction of the bond (in basis points, 0–1000) paid to whoever calls
     /// `finalize` as an incentive for prompt finalization; 0 disables the
     /// reward entirely and preserves the original behavior where the full
-    /// bond is returned to the asserter.
+    /// bond is returned to the asserter. `stalled_dispute_timeout_secs` sets the
+    /// duration after which a stalled dispute can be reclaimed neutrally.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -252,6 +277,7 @@ impl Tholos {
         challenge_window_secs: u64,
         resolvers: Vec<Address>,
         finalize_reward_bps: u32,
+        stalled_dispute_timeout_secs: u64,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -272,6 +298,11 @@ impl Tholos {
         if finalize_reward_bps > MAX_FINALIZE_REWARD_BPS {
             return Err(Error::InvalidFinalizeReward);
         }
+        if stalled_dispute_timeout_secs == 0
+            || stalled_dispute_timeout_secs > MAX_STALLED_DISPUTE_TIMEOUT_SECS
+        {
+            return Err(Error::InvalidStalledDisputeTimeout);
+        }
 
         admin.require_auth();
 
@@ -291,6 +322,10 @@ impl Tholos {
         env.storage()
             .instance()
             .set(&DataKey::FinalizeRewardBps, &finalize_reward_bps);
+        env.storage().instance().set(
+            &DataKey::StalledDisputeTimeout,
+            &stalled_dispute_timeout_secs,
+        );
         Self::touch_instance_ttl(&env);
 
         Ok(())
@@ -565,6 +600,43 @@ impl Tholos {
         Ok(())
     }
 
+    /// Updates the stalled dispute timeout duration. Only callable by the
+    /// admin set at initialization.
+    pub fn set_stalled_dispute_timeout(
+        env: Env,
+        stalled_dispute_timeout_secs: u64,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        if stalled_dispute_timeout_secs == 0
+            || stalled_dispute_timeout_secs > MAX_STALLED_DISPUTE_TIMEOUT_SECS
+        {
+            return Err(Error::InvalidStalledDisputeTimeout);
+        }
+
+        env.storage().instance().set(
+            &DataKey::StalledDisputeTimeout,
+            &stalled_dispute_timeout_secs,
+        );
+        StalledDisputeTimeoutUpdated {
+            stalled_dispute_timeout_secs,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Returns the currently configured stalled dispute timeout duration in seconds.
+    pub fn get_stalled_dispute_timeout(env: Env) -> Result<u64, Error> {
+        Self::get(&env, &DataKey::StalledDisputeTimeout)
+    }
+
     fn require_not_paused(env: &Env) -> Result<(), Error> {
         let paused: bool = env
             .storage()
@@ -603,6 +675,7 @@ impl Tholos {
             voted: Vec::new(&env),
             resolvers: Vec::new(&env),
             finalizer: None,
+            disputed_at: None,
         };
         Self::set_assertion(&env, id, &assertion);
 
@@ -659,6 +732,7 @@ impl Tholos {
         // already disputed, rather than still `Pending`.
         assertion.disputer = Some(disputer.clone());
         assertion.status = Status::Disputed;
+        assertion.disputed_at = Some(env.ledger().timestamp());
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
@@ -834,6 +908,56 @@ impl Tholos {
         .publish(&env);
 
         Ok(Some(final_outcome))
+    }
+
+    /// Reclaims bonds for a stalled dispute once its timeout has elapsed
+    /// without reaching a resolver majority. Permissionless: callable by
+    /// anyone. Returns both the asserter's and disputer's bonds to their
+    /// respective depositors and marks the assertion `Status::Resolved` with
+    /// `final_outcome` set to `None`.
+    pub fn reclaim_stalled_dispute(env: Env, id: u64) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        Self::touch_instance_ttl(&env);
+
+        let mut assertion = Self::get_assertion(&env, id)?;
+        if assertion.status != Status::Disputed {
+            return Err(Error::NotDisputed);
+        }
+
+        let timeout: u64 = Self::get(&env, &DataKey::StalledDisputeTimeout)?;
+        let disputed_at = assertion.disputed_at.ok_or(Error::NotDisputed)?;
+        if env.ledger().timestamp() <= disputed_at + timeout {
+            return Err(Error::DisputeTimeoutNotElapsed);
+        }
+
+        let disputer = assertion
+            .disputer
+            .clone()
+            .expect("a Disputed assertion always has a disputer set by dispute()");
+
+        assertion.status = Status::Resolved;
+        assertion.final_outcome = None;
+        Self::set_assertion(&env, id, &assertion);
+
+        let token_id: Address = Self::get(&env, &DataKey::Token)?;
+        let token_client = token::Client::new(&env, &token_id);
+
+        token_client.transfer(
+            &env.current_contract_address(),
+            &assertion.asserter,
+            &assertion.bond,
+        );
+        token_client.transfer(&env.current_contract_address(), &disputer, &assertion.bond);
+
+        StalledDisputeReclaimed {
+            id,
+            asserter: assertion.asserter,
+            disputer,
+            bond: assertion.bond,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     pub fn get_assertion_state(env: Env, id: u64) -> Result<Assertion, Error> {

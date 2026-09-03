@@ -62,6 +62,9 @@
                 },
                 {
                   "u32": 0
+                },
+                {
+                  "u64": "604800"
                 }
               ]
             }
@@ -230,6 +233,18 @@
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "StalledDisputeTimeout"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "604800"
                       }
                     },
                     {

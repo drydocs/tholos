@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 //! Minimal example of a contract that calls into Tholos rather than building its
 //! own dispute resolution logic. Exists to validate the pattern documented in

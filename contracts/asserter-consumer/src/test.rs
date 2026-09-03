@@ -45,12 +45,21 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
                 3600u64,
                 resolvers.clone(),
                 0u32,
+                86400u64,
             )
                 .into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    tholos_client.initialize(&admin, &token_id, &bond_amount, &3600, &resolvers, &0u32);
+    tholos_client.initialize(
+        &admin,
+        &token_id,
+        &bond_amount,
+        &3600,
+        &resolvers,
+        &0u32,
+        &86400u64,
+    );
 
     let consumer_id = env.register(AsserterConsumer, ());
     let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);

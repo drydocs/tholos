@@ -11,12 +11,14 @@ stateDiagram-v2
     Pending --> Disputed: dispute
     Pending --> Resolved: finalize<br/>(challenge window elapsed,<br/>bond split between asserter and finalizer)
     Disputed --> Resolved: resolve<br/>(majority reached,<br/>winner paid both bonds)
+    Disputed --> Resolved: reclaim_stalled_dispute<br/>(dispute timeout elapsed without majority,<br/>both bonds refunded)
     Resolved --> [*]
 ```
 
-Every assertion ends in `Resolved`, reached one of two ways: uncontested (`finalize`
-after the challenge window with no dispute) or contested (`resolve` once a majority
-of the resolver committee agrees on one side).
+Every assertion ends in `Resolved`, reached one of three ways: uncontested (`finalize`
+after the challenge window with no dispute), contested with consensus (`resolve` once a majority
+of the resolver committee agrees on one side), or reclaimed on timeout (`reclaim_stalled_dispute`
+if resolvers fail to reach a majority before `stalled_dispute_timeout_secs` elapses).
 
 ## Types
 
@@ -30,15 +32,16 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | --- | --- | --- |
 | `asserter` | `Address` | Who posted the claim |
 | `outcome` | `bool` | The claimed outcome |
-| `final_outcome` | `Option<bool>` | The authoritative resolved outcome; `None` until the assertion reaches `Resolved` |
+| `final_outcome` | `Option<bool>` | The authoritative resolved outcome; `None` until resolved, or `None` if resolved via `reclaim_stalled_dispute` (timed out without consensus) |
 | `bond` | `i128` | Bond amount posted (in the configured token) |
 | `opened_at` | `u64` | Ledger timestamp the assertion was posted |
+| `disputed_at` | `Option<u64>` | Ledger timestamp the assertion was disputed; `None` until `dispute` is called |
 | `status` | `Status` | Current state |
 | `disputer` | `Option<Address>` | Who disputed it, if disputed |
 | `votes_for_outcome` / `votes_against_outcome` | `u32` | Resolver vote tally |
 | `voted` | `Vec<Address>` | Resolvers who have already voted, to prevent double-voting |
 | `resolvers` | `Vec<Address>` | The resolver committee snapshotted at dispute time; empty until `dispute` is called. See `resolve` below. |
-| `finalizer` | `Option<Address>` | Who called `finalize`, if the assertion was finalized (not resolved via `resolve`). `None` until `finalize` is called; always `Some(caller)` after — the caller must authorize unconditionally, so this is always a verified address once set. |
+| `finalizer` | `Option<Address>` | Who called `finalize`, if the assertion was finalized (not resolved via `resolve` or `reclaim_stalled_dispute`). `None` until `finalize` is called; always `Some(caller)` after — the caller must authorize unconditionally, so this is always a verified address once set. |
 
 ### `Error`
 
@@ -65,10 +68,12 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `ResolverNotInCommittee` | The `old_resolver` named for removal isn't a current resolver |
 | `RotationTargetAlreadyResolver` | The `new_resolver` named for addition is already on the committee (or equals `old_resolver`) |
 | `NotProposer` | Caller isn't the proposer and the proposal can still reach a majority, so can't cancel it |
+| `InvalidStalledDisputeTimeout` | `stalled_dispute_timeout_secs` is zero or greater than `MAX_STALLED_DISPUTE_TIMEOUT_SECS` (21 days) |
+| `DisputeTimeoutNotElapsed` | Tried to call `reclaim_stalled_dispute` before the stalled dispute timeout elapsed |
 
 ## Functions
 
-### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
+### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps, stalled_dispute_timeout_secs)`
 
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
 `MAX_RESOLVERS` (21), with no duplicate addresses, so a majority vote can never
@@ -80,6 +85,8 @@ must be non-zero and at most 7 days (see "Persistent storage TTL" below for why)
 `finalize_reward_bps` sets the fraction of the bond (in basis points, 0–1000) paid
 to whoever calls `finalize` as an incentive for prompt finalization; 0 disables the
 reward entirely and the full bond is returned to the asserter.
+`stalled_dispute_timeout_secs` sets the duration (non-zero, at most 21 days) after
+which an unresolved dispute can be permissionlessly reclaimed.
 Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
 ### `update_resolvers(new_resolvers)`
@@ -197,16 +204,34 @@ emitted, and the function returns `Some(final_outcome)`.
 
 Read-only lookup. Fails with `AssertionNotFound` if the id doesn't exist.
 
+### `reclaim_stalled_dispute(id)`
+
+Callable once a `Disputed` assertion has remained unresolved for longer than the configured
+`stalled_dispute_timeout_secs`. Permissionless: any caller may execute it to clear stalled state.
+Both the original asserter and disputer bonds are returned to their respective depositors, and the
+assertion transitions to `Status::Resolved` with `final_outcome: None` (reflecting a neutral outcome
+without consensus). Blocked while paused. Emits `StalledDisputeReclaimed`.
+
+### `get_stalled_dispute_timeout() -> u64`
+
+Read-only lookup returning the configured stalled dispute timeout in seconds.
+
+### `set_stalled_dispute_timeout(stalled_dispute_timeout_secs)`
+
+Updates the stalled dispute timeout for all future checks. Requires the stored admin's signature.
+Bounded between 1 second and `MAX_STALLED_DISPUTE_TIMEOUT_SECS` (21 days). Emits
+`StalledDisputeTimeoutUpdated`.
+
 ## Security notes
 
-`assert_outcome`, `dispute`, `finalize`, and `resolve` each write their state
+`assert_outcome`, `dispute`, `finalize`, `resolve`, and `reclaim_stalled_dispute` each write their state
 change (new assertion, status transition, vote tally) to storage *before* calling
 the external token contract's `transfer`. This follows checks-effects-interactions
 deliberately: cross-contract calls in Soroban are synchronous, so a non-standard
 or malicious `token` contract could otherwise call back into Tholos mid-transfer
 and observe stale state (e.g. an assertion still `Pending` when it's actually
 already being finalized), enabling a double payout drawn from the pooled bonds of
-unrelated assertions. All four functions have a regression test in
+unrelated assertions. All five functions have a regression test in
 `contracts/tholos/src/test.rs` (`test_*_is_not_reentrant`) that exercises this
 directly against a token built to attempt exactly that reentrant call.
 
@@ -249,6 +274,8 @@ history without polling `get_assertion_state`:
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
+| `StalledDisputeReclaimed` | `reclaim_stalled_dispute` | `id`, `asserter`, `disputer`, `bond` |
+| `StalledDisputeTimeoutUpdated` | `set_stalled_dispute_timeout` | `stalled_dispute_timeout_secs` |
 
 `Finalized.finalizer` is always the address that called `finalize` — auth is required unconditionally, so this value is always verified regardless of whether `finalize_reward_bps` is non-zero. `Finalized.reward` is the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
 
@@ -267,7 +294,8 @@ stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- 
   --bond_amount 1000000 \
   --challenge_window_secs 3600 \
   --resolvers "[\"$R1\",\"$R2\",\"$R3\"]" \
-  --finalize_reward_bps 100
+  --finalize_reward_bps 100 \
+  --stalled_dispute_timeout_secs 604800
 
 stellar contract invoke --id "$CONTRACT" --source asserter --network testnet -- assert_outcome \
   --asserter "$ASSERTER_ADDRESS" \
