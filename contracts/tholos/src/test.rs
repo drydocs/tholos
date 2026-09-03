@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
-use soroban_sdk::IntoVal;
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::{Event as _, IntoVal};
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
@@ -1432,6 +1432,30 @@ fn test_rotation_requires_majority_then_executes() {
     f.client.resolve(&new_resolver, &id, &false);
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_rotation_vote_still_open_emits_rotation_voted_event() {
+    let f = Fixture::new();
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    let voter = f.resolvers.get(1).unwrap();
+    // One yes of three: not yet a majority (needs 2), proposal stays open.
+    let r = f.client.try_vote_rotation(&voter, &true);
+    assert_eq!(r, Ok(Ok(None)));
+
+    let expected = RotationVoted {
+        resolver: voter,
+        approve: true,
+        yes_count: 1,
+        no_count: 0,
+    }
+    .to_xdr(&f.env, &f.client.address);
+    assert_eq!(f.env.events().all().events(), &[expected][..]);
 }
 
 #[test]
