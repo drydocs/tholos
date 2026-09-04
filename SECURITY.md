@@ -26,7 +26,20 @@ issue to be triaged and, where applicable, patched before any public disclosure.
 
 ## Scope
 
-In scope: the contracts under `contracts/` in this repository. Out of scope:
-third-party dependencies (`soroban-sdk`, the Stellar network itself), and the
-`contracts/demo-consumer` example, which exists to validate integration patterns
-and is not intended for production use on its own.
+In scope: `contracts/tholos`, `contracts/tholos-v2`, and `contracts/asserter-consumer`.
+
+`contracts/asserter-consumer` is, like `contracts/demo-consumer`, an integration
+example rather than a production deployment — but it demonstrates a materially
+different, more security-sensitive pattern. Where `demo-consumer` has the end
+user sign and authorize the assertion directly, `asserter-consumer` uses the
+`authorize_as_current_contract` pattern from
+[INTEGRATION.md](docs/src/INTEGRATION.md), where the contract self-authorizes
+a fund transfer on its own behalf with no human signer in the loop. That
+self-authorization construction is exactly what a real integrator is expected
+to copy into production, so a vulnerability in this reference implementation
+carries direct downstream security impact even though the example itself
+never holds real value. `demo-consumer`'s pattern has no comparable surface to
+get wrong, which is why it stays out of scope below.
+
+Out of scope: third-party dependencies (`soroban-sdk`, the Stellar network
+itself), and `contracts/demo-consumer`.
