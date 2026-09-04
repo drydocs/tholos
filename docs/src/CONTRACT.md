@@ -31,7 +31,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `asserter` | `Address` | Who posted the claim |
 | `outcome` | `bool` | The claimed outcome |
 | `final_outcome` | `Option<bool>` | The authoritative resolved outcome; `None` until the assertion reaches `Resolved` |
-| `bond` | `i128` | Bond amount posted (in the configured token) |
+| `bond` | `i128` | Bond amount posted (in the configured token), pinned at the moment `assert_outcome` created the assertion; a later `set_bond_amount` call never changes it retroactively |
 | `opened_at` | `u64` | Ledger timestamp the assertion was posted |
 | `status` | `Status` | Current state |
 | `disputer` | `Option<Address>` | Who disputed it, if disputed |
@@ -97,6 +97,19 @@ an open `RotationProposal` is cleared (emitting `RotationCancelled` when one was
 present), so a committee-driven rotation can never execute against a committee it
 wasn't built for. Day-to-day committee changes go through `propose_rotation` /
 `vote_rotation` instead.
+
+### `set_bond_amount(new_bond_amount)`
+
+Updates the bond amount required for assertions created *after* this call. Requires
+the stored admin's signature. Same bounds as `initialize`: `new_bond_amount` must be
+positive and no greater than `MAX_BOND_AMOUNT`. Pause-exempt, like `update_resolvers`
+and `set_paused`. Emits `BondAmountUpdated`.
+
+Has no effect on assertions already open: `Assertion.bond` pins the bond amount at
+the moment `assert_outcome` created the assertion, and every payout path (`dispute`,
+`finalize`, `resolve`) reads that field, never the live bond amount. Fails with
+`InvalidBondAmount` if `new_bond_amount` is zero, negative, or above
+`MAX_BOND_AMOUNT`, or `NotInitialized` if called before `initialize`.
 
 ### `propose_rotation(resolver, old_resolver, new_resolver)`
 
@@ -246,6 +259,7 @@ history without polling `get_assertion_state`:
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
+| `BondAmountUpdated` | `set_bond_amount` | `bond_amount` (the new value) |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
