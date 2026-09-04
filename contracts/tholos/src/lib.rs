@@ -51,6 +51,11 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct BondAmountUpdated {
+    pub bond_amount: i128,
+}
+
+#[contractevent]
 pub struct RotationProposed {
     pub old_resolver: Address,
     pub new_resolver: Address,
@@ -103,6 +108,12 @@ pub struct Assertion {
     /// the assertion is still pending or disputed.
     pub final_outcome: Option<bool>,
     pub outcome: bool,
+    /// The bond amount required to dispute this assertion and the amount
+    /// paid out to the winning side. Pinned to the live `DataKey::BondAmount`
+    /// at the moment `assert_outcome` created this assertion; a later
+    /// `set_bond_amount` call never changes it retroactively. Every payout
+    /// path (`dispute`, `finalize`, `resolve`) reads this field, never the
+    /// live `DataKey::BondAmount`, so this guarantee holds structurally.
     pub bond: i128,
     pub opened_at: u64,
     pub status: Status,
@@ -561,6 +572,47 @@ impl Tholos {
 
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Updates the bond amount required for assertions created from this
+    /// point on. Only callable by the admin set at initialization, validated
+    /// against the same bounds `initialize` already enforces
+    /// (`new_bond_amount > 0`, `new_bond_amount <= MAX_BOND_AMOUNT`).
+    /// Pause-exempt, like `update_resolvers` and `set_paused`.
+    ///
+    /// This only affects assertions created after the change: `Assertion.bond`
+    /// pins the bond amount at the moment `assert_outcome` creates the
+    /// assertion, and every payout path (`dispute`, `finalize`, `resolve`)
+    /// reads `assertion.bond`, never the live `DataKey::BondAmount`. An
+    /// already-open assertion's payout is therefore unaffected by a later
+    /// `set_bond_amount` call.
+    ///
+    /// Fails with `NotInitialized` if called before `initialize`, or
+    /// `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
+    /// than `MAX_BOND_AMOUNT`.
+    pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        if new_bond_amount <= 0 || new_bond_amount > MAX_BOND_AMOUNT {
+            return Err(Error::InvalidBondAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BondAmount, &new_bond_amount);
+
+        BondAmountUpdated {
+            bond_amount: new_bond_amount,
+        }
+        .publish(&env);
 
         Ok(())
     }

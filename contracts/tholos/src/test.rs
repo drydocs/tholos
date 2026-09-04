@@ -672,6 +672,105 @@ fn test_resolvers_updated_mid_dispute_do_not_affect_it() {
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
 }
+// ---------------------------------------------------------------------------
+// set_bond_amount tests
+// ---------------------------------------------------------------------------
+
+/// Covers both the happy path and the regression the issue calls for: a bond
+/// change never retroactively affects an assertion opened before it.
+#[test]
+fn test_admin_can_set_bond_amount_and_it_only_affects_future_assertions() {
+    let f = Fixture::new();
+    let asserter_a = f.funded_address();
+    let caller = f.generate();
+
+    // Assertion A opens under the original bond (100).
+    let id_a = f.client.assert_outcome(&asserter_a, &true);
+    assert_eq!(f.client.get_assertion_state(&id_a).bond, DEFAULT_BOND);
+
+    f.client.set_bond_amount(&200);
+
+    // Assertion B, opened after the change, uses the new bond.
+    let asserter_b = f.funded_address(); // funded with 1_000, plenty for 200
+    let id_b = f.client.assert_outcome(&asserter_b, &true);
+    assert_eq!(f.client.get_assertion_state(&id_b).bond, 200);
+
+    // Assertion A is untouched: still pinned at 100, and its payout reflects
+    // that, not the live (now 200) bond amount.
+    assert_eq!(f.client.get_assertion_state(&id_a).bond, DEFAULT_BOND);
+    f.advance_past_window();
+    f.client.finalize(&caller, &id_a);
+    assert_eq!(f.token.balance(&asserter_a), 1_000); // 900 + 100, not + 200
+}
+
+#[test]
+fn test_set_bond_amount_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_bond_amount(&200);
+
+    // env.auths() returns every require_auth invocation from the last call;
+    // the admin's must appear, proving set_bond_amount is admin-gated.
+    let auths = env.auths();
+    let admin_was_authed = auths.iter().any(|(addr, _)| *addr == admin);
+    assert!(
+        admin_was_authed,
+        "admin's require_auth was not invoked during set_bond_amount"
+    );
+}
+
+#[test]
+fn test_cannot_set_bond_amount_to_zero() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&0);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_negative() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&-1);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_above_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&(MAX_BOND_AMOUNT + 1));
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_can_set_bond_amount_exactly_at_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&MAX_BOND_AMOUNT);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let result = client.try_set_bond_amount(&DEFAULT_BOND);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
 
 #[test]
 fn test_paused_blocks_assert_dispute_and_finalize() {
