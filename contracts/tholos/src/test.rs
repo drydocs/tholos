@@ -681,32 +681,56 @@ fn test_admin_rotation_updates_authority() {
         &0u32,
     );
 
-    // An arbitrary address cannot authorize a rotation: set_admin always
+    // An arbitrary address cannot authorize a rotation: propose_admin always
     // requires the admin currently stored by the contract.
     env.mock_auths(&[MockAuth {
         address: &arbitrary,
         invoke: &MockAuthInvoke {
             contract: &contract_id,
-            fn_name: "set_admin",
+            fn_name: "propose_admin",
             args: (new_admin.clone(),).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    assert!(client.try_set_admin(&new_admin).is_err());
+    assert!(client.try_propose_admin(&new_admin).is_err());
 
     env.mock_auths(&[MockAuth {
         address: &old_admin,
         invoke: &MockAuthInvoke {
             contract: &contract_id,
-            fn_name: "set_admin",
+            fn_name: "propose_admin",
             args: (new_admin.clone(),).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    client.set_admin(&new_admin);
+    client.propose_admin(&new_admin);
 
-    // Rotation is immediate: the previous admin can no longer use an
-    // admin-only entrypoint, while the new admin can.
+    // The old admin cannot complete the proposal because the new admin must
+    // explicitly authorize acceptance.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_accept_admin().is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.accept_admin();
+
+    // After acceptance the previous admin can no longer use an admin-only
+    // entrypoint, while the new admin can.
     env.mock_auths(&[MockAuth {
         address: &old_admin,
         invoke: &MockAuthInvoke {

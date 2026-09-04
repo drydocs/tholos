@@ -62,6 +62,12 @@ pub struct AdminUpdated {
 }
 
 #[contractevent]
+pub struct AdminRotationProposed {
+    pub new_admin: Address,
+    pub proposed_by: Address,
+}
+
+#[contractevent]
 pub struct RotationProposed {
     pub old_resolver: Address,
     pub new_resolver: Address,
@@ -96,6 +102,14 @@ pub struct RotationProposal {
     pub yes: Vec<Address>,
     /// Resolvers who voted no, to prevent double-voting and detect deadlock.
     pub no: Vec<Address>,
+}
+
+/// A pending deployment-admin rotation. The current admin proposes a target,
+/// then that target must authorize `accept_admin` before authority changes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRotationProposal {
+    pub new_admin: Address,
 }
 
 #[contracttype]
@@ -155,6 +169,7 @@ pub enum DataKey {
     /// full bond is returned to the asserter (original behavior).
     FinalizeRewardBps,
     RotationProposal,
+    AdminRotationProposal,
 }
 
 #[contracterror]
@@ -188,6 +203,7 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
+    NoAdminRotationProposal = 23,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -313,23 +329,59 @@ impl Tholos {
         Ok(())
     }
 
-    /// Replaces the deployment admin. Only the current admin may authorize
-    /// the change. The old admin loses authority as soon as this call
-    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
-    /// `AdminUpdated` on success.
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+    /// Proposes a deployment-admin rotation. Only the current admin may
+    /// authorize the proposal; authority remains unchanged until the proposed
+    /// address calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current_admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        env.storage().instance().set(
+            &DataKey::AdminRotationProposal,
+            &AdminRotationProposal {
+                new_admin: new_admin.clone(),
+            },
+        );
+        AdminRotationProposed {
+            new_admin,
+            proposed_by: current_admin,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Completes the pending deployment-admin rotation. The proposed address
+    /// must authorize this call, so a current admin cannot complete a rotation
+    /// without the new admin's consent. Fails when no proposal exists.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let proposal: AdminRotationProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminRotationProposal)
+            .ok_or(Error::NoAdminRotationProposal)?;
+        proposal.new_admin.require_auth();
         let old_admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)?;
-        old_admin.require_auth();
         Self::touch_instance_ttl(&env);
 
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &proposal.new_admin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::AdminRotationProposal);
         AdminUpdated {
             old_admin,
-            new_admin,
+            new_admin: proposal.new_admin,
         }
         .publish(&env);
 
