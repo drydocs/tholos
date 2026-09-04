@@ -73,7 +73,7 @@ export const Errors = {
 
 export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
 
-export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void};
+export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AssertionEscrow", values: readonly [u64]} | {tag: "AdminRotationProposal", values: void};
 
 
 
