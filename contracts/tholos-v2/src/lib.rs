@@ -861,7 +861,6 @@ impl TholosV2 {
     /// `reveal`, `resolve_outcome`, `settle`, and `cancel_round` also check
     /// this guard on entry so they cannot act on partially completed state
     /// while a guarded entrypoint is in progress.
-    /// provisional until its funding transfer actually completes.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
         Self::check_reentrancy_guard(env)?;
         env.storage()
