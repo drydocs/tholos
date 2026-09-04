@@ -1994,6 +1994,37 @@ fn test_fee_on_transfer_token_finalize_resolves_without_deadlock() {
 }
 
 #[test]
+fn test_resolve_is_capped_by_the_assertion_escrow() {
+    let f = Fixture::new();
+    let asserter_a = f.funded_address();
+    let disputer_a = f.funded_address();
+    let asserter_b = f.funded_address();
+    let disputer_b = f.funded_address();
+
+    let id_a = f.client.assert_outcome(&asserter_a, &true);
+    f.client.dispute(&disputer_a, &id_a);
+    let id_b = f.client.assert_outcome(&asserter_b, &true);
+    f.client.dispute(&disputer_b, &id_b);
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::AssertionEscrow(id_a), &DEFAULT_BOND);
+    });
+
+    f.client
+        .resolve(&f.resolvers.get(0).unwrap(), &id_a, &false);
+    f.client
+        .resolve(&f.resolvers.get(1).unwrap(), &id_a, &false);
+
+    assert_eq!(f.token.balance(&disputer_a), 1_000);
+    assert_eq!(f.token.balance(&asserter_b), 900);
+    assert_eq!(f.token.balance(&disputer_b), 900);
+    assert_eq!(f.token.balance(&f.client.address), 300);
+}
+
+#[test]
 fn test_zero_received_transfer_rejected() {
     let env = Env::default();
     env.mock_all_auths();
