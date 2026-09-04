@@ -2699,10 +2699,9 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     // reentered mid-transfer and never released it, without needing a
     // custom malicious-token contract to actually trigger reentrancy.
     //
-    // dispute() and register() only check the guard right before their own
-    // transfer (after their other validation), so each needs its own state
-    // that would otherwise succeed, to prove the guard is what's actually
-    // blocking them rather than an unrelated validation error.
+    // All guarded entrypoints check or acquire the guard at entry (immediately
+    // after auth), keeping validation and state changes protected while
+    // a transfer is in flight.
     let f = Fixture::new();
     let asserter = f.funded_address();
     let disputer = f.funded_address();
@@ -2793,6 +2792,61 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     });
     let cause = f.client.resolve_outcome(&id);
     assert_eq!(cause, TerminalCause::OptimisticTimeout);
+}
+
+#[test]
+fn test_reentrancy_guard_blocks_calls_before_validation() {
+    // This regression test does not simulate an external callback. Instead, it
+    // holds the reentrancy guard before each entrypoint call and deliberately
+    // supplies inputs that would fail at the old pre-guard validation points:
+    // assert_outcome is paused, while dispute/register/withdraw use invalid or
+    // nonexistent assertion state. If any of those validations runs before the
+    // guard, a different error would be returned. ReentrancyGuardActive winning
+    // in every case therefore pins down the required ordering: after
+    // require_auth(), the guard must be acquired before validation or state
+    // lookups.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    // Pause contract so assert_outcome would otherwise fail with Paused.
+    f.client.set_paused_v2(&true);
+
+    // Hold the guard.
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    // Without the early guard this would return Paused first.
+    assert_eq!(
+        f.client.try_assert_outcome(&asserter, &true),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would return AssertionNotFound first.
+    assert_eq!(
+        f.client.try_dispute(&disputer, &999_999),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would reach the invalid amount/assertion
+    // validation first.
+    assert_eq!(
+        f.client
+            .try_register(&voter, &999_999, &0i128, &commitment(&f.env, 1)),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would reach the assertion lookup/credit
+    // validation first.
+    assert_eq!(
+        f.client.try_withdraw(&asserter, &999_999, &asserter),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
 }
 
 #[test]

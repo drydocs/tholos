@@ -852,22 +852,15 @@ impl TholosV2 {
     }
 
     /// Acquires the contract-wide reentrancy mutex, failing with
-    /// `ReentrancyGuardActive` if it's already held. Every function that
-    /// initiates an external token transfer calls this immediately before
-    /// that transfer (after writing whatever state the transfer follows,
-    /// matching the existing state-before-external-call ordering) and
-    /// `exit_reentrancy_guard` immediately after. A non-standard token
-    /// whose `transfer` implementation calls back into this contract mid-
-    /// transfer, instead of a well-behaved SEP-41 token that just updates
-    /// balances, would otherwise be able to act on state that looks
-    /// complete (because it was written before the transfer) while the
-    /// tokens backing it haven't actually moved yet.
+    /// `ReentrancyGuardActive` if it's already held. Guarded entrypoints
+    /// should call this immediately after authentication, before validation
+    /// or any state changes that a reentrant call could observe or act on.
+    /// The guard remains held through any external token transfer and must
+    /// be released with `exit_reentrancy_guard` afterward.
     ///
     /// `reveal`, `resolve_outcome`, `settle`, and `cancel_round` also check
-    /// this at their own entry, even though none of them move tokens
-    /// themselves: all four can act on a position's weight, credit, or
-    /// terminal state, which the guard above exists specifically to keep
-    /// provisional until its funding transfer actually completes.
+    /// this guard on entry so they cannot act on partially completed state
+    /// while a guarded entrypoint is in progress.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
         Self::check_reentrancy_guard(env)?;
         env.storage()
@@ -961,6 +954,7 @@ impl TholosV2 {
     /// the new assertion id. Emits `Asserted`.
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         asserter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
         Self::require_not_paused(&env)?;
 
         let policy: PolicySnapshotV2 = env
@@ -975,7 +969,6 @@ impl TholosV2 {
         // not-yet-incremented id.
         let id = Self::create_pending_assertion(&env, asserter.clone(), outcome)?;
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &asserter,
             env.current_contract_address(),
@@ -1072,6 +1065,7 @@ impl TholosV2 {
     /// Emits `Disputed`.
     pub fn dispute(env: Env, disputer: Address, id: u64) -> Result<(), Error> {
         disputer.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let mut assertion: AssertionV2 = env
             .storage()
@@ -1138,7 +1132,6 @@ impl TholosV2 {
         };
         Self::set_resolution(&env, id, &resolution, &policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &disputer,
             env.current_contract_address(),
@@ -1185,6 +1178,7 @@ impl TholosV2 {
         commitment: BytesN<32>,
     ) -> Result<(), Error> {
         voter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -1287,7 +1281,6 @@ impl TholosV2 {
         resolution.eligible_total = new_total;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &voter,
             env.current_contract_address(),
@@ -1979,7 +1972,7 @@ impl TholosV2 {
         destination: Address,
     ) -> Result<i128, Error> {
         owner.require_auth();
-        Self::check_reentrancy_guard(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -2022,7 +2015,6 @@ impl TholosV2 {
             .ok_or(Error::SettlementArithmeticOverflow)?;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &env.current_contract_address(),
             &destination,
