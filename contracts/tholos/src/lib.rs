@@ -206,6 +206,8 @@ pub enum Error {
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
     NoAdminRotationProposal = 23,
+    /// Token transfer escrow overflow when adding a received amount.
+    TokenTransferMismatch = 24,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;

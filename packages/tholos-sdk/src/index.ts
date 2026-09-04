@@ -68,7 +68,11 @@ export const Errors = {
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
   22: {message:"SelfDispute"},
-  23: {message:"NoAdminRotationProposal"}
+  23: {message:"NoAdminRotationProposal"},
+  /**
+   * Token transfer escrow overflow when adding a received amount.
+   */
+  24: {message:"TokenTransferMismatch"}
 }
 
 export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
