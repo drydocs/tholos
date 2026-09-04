@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::storage::Persistent as _;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
 use soroban_sdk::IntoVal;
 
@@ -2862,6 +2862,30 @@ fn test_set_paused_v2_blocks_new_assertions() {
 
     f.client.set_paused_v2(&false);
     f.client.assert_outcome(&asserter, &true);
+}
+
+#[test]
+fn test_admin_state_changes_renew_instance_storage_ttl() {
+    let f = Fixture::new();
+
+    let instance_ttl = || {
+        f.env
+            .as_contract(&f.client.address, || f.env.storage().instance().get_ttl())
+    };
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_paused_v2(&true);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_admin(&f.generate());
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
 }
 
 #[test]

@@ -66,6 +66,22 @@ handing the contract id to anyone.
 
 ## Admin runbook
 
+### Rotating the admin key
+
+`set_admin` is authorized by the current admin and takes effect immediately.
+The old signer loses authority as soon as the transaction succeeds, so verify
+the new address before signing and keep the new signer available:
+
+```sh
+# Current admin performs the rotation.
+stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- set_admin \
+  --new_admin "$NEW_ADMIN"
+```
+
+The successful call emits `AdminUpdated` with both addresses. Afterward, use
+the new signer for `set_paused_v2`, `update_resolvers`, and future admin
+rotations.
+
 ### Pausing during an incident
 
 If something looks wrong (a bug is found, a resolver key looks compromised, vote

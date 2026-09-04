@@ -739,9 +739,7 @@ impl TholosV2 {
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
 
         Ok(())
     }
@@ -769,9 +767,7 @@ impl TholosV2 {
         old_admin.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
         AdminUpdated {
             old_admin,
             new_admin,
@@ -796,6 +792,7 @@ impl TholosV2 {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
+        Self::touch_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
 
@@ -809,6 +806,16 @@ impl TholosV2 {
             .persistent()
             .get(&DataKey::AssertionV2(id))
             .ok_or(Error::AssertionNotFound)
+    }
+
+    /// Renews instance storage after a state-changing call that uses the
+    /// deployment-wide instance entries. Keeping this in one helper prevents
+    /// an admin or pause operation from leaving those entries to expire while
+    /// the contract is still in use.
+    fn touch_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// TTL bump `(threshold, amount)`, in ledgers, sized to cover one
