@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_CHALLENGE_WINDOW: u64 = 3600;
@@ -2861,6 +2862,122 @@ fn test_set_paused_v2_blocks_new_assertions() {
 
     f.client.set_paused_v2(&false);
     f.client.assert_outcome(&asserter, &true);
+}
+
+#[test]
+fn test_admin_state_changes_renew_instance_storage_ttl() {
+    let f = Fixture::new();
+
+    let instance_ttl = || {
+        f.env
+            .as_contract(&f.client.address, || f.env.storage().instance().get_ttl())
+    };
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_paused_v2(&true);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_admin(&f.generate());
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+}
+
+#[test]
+fn test_admin_rotation_updates_authority() {
+    let env = Env::default();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let old_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let arbitrary = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (
+                old_admin.clone(),
+                token_id.clone(),
+                DEFAULT_BOND,
+                DEFAULT_CHALLENGE_WINDOW,
+                DEFAULT_FINALIZE_REWARD_BPS,
+                DEFAULT_REGISTRATION_SECS,
+                DEFAULT_ANTI_SNIPE_EXT_SECS,
+                DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+                DEFAULT_REVEAL_SECS,
+                DEFAULT_MAX_POSITION,
+                DEFAULT_MAX_TOTAL_WEIGHT,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    init(
+        &client,
+        &old_admin,
+        &token_id,
+        DEFAULT_BOND,
+        DEFAULT_CHALLENGE_WINDOW,
+        DEFAULT_FINALIZE_REWARD_BPS,
+    )
+    .unwrap()
+    .unwrap();
+
+    // An arbitrary address cannot authorize a rotation: set_admin always
+    // requires the admin currently stored by the contract.
+    env.mock_auths(&[MockAuth {
+        address: &arbitrary,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_admin(&new_admin).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_admin(&new_admin);
+
+    // Rotation is immediate: the previous admin can no longer use an
+    // admin-only entrypoint, while the new admin can.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused_v2",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_paused_v2(&true).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused_v2",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_paused_v2(&true);
 }
 
 #[test]

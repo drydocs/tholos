@@ -212,6 +212,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RoundCancelled {
     #[topic]
     pub id: u64,
@@ -733,9 +739,7 @@ impl TholosV2 {
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
 
         Ok(())
     }
@@ -748,6 +752,29 @@ impl TholosV2 {
             .instance()
             .get(&DataKey::Policy)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Replaces the deployment admin. Only the current admin may authorize
+    /// the change. The old admin loses authority as soon as this call
+    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
+    /// `AdminUpdated` on success.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        old_admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::touch_instance_ttl(&env);
+        AdminUpdated {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
@@ -765,6 +792,7 @@ impl TholosV2 {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
+        Self::touch_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
 
@@ -778,6 +806,16 @@ impl TholosV2 {
             .persistent()
             .get(&DataKey::AssertionV2(id))
             .ok_or(Error::AssertionNotFound)
+    }
+
+    /// Renews instance storage after a state-changing call that uses the
+    /// deployment-wide instance entries. Keeping this in one helper prevents
+    /// an admin or pause operation from leaving those entries to expire while
+    /// the contract is still in use.
+    fn touch_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// TTL bump `(threshold, amount)`, in ledgers, sized to cover one

@@ -463,6 +463,12 @@ V2 has no global resolver membership and no `update_resolvers` equivalent for v2
 assertions. The admin cannot insert a voter, remove one, alter weight, or change a
 pinned policy.
 
+The admin address itself can be rotated through `set_admin(new_admin)`. The call
+requires the currently stored admin's signature, takes effect immediately, and
+emits `AdminUpdated` with the old and new addresses. Rotation changes only who may
+invoke the existing administrative controls; it cannot alter any assertion's
+pinned policy, weight, deadline, or outcome.
+
 An emergency pause must not selectively censor a time-critical step of an
 already funded assertion. In particular, blocking `dispute` while allowing
 `finalize`, or blocking `reveal` while its deadline continues, can choose a winner
