@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
@@ -642,6 +643,115 @@ fn test_admin_can_update_resolvers() {
     f.client
         .resolve(&new_resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_admin_rotation_updates_authority() {
+    let env = Env::default();
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let old_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let arbitrary = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (
+                old_admin.clone(),
+                token_id.clone(),
+                DEFAULT_BOND,
+                DEFAULT_WINDOW,
+                resolvers.clone(),
+                0u32,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(
+        &old_admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    // An arbitrary address cannot authorize a rotation: propose_admin always
+    // requires the admin currently stored by the contract.
+    env.mock_auths(&[MockAuth {
+        address: &arbitrary,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_propose_admin(&new_admin).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin(&new_admin);
+
+    // The old admin cannot complete the proposal because the new admin must
+    // explicitly authorize acceptance.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_accept_admin().is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.accept_admin();
+
+    // After acceptance the previous admin can no longer use an admin-only
+    // entrypoint, while the new admin can.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_paused(&true).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_paused(&true);
 }
 
 #[test]
