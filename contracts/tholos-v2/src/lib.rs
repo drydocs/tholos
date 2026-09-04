@@ -564,6 +564,11 @@ pub enum Error {
     /// Rejected outright rather than treated as a no-op, so this call can
     /// never be read as altering an already-decided result.
     RoundAlreadyDecided = 36,
+    /// `initialize` was called with `max_total_weight` greater than
+    /// `MAX_TOTAL_WEIGHT_TO_POSITION_RATIO * max_position`. This caps how
+    /// many effective seats a single split actor can occupy, raising the
+    /// cost of Sybil-style address splitting.
+    InvalidWeightRatio = 37,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -626,6 +631,16 @@ const MAX_BOND_AMOUNT: i128 = i128::MAX / (MAX_FINALIZE_REWARD_BPS as i128);
 /// headroom under the true `sqrt(i128::MAX)` limit while still supporting
 /// any deployment token's full realistic supply range.
 const MAX_SETTLEMENT_TOTAL_WEIGHT: i128 = 10_000_000_000_000_000_000;
+
+/// Maximum allowed ratio between `max_total_weight` and `max_position`.
+///
+/// A bounded ratio raises the cost of Sybil-style splitting: a single actor
+/// must control at least this many distinct positions to approach the
+/// plutocratic threshold. Even with this bound, a coalition controlling more
+/// than half of the eligible bonded capital can still determine the result;
+/// the ratio only bounds how cheaply one actor can approach that via address
+/// splitting. See `docs/src/CONTRACT_V2.md` and issue #168.
+const MAX_TOTAL_WEIGHT_TO_POSITION_RATIO: i128 = 10;
 
 /// This proposal has exactly one weighted round: no recursive appeals or
 /// repeated stake rounds, per V2_RESOLUTION.md's "Lifecycle and the single
@@ -707,6 +722,18 @@ impl TholosV2 {
         // A position can't usefully exceed the frozen total it's part of.
         if max_position <= 0 || max_position > max_total_weight {
             return Err(Error::InvalidMaxPosition);
+        }
+
+        // Issue #168: bound the Sybil-splitting surface by requiring
+        // max_total_weight be no more than a fixed multiple of max_position.
+        // checked_mul guards against a pathologically large max_position that
+        // would overflow the product; in that case the product would exceed
+        // any real max_total_weight anyway, so unwrap_or(i128::MAX) is safe.
+        let max_allowed_total = max_position
+            .checked_mul(MAX_TOTAL_WEIGHT_TO_POSITION_RATIO)
+            .unwrap_or(i128::MAX);
+        if max_total_weight > max_allowed_total {
+            return Err(Error::InvalidWeightRatio);
         }
 
         let policy = PolicySnapshotV2 {
