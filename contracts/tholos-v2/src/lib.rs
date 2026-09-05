@@ -1788,7 +1788,7 @@ impl TholosV2 {
     /// `NotYetDecided` is impossible once `phase == Resolved`, which
     /// `close_reveal_if_ready` and `cancel_round` (the only two places
     /// that set it, besides `finalize`'s own `UncontestedFinalize` path)
-    /// always pair with one of the four causes handled here.
+    /// always pair with one of the five causes handled here.
     fn settlement_pool(terminal_cause: TerminalCause, resolution: &Resolution) -> (i128, i128) {
         let recipient_weight = match terminal_cause {
             TerminalCause::StrictMajorityFor => resolution.agree_weight,
