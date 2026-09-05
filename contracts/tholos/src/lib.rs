@@ -86,6 +86,26 @@ pub struct RotationCancelled {
     pub new_resolver: Address,
 }
 
+#[contractevent]
+pub struct StallTimeoutUpdated {
+    pub stall_timeout_secs: u64,
+}
+
+#[contractevent]
+pub struct StalledDisputeReclaimed {
+    #[topic]
+    pub id: u64,
+    /// The asserter whose bond was returned.
+    pub asserter: Address,
+    /// The disputer whose bond was returned.
+    pub disputer: Address,
+    /// The per-side bond amount refunded to each party.
+    pub refunded: i128,
+    /// Who called `reclaim_stalled_dispute`. Always a verified address —
+    /// the call requires the caller's auth unconditionally.
+    pub caller: Address,
+}
+
 /// An in-flight single-slot committee rotation proposed by a current resolver.
 /// Decided by a strict majority of the live committee via `vote_rotation`. Only
 /// one may be open at a time. See `docs/src/ROTATION_DESIGN.md`.
@@ -138,6 +158,13 @@ pub struct Assertion {
     pub opened_at: u64,
     pub status: Status,
     pub disputer: Option<Address>,
+    /// When `dispute` was called for this assertion. `0` while pending or
+    /// for pre-#166 assertions disputed before this upgrade. Read by
+    /// `reclaim_stalled_dispute` to enforce the stall timeout relative to
+    /// the moment the dispute opened, never `opened_at` (the assertion's
+    /// creation time), because the stall clock starts when the committee
+    /// snaps in and the bonds are both committed.
+    pub disputed_at: u64,
     pub votes_for_outcome: u32,
     pub votes_against_outcome: u32,
     pub voted: Vec<Address>,
@@ -170,6 +197,12 @@ pub enum DataKey {
     FinalizeRewardBps,
     RotationProposal,
     AdminRotationProposal,
+    /// Seconds after `dispute` opens during which `resolve` must reach a
+    /// strict majority before `reclaim_stalled_dispute` becomes callable.
+    /// Unset means 0: the stalled-dispute fallback is disabled entirely, no
+    /// permissionless recovery path exists and bonds can remain frozen
+    /// indefinitely, the pre-#166 behavior. See `set_stall_timeout`.
+    StallTimeoutSecs,
 }
 
 #[contracterror]
@@ -204,6 +237,17 @@ pub enum Error {
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
     NoAdminRotationProposal = 23,
+    /// `reclaim_stalled_dispute` was called on an assertion whose dispute
+    /// opened without a stall timeout configured (0 = fallback disabled), or
+    /// whose disputed_at predates this upgrade and cannot be timed out.
+    StallTimeoutNotConfigured = 24,
+    /// `reclaim_stalled_dispute` was called before the stall timeout elapsed
+    /// since the dispute opened. The assertion still requires normal
+    /// resolution by the snapshotted committee.
+    DisputeNotStalled = 25,
+    /// `set_stall_timeout` was called with a value greater than
+    /// `MAX_STALL_TIMEOUT_SECS`.
+    InvalidStallTimeout = 26,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -218,6 +262,13 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const ASSERTION_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const ASSERTION_LIFETIME_THRESHOLD: u32 = ASSERTION_BUMP_AMOUNT - DAY_IN_LEDGERS;
 const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Upper bound for `set_stall_timeout`. Generous enough for any realistic
+/// committee recovery timeline, while far below the 30-day assertion TTL
+/// bump so a stalled dispute cannot be archived out from under the fallback
+/// while it is still reclaimable. 30 days also matches ASSERTION_BUMP_AMOUNT
+/// headroom the same way MAX_CHALLENGE_WINDOW_SECS does for `finalize`.
+const MAX_STALL_TIMEOUT_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// A resolver committee larger than this gets copied in full onto every
 /// disputed assertion (see `Assertion.resolvers`), so an unbounded size
@@ -698,6 +749,146 @@ impl Tholos {
         Ok(())
     }
 
+    /// Configures the stalled-dispute timeout (#166). After a `dispute`
+    /// has been open for `stall_timeout_secs` without `resolve` reaching a
+    /// strict majority, `reclaim_stalled_dispute` becomes callable by anyone
+    /// and returns both bonds to their original owners with no winner.
+    ///
+    /// `0` disables the fallback (the pre-#166 behavior): bonds of a
+    /// stalled dispute can then remain frozen indefinitely. Pause-exempt,
+    /// like `set_bond_amount`: a stall timeout that lapses across a pause
+    /// costs nothing — the fallback pays no one and no reward applies —
+    /// but `reclaim_stalled_dispute` itself is blocked while paused so a
+    /// paused deployment cannot be drained by the fallback racing a normal
+    /// `resolve` that never got a chance to act.
+    ///
+    /// The timeout only applies to assertions disputed after this upgrade:
+    /// their `disputed_at` is pinned by `dispute`. Assertions disputed
+    /// before the upgrade (or while no timeout was configured) have
+    /// `disputed_at == 0` and are never reclaimable, since a timeout
+    /// configured after the fact would retroactively apply to disputes
+    /// opened under different expectations.
+    ///
+    /// Only callable by the admin. Fails with `InvalidStallTimeout` if
+    /// `stall_timeout_secs` exceeds `MAX_STALL_TIMEOUT_SECS` (30 days).
+    pub fn set_stall_timeout(env: Env, stall_timeout_secs: u64) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        // 0 is always valid: it means "disable the fallback", not an error.
+        if stall_timeout_secs > MAX_STALL_TIMEOUT_SECS {
+            return Err(Error::InvalidStallTimeout);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StallTimeoutSecs, &stall_timeout_secs);
+
+        StallTimeoutUpdated {
+            stall_timeout_secs,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Permissionless liveness fallback for a stalled dispute (#166).
+    /// Callable by anyone once the deployment's stall timeout has elapsed
+    /// since the dispute opened without `resolve` reaching a strict
+    /// majority. Returns both bonds to their original owners — the
+    /// asserter gets their bond back, the disputer gets their bond back —
+    /// with no winner and no forfeiture.
+    ///
+    /// Outcome rule (confirmed with the maintainer): no-winner, not
+    /// default-to-asserted. The disputer did contest the claim; the process
+    /// broke down because the committee failed, not because the challenge
+    /// was weak. Defaulting to the asserted outcome would forfeit the
+    /// disputer's bond over a dispute never adjudicated, and would hand the
+    /// asserter an incentive to stall the committee (bribe, DoS, wait out
+    /// unresponsive resolvers) since stalling would win the case for free.
+    /// No-winner removes that incentive: stalling benefits nobody.
+    ///
+    /// The assertion ends in `Status::Resolved` with `final_outcome: None`,
+    /// which no existing reader can confuse with a majority outcome: every
+    /// pre-#166 resolution writes `final_outcome: Some(_)`. Indexers
+    /// treating `Resolved` + `None` as "voided, bonds returned" is the
+    /// documented interpretation.
+    ///
+    /// Mirrors `finalize`'s permissionless-after-a-deadline shape: `caller`
+    /// must authorize (no reward is paid, but the event records who
+    /// triggered the recovery). Fails with `Paused` while paused, and with
+    /// `StallTimeoutNotConfigured` / `DisputeNotStalled` as documented.
+    pub fn reclaim_stalled_dispute(env: Env, caller: Address, id: u64) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        caller.require_auth();
+        Self::touch_instance_ttl(&env);
+
+        let stall_timeout_secs: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StallTimeoutSecs)
+            .unwrap_or(0);
+
+        let mut assertion = Self::get_assertion(&env, id)?;
+        if assertion.status != Status::Disputed {
+            return Err(Error::NotDisputed);
+        }
+        if stall_timeout_secs == 0 {
+            return Err(Error::StallTimeoutNotConfigured);
+        }
+        // Pre-upgrade disputes have disputed_at == 0 (never set). They are
+        // not reclaimable under a timeout configured after the fact; see
+        // set_stall_timeout's doc comment. A never-set timestamp must not
+        // alias epoch (1970) into "definitely elapsed" decades later.
+        if assertion.disputed_at == 0 {
+            return Err(Error::StallTimeoutNotConfigured);
+        }
+        if env.ledger().timestamp() < assertion.disputed_at + stall_timeout_secs {
+            return Err(Error::DisputeNotStalled);
+        }
+
+        let disputer = assertion
+            .disputer
+            .clone()
+            .expect("a Disputed assertion always has a disputer set by dispute()");
+
+        // State is written before the external token transfers below so a
+        // reentrant call from a non-standard token sees this assertion as
+        // already resolved, rather than still Disputed and reclaimable twice.
+        assertion.status = Status::Resolved;
+        assertion.final_outcome = None;
+        Self::set_assertion(&env, id, &assertion);
+
+        let token_id: Address = Self::get(&env, &DataKey::Token)?;
+        let token_client = token::Client::new(&env, &token_id);
+        // Each side receives exactly the bond they posted, in the same
+        // transfer shape every other path uses. Two separate transfers,
+        // not one combined: the two recipients are unrelated parties and
+        // neither is owed the other's half.
+        token_client.transfer(
+            &env.current_contract_address(),
+            &assertion.asserter,
+            &assertion.bond,
+        );
+        token_client.transfer(&env.current_contract_address(), &disputer, &assertion.bond);
+
+        StalledDisputeReclaimed {
+            id,
+            asserter: assertion.asserter.clone(),
+            disputer,
+            refunded: assertion.bond,
+            caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     fn require_not_paused(env: &Env) -> Result<(), Error> {
         let paused: bool = env
             .storage()
@@ -731,6 +922,7 @@ impl Tholos {
             opened_at: env.ledger().timestamp(),
             status: Status::Pending,
             disputer: None,
+            disputed_at: 0,
             votes_for_outcome: 0,
             votes_against_outcome: 0,
             voted: Vec::new(&env),
@@ -792,6 +984,11 @@ impl Tholos {
         // already disputed, rather than still `Pending`.
         assertion.disputer = Some(disputer.clone());
         assertion.status = Status::Disputed;
+        // Pinned at the moment the dispute opens: the stall clock for
+        // `reclaim_stalled_dispute` (#166) starts here, not at `opened_at`,
+        // because this is the moment both bonds are committed and the
+        // committee snapshot takes over.
+        assertion.disputed_at = env.ledger().timestamp();
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
