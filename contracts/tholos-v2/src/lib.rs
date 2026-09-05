@@ -1307,6 +1307,13 @@ impl TholosV2 {
             resolution.registration_deadline = extended.min(resolution.registration_hard_deadline);
         }
 
+        // Minimum bond applies to every deposit, including top-ups, so a
+        // dust-sized repeat deposit cannot be used to grief the anti-snipe
+        // extension mechanism (#155).
+        if amount < assertion.policy.min_resolution_bond {
+            return Err(Error::BelowMinimumResolutionBond);
+        }
+
         let position_key = DataKey::Position(id, voter.clone());
         let existing: Option<Position> = env.storage().persistent().get(&position_key);
 
@@ -1319,12 +1326,7 @@ impl TholosV2 {
                 }
                 position.amount
             }
-            None => {
-                if amount < assertion.policy.min_resolution_bond {
-                    return Err(Error::BelowMinimumResolutionBond);
-                }
-                0
-            }
+            None => 0,
         };
 
         let new_amount = previous_amount

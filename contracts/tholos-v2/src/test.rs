@@ -1224,16 +1224,38 @@ fn test_register_top_up_aggregates() {
 
     let c = commitment(&f.env, 1);
     f.client.register(&voter, &id, &DEFAULT_BOND, &c);
-    f.client.register(&voter, &id, &50, &c);
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
 
     let position = f.client.get_position(&id, &voter);
-    assert_eq!(position.amount, DEFAULT_BOND + 50);
+    assert_eq!(position.amount, DEFAULT_BOND * 2);
 
     let resolution = f.client.get_resolution(&id);
     assert_eq!(
         resolution.eligible_total,
-        DEFAULT_BOND * 2 + DEFAULT_BOND + 50
+        DEFAULT_BOND * 2 + DEFAULT_BOND * 2
     );
+}
+
+#[test]
+fn test_register_top_up_below_min_resolution_bond_fails() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+    f.mint(&voter, DEFAULT_MINT);
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let c = commitment(&f.env, 1);
+    // First deposit is valid.
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    // A top-up below min_resolution_bond must be rejected (#155).
+    let result = f
+        .client
+        .try_register(&voter, &id, &(DEFAULT_BOND - 1), &c);
+    assert_eq!(result, Err(Ok(Error::BelowMinimumResolutionBond)));
 }
 
 #[test]
