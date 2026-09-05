@@ -169,9 +169,9 @@ pub enum DataKey {
     /// full bond is returned to the asserter (original behavior).
     FinalizeRewardBps,
     RotationProposal,
+    AdminRotationProposal,
     /// The total token amount actually received for an assertion's escrow.
     AssertionEscrow(u64),
-    AdminRotationProposal,
 }
 
 #[contracterror]
