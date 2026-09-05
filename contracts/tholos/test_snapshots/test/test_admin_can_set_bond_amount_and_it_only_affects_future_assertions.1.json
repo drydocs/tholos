@@ -375,12 +375,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "disputed_at"
-                    },
-                    "val": "void"
-                  },
-                  {
-                    "key": {
                       "symbol": "disputer"
                     },
                     "val": "void"
@@ -504,12 +498,6 @@
                     "val": {
                       "i128": "200"
                     }
-                  },
-                  {
-                    "key": {
-                      "symbol": "disputed_at"
-                    },
-                    "val": "void"
                   },
                   {
                     "key": {

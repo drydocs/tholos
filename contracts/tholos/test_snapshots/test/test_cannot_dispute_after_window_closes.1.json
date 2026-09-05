@@ -288,12 +288,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "disputed_at"
-                    },
-                    "val": "void"
-                  },
-                  {
-                    "key": {
                       "symbol": "disputer"
                     },
                     "val": "void"

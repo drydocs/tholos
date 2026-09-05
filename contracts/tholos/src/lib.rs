@@ -843,10 +843,7 @@ impl Tholos {
         // see set_stall_timeout's doc comment. Keeping disputed_at as a
         // separate storage key avoids adding a field to Assertion, which
         // would break decoding of pre-upgrade assertions (#184).
-        let disputed_at: Option<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::DisputedAt(id));
+        let disputed_at: Option<u64> = env.storage().persistent().get(&DataKey::DisputedAt(id));
         let disputed_at = match disputed_at {
             Some(ts) => ts,
             None => return Err(Error::StallTimeoutNotConfigured),
@@ -925,7 +922,7 @@ impl Tholos {
             opened_at: env.ledger().timestamp(),
             status: Status::Pending,
             disputer: None,
-            disputed_at: None,
+
             votes_for_outcome: 0,
             votes_against_outcome: 0,
             voted: Vec::new(&env),
@@ -995,6 +992,7 @@ impl Tholos {
         env.storage()
             .persistent()
             .set(&DataKey::DisputedAt(id), &env.ledger().timestamp());
+        Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         token::Client::new(&env, &token_id).transfer(
