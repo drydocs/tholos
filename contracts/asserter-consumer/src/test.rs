@@ -67,9 +67,9 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     }]);
     token_asset_client.mint(&consumer_id, &1_000);
 
-    let id = consumer_client.create_assertion_as_self(&tholos_id, &token_id, &bond_amount, &true);
+    let id = consumer_client.create_assertion_as_self(&tholos_id, &token_id, &bond_amount, &true).unwrap();
 
-    let state = consumer_client.get_status(&tholos_id, &id);
+    let state = consumer_client.get_status(&tholos_id, &id).unwrap();
     assert!(state.outcome);
     assert_eq!(state.asserter, consumer_id);
     assert_eq!(

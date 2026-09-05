@@ -7,12 +7,25 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, contractimport, Address, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contractimport, Address, Env, IntoVal, Symbol, Vec,
 };
 
 mod tholos {
     use super::*;
     contractimport!(file = "../../target/wasm32v1-none/release/tholos.wasm");
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum Error {
+    /// The supplied `tholos_id` does not resolve to a valid Tholos contract.
+    InvalidTholosId = 1,
+    /// The assertion ID does not exist in the referenced Tholos instance.
+    AssertionNotFound = 2,
+    /// The Tholos call failed for a reason not mapped above (e.g. paused,
+    /// invalid bond amount, challenge window closed). The raw error code is
+    /// preserved in the returned `soroban_sdk::Error`.
+    TholosCallFailed = 3,
 }
 
 #[contract]
@@ -39,7 +52,7 @@ impl AsserterConsumer {
         token_id: Address,
         bond_amount: i128,
         outcome: bool,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
         let curr_contract = env.current_contract_address();
 
         env.authorize_as_current_contract(Vec::from_array(
@@ -62,15 +75,23 @@ impl AsserterConsumer {
         ));
 
         let client = tholos::Client::new(&env, &tholos_id);
-        client.assert_outcome(&curr_contract, &outcome)
+        client
+            .try_assert_outcome(&curr_contract, &outcome)
+            .map_err(|_| Error::TholosCallFailed)
     }
 
     /// Forwards a read of an assertion's current state. See INTEGRATION.md for
     /// why `Assertion.outcome` is the *claimed* outcome, not necessarily the
     /// final one if the assertion was disputed and overturned.
-    pub fn get_status(env: Env, tholos_id: Address, id: u64) -> tholos::Assertion {
+    pub fn get_status(
+        env: Env,
+        tholos_id: Address,
+        id: u64,
+    ) -> Result<tholos::Assertion, Error> {
         let client = tholos::Client::new(&env, &tholos_id);
-        client.get_assertion_state(&id)
+        client
+            .try_get_assertion_state(&id)
+            .map_err(|_| Error::AssertionNotFound)
     }
 }
 
