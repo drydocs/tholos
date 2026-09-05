@@ -14,10 +14,12 @@
 //! #69 (settlement: converting a locked outcome into per-position
 //! entitlements, forfeiture, and pro-rata reward distribution), #70
 //! (credit withdrawal and the reentrancy guard on every token-moving
-//! entrypoint), and #71 (`set_paused_v2` and `cancel_round`, the emergency
+//! entrypoint), #71 (`set_paused_v2` and `cancel_round`, the emergency
 //! mechanism for an already-active round, distinct from v1's narrower
-//! new-assertions-only pause). Remaining issues (#72 onward) land as this
-//! crate grows.
+//! new-assertions-only pause), and #154 (pinning `admin` in `__constructor`,
+//! atomically with contract creation, so a separate `initialize` call can no
+//! longer be front-run to claim the admin role). Remaining issues (#72
+//! onward) land as this crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
@@ -645,13 +647,37 @@ pub struct TholosV2;
 
 #[contractimpl]
 impl TholosV2 {
+    /// Pins `admin` atomically with contract creation. Soroban invokes a
+    /// contract's constructor (a function literally named `__constructor`)
+    /// as part of the same `CreateContractV2` host operation that creates
+    /// the instance, and the host will not accept a separate, later
+    /// invocation of it: no other transaction can ever execute in between
+    /// "this contract now exists" and "its admin is recorded", so unlike a
+    /// deploy-then-call-`initialize(admin)` two-step, there is no window
+    /// for a third party watching the mempool to submit their own call
+    /// first and become admin of an instance someone else paid to deploy
+    /// (#154). The rest of the deployment-wide policy is still pinned by a
+    /// separate `initialize` call below, but that call no longer accepts an
+    /// `admin` parameter at all: it authenticates against the admin fixed
+    /// here, so nothing a later caller supplies can change who holds the
+    /// role.
+    pub fn __constructor(env: Env, admin: Address) {
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
     /// One-time setup, pinning the deployment-wide defaults every future
-    /// assertion's `PolicySnapshotV2` is built from. Requires `admin`'s
-    /// signature. Fails with `AlreadyInitialized` if called twice.
+    /// assertion's `PolicySnapshotV2` is built from. Requires the signature
+    /// of the admin `__constructor` fixed at deploy time (this call takes
+    /// no `admin` parameter of its own; see `__constructor`'s doc comment
+    /// for why). Fails with `AlreadyInitialized` if called twice.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
-        admin: Address,
         token: Address,
         base_bond: i128,
         challenge_window_secs: u64,
@@ -663,11 +689,20 @@ impl TholosV2 {
         max_position: i128,
         max_total_weight: i128,
     ) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Policy) {
             return Err(Error::AlreadyInitialized);
         }
+
+        // Set by `__constructor`, which every live instance has already run
+        // by the time any call reaches here; `NotInitialized` is defensive
+        // (matches every other Admin lookup in this contract) rather than a
+        // reachable path in practice.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
 
         if base_bond <= 0 || base_bond > MAX_BOND_AMOUNT {
             return Err(Error::InvalidBondAmount);
@@ -735,7 +770,6 @@ impl TholosV2 {
             max_total_weight,
         };
 
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -778,7 +812,7 @@ impl TholosV2 {
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
-    /// admin set at `initialize`. Does not affect any already-active
+    /// admin fixed at `__constructor`. Does not affect any already-active
     /// round: registration, reveal, `resolve_outcome`, `settle`, and
     /// `withdraw` all continue normally while paused, since blocking them
     /// would strand capital already locked into a round rather than
@@ -2074,7 +2108,7 @@ impl TholosV2 {
     /// Cancels an active round before any terminal outcome has locked,
     /// refunding every already-funded position its exact principal, no
     /// forfeiture, no reward, as if the round never happened. Only callable
-    /// by the admin set at `initialize`, and only while paused
+    /// by the admin fixed at `__constructor`, and only while paused
     /// (`NotPaused` otherwise): cancellation is an emergency measure, not
     /// a routine one, and requiring a pause first means it can never
     /// happen as a surprise to a caller in the middle of an ordinary

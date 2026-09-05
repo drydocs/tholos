@@ -97,7 +97,12 @@ for ((i=0; i<P; i++)); do
 done
 
 log "Deploying contract"
-CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" 2>/dev/null | tail -1)
+# admin is passed as a constructor argument here, not a separate
+# `initialize` call: `__constructor` pins it atomically with contract
+# creation (#154), closing the window a deploy-then-initialize(admin)
+# two-step would otherwise leave open for a third party to front-run and
+# claim the admin role on this instance before we do.
+CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" -- --admin "$DEPLOYER" 2>/dev/null | tail -1)
 log "Contract ID: $CONTRACT"
 
 TOKEN=$($STELLAR contract id asset --asset native --network "$NETWORK")
@@ -105,7 +110,6 @@ log "Token (native XLM SAC): $TOKEN"
 
 log "Initializing contract"
 invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- initialize \
-  --admin "$DEPLOYER" \
   --token "$TOKEN" \
   --base_bond "$BOND_AMOUNT" \
   --challenge_window_secs "$CHALLENGE_WINDOW_SECS" \

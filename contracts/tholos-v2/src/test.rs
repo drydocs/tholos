@@ -34,20 +34,17 @@ struct Fixture {
     env: Env,
     client: TholosV2Client<'static>,
     token: token::Client<'static>,
-    admin: Address,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn init(
     client: &TholosV2Client,
-    admin: &Address,
     token_id: &Address,
     base_bond: i128,
     challenge_window_secs: u64,
     finalize_reward_bps: u32,
 ) -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
     client.try_initialize(
-        admin,
         token_id,
         &base_bond,
         &challenge_window_secs,
@@ -67,7 +64,6 @@ fn init(
 #[allow(clippy::too_many_arguments)]
 fn init_full(
     client: &TholosV2Client,
-    admin: &Address,
     token_id: &Address,
     registration_duration_secs: u64,
     anti_snipe_extension_secs: u64,
@@ -77,7 +73,6 @@ fn init_full(
     max_total_weight: i128,
 ) -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
     client.try_initialize(
-        admin,
         token_id,
         &DEFAULT_BOND,
         &DEFAULT_CHALLENGE_WINDOW,
@@ -99,13 +94,11 @@ impl Fixture {
         let token_id = setup(&env);
         let token = token::Client::new(&env, &token_id);
 
-        let contract_id = env.register(TholosV2, ());
-        let client = TholosV2Client::new(&env, &contract_id);
-
         let admin = Address::generate(&env);
+        let contract_id = env.register(TholosV2, (admin,));
+        let client = TholosV2Client::new(&env, &contract_id);
         init(
             &client,
-            &admin,
             &token_id,
             DEFAULT_BOND,
             DEFAULT_CHALLENGE_WINDOW,
@@ -114,12 +107,7 @@ impl Fixture {
         .unwrap()
         .unwrap();
 
-        Fixture {
-            env,
-            client,
-            token,
-            admin,
-        }
+        Fixture { env, client, token }
     }
 
     fn generate(&self) -> Address {
@@ -236,7 +224,6 @@ fn test_initialize_twice_fails() {
 
     let result = init(
         &f.client,
-        &f.admin,
         &f.token.address,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -246,10 +233,77 @@ fn test_initialize_twice_fails() {
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
+/// #154: `initialize` used to take `admin` as a caller-supplied parameter
+/// and only check *that* address's signature, so whoever's `initialize`
+/// call landed first -- not necessarily the party who paid to deploy --
+/// became the permanent admin. Admin is now pinned by `__constructor`,
+/// atomically with contract creation, and `initialize` no longer accepts an
+/// `admin` parameter at all: it authenticates against whatever
+/// `__constructor` already fixed. This test mocks auth for an `attacker`
+/// distinct from the real constructor-time admin and confirms `initialize`
+/// still can't go through, because the admin it checks was never up to the
+/// caller to name.
+#[test]
+#[should_panic]
+fn test_initialize_rejects_caller_other_than_constructor_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let real_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token_id = setup(&env);
+
+    let contract_id = env.register(TholosV2, (real_admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
+
+    // Narrow auth mocking to only `attacker`'s signature for this specific
+    // `initialize` invocation (replacing the blanket `mock_all_auths` used
+    // to get the contract constructed above). `initialize` reads its admin
+    // from storage -- `real_admin`, fixed by `__constructor` -- and that
+    // address has no authorization on record here, so its
+    // `require_auth()` must reject the call regardless of who's calling.
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (
+                    &token_id,
+                    &DEFAULT_BOND,
+                    &DEFAULT_CHALLENGE_WINDOW,
+                    &DEFAULT_FINALIZE_REWARD_BPS,
+                    &DEFAULT_REGISTRATION_SECS,
+                    &DEFAULT_ANTI_SNIPE_EXT_SECS,
+                    &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+                    &DEFAULT_REVEAL_SECS,
+                    &DEFAULT_MAX_POSITION,
+                    &DEFAULT_MAX_TOTAL_WEIGHT,
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_CHALLENGE_WINDOW,
+            &DEFAULT_FINALIZE_REWARD_BPS,
+            &DEFAULT_REGISTRATION_SECS,
+            &DEFAULT_ANTI_SNIPE_EXT_SECS,
+            &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+            &DEFAULT_REVEAL_SECS,
+            &DEFAULT_MAX_POSITION,
+            &DEFAULT_MAX_TOTAL_WEIGHT,
+        );
+}
+
 #[test]
 fn test_get_policy_before_initialize_fails() {
     let env = Env::default();
-    let contract_id = env.register(TholosV2, ());
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
     let client = TholosV2Client::new(&env, &contract_id);
 
     let result = client.try_get_policy();
@@ -262,13 +316,12 @@ fn test_initialize_rejects_zero_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         0,
         DEFAULT_CHALLENGE_WINDOW,
@@ -282,13 +335,12 @@ fn test_initialize_rejects_negative_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         -1,
         DEFAULT_CHALLENGE_WINDOW,
@@ -302,13 +354,12 @@ fn test_initialize_rejects_bond_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         MAX_BOND_AMOUNT + 1,
         DEFAULT_CHALLENGE_WINDOW,
@@ -322,13 +373,12 @@ fn test_initialize_accepts_bond_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         MAX_BOND_AMOUNT,
         DEFAULT_CHALLENGE_WINDOW,
@@ -342,13 +392,12 @@ fn test_initialize_rejects_zero_registration_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         0,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -365,13 +414,12 @@ fn test_initialize_rejects_registration_duration_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         MAX_REGISTRATION_DURATION_SECS + 1,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -388,13 +436,12 @@ fn test_initialize_rejects_zero_reveal_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -411,13 +458,12 @@ fn test_initialize_rejects_anti_snipe_extension_over_hard_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         // Extension bigger than its own hard max: a single qualifying
@@ -438,13 +484,12 @@ fn test_initialize_accepts_anti_snipe_extension_equal_to_hard_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_REGISTRATION_SECS,
@@ -461,13 +506,12 @@ fn test_initialize_rejects_zero_max_position() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -484,13 +528,12 @@ fn test_initialize_rejects_max_position_over_max_total_weight() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -507,13 +550,12 @@ fn test_initialize_rejects_zero_max_total_weight() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -530,13 +572,12 @@ fn test_initialize_rejects_max_total_weight_over_max_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -553,13 +594,12 @@ fn test_initialize_rejects_zero_challenge_window() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         0,
@@ -573,13 +613,12 @@ fn test_initialize_rejects_challenge_window_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         MAX_CHALLENGE_WINDOW_SECS + 1,
@@ -593,13 +632,12 @@ fn test_initialize_rejects_finalize_reward_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -613,13 +651,12 @@ fn test_initialize_accepts_finalize_reward_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -729,21 +766,14 @@ fn test_finalize_uncontested_with_nonzero_reward() {
     env.mock_all_auths();
     let token_id = setup(&env);
     let token = token::Client::new(&env, &token_id);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // 10% reward: bond 100 -> 10 to the finalizer, 90 to the asserter.
-    init(
-        &client,
-        &admin,
-        &token_id,
-        100,
-        DEFAULT_CHALLENGE_WINDOW,
-        1_000,
-    )
-    .unwrap()
-    .unwrap();
+    init(&client, &token_id, 100, DEFAULT_CHALLENGE_WINDOW, 1_000)
+        .unwrap()
+        .unwrap();
 
     let asserter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
@@ -816,9 +846,9 @@ fn test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_i
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // The largest anti_snipe_hard_max_secs/reveal_duration_secs the
     // contract allows at all, so this exercises the sized path at its own
@@ -826,7 +856,6 @@ fn test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_i
     // sync with MAX_ANTI_SNIPE_HARD_MAX_SECS/MAX_REVEAL_DURATION_SECS.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1007,13 +1036,12 @@ fn test_initialize_rejects_anti_snipe_hard_max_below_registration_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1261,9 +1289,9 @@ fn test_register_position_amount_overflow_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // Lift the position and weight caps to the contract's legal maximum
     // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
@@ -1271,7 +1299,6 @@ fn test_register_position_amount_overflow_fails() {
     // checked_add in register().
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1317,9 +1344,9 @@ fn test_register_eligible_total_overflow_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // Lift the position and weight caps to the contract's legal maximum
     // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
@@ -1327,7 +1354,6 @@ fn test_register_eligible_total_overflow_fails() {
     // checked_sub/checked_add chain.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1374,15 +1400,14 @@ fn test_register_exceeds_max_position_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // max_position tight enough that one deposit right at the bond floor is
     // fine, but a second one pushes the same position over the top.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1413,16 +1438,15 @@ fn test_register_exceeds_max_total_weight_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // max_total_weight tight enough that the two fixed positions (2 *
     // DEFAULT_BOND) already consume nearly all of it. max_position must
     // stay <= max_total_weight for initialize to accept it.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -2892,11 +2916,16 @@ fn test_admin_state_changes_renew_instance_storage_ttl() {
 fn test_admin_rotation_updates_authority() {
     let env = Env::default();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let old_admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
     let arbitrary = Address::generate(&env);
+
+    // The constructor runs atomically as part of contract creation, before
+    // `contract_id` exists to build a precise MockAuthInvoke against, so it
+    // is authorized with the blanket mock instead.
+    env.mock_all_auths();
+    let contract_id = env.register(TholosV2, (old_admin.clone(),));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     env.mock_auths(&[MockAuth {
         address: &old_admin,
@@ -2904,7 +2933,6 @@ fn test_admin_rotation_updates_authority() {
             contract: &contract_id,
             fn_name: "initialize",
             args: (
-                old_admin.clone(),
                 token_id.clone(),
                 DEFAULT_BOND,
                 DEFAULT_CHALLENGE_WINDOW,
@@ -2922,7 +2950,6 @@ fn test_admin_rotation_updates_authority() {
     }]);
     init(
         &client,
-        &old_admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -3643,13 +3670,12 @@ fn test_initialize_rejects_anti_snipe_hard_max_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -3666,13 +3692,12 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
