@@ -30,8 +30,8 @@ still accurately describes the shipped design.
 | How much weight does it have? | One unit of voting weight per smallest token unit locked in that address's position: `weight(address) = locked_bond(address)`. Multiple deposits by one address are aggregated. |
 | When is weight fixed? | Resolution policy is pinned when the assertion opens. Positions and total eligible weight are frozen when the dispute's registration phase closes, before any discretionary third-party choice is revealed. |
 | What replaces `Assertion.resolvers`? | A per-dispute policy snapshot, an aggregate eligible-weight snapshot, and per-address `Position` records. No voter vector is copied or iterated. |
-| What decides the result? | A side becomes mathematically irreversible once it has strictly more than half of all snapshotted eligible weight. If neither side does by the reveal deadline, the asserted outcome stands as the explicit optimistic default. Settlement waits until reveals close. |
-| What happens to bonds? | After a strict-majority result, winning positions recover principal and share losing plus non-revealed stake. After an optimistic timeout default, all revealed positions recover principal and share only non-revealed stake. Permissionless O(1) settlement accrues owner-withdrawable credits; it never loops over all voters. |
+| What decides the result? | A side becomes mathematically irreversible once it has strictly more than half of all snapshotted eligible weight. If neither side does by the reveal deadline but revealed weight is a genuine majority (> half), the asserted outcome stands as the optimistic default. If revealed weight is at or below half (#167), the round is voided with bonds back and no forfeiture. Settlement waits until reveals close. |
+| What happens to bonds? | After a strict-majority result, winning positions recover principal and share losing plus non-revealed stake. After an optimistic timeout default, all revealed positions recover principal and share only non-revealed stake. After a quorum-voided round (#167: revealed weight at or below half), every funded position recovers its exact principal with no forfeiture. Permissionless O(1) settlement accrues owner-withdrawable credits; it never loops over all voters. |
 | How do v1 deployments migrate? | Blue/green deployment: send only new assertions to a new v2 contract and attempt to drain each resolvable v1 assertion under the exact rules of its deployed WASM. Do not reinterpret or transfer in-flight v1 bonds; v2 cannot rescue an unresolvable v1 dispute. |
 
 The timeout default and its separate settlement rule are economically material.
@@ -121,8 +121,9 @@ stateDiagram-v2
     Pending --> Registration: dispute + matching bond
     Registration --> Reveal: cutoff; freeze positions and total weight
     Reveal --> OutcomeLocked: either side exceeds 50% of eligible weight
-    Reveal --> Resolved: reveal deadline; asserted outcome is default
+    Reveal --> Resolved: reveal deadline; majority revealed, no side won (optimistic timeout)
     Reveal --> Resolved: all weight revealed; tie; asserted outcome is default
+    Reveal --> Resolved: reveal deadline; revealed weight <= half (round voided, #167)
     OutcomeLocked --> Resolved: reveal deadline or all weight revealed
     Resolved --> [*]: position settlement, then credit withdrawal
 ```
@@ -273,7 +274,7 @@ layout is:
 | Record | Purpose |
 | --- | --- |
 | `AssertionV2(id)` | Claim, parties, lifecycle, complete `PolicySnapshot`, and authoritative final outcome. |
-| `Resolution(id)` | Phase, deadlines, frozen `W`, weighted tallies, immutable terminal cause, settlement class/aggregates, and rule version. Terminal cause distinguishes `StrictMajorityFor`, `StrictMajorityAgainst`, and `OptimisticTimeout`. |
+| `Resolution(id)` | Phase, deadlines, frozen `W`, weighted tallies, immutable terminal cause, settlement class/aggregates, and rule version. Terminal cause distinguishes `StrictMajorityFor`, `StrictMajorityAgainst`, `OptimisticTimeout`, and `RevealQuorumNotMet` (#167: round voided when revealed weight is at or below half of eligible total). |
 | `Position(id, address)` | Escrowed amount, position kind, revealed side, and settlement state for one address. The kind is either protocol-fixed with a side (asserter/disputer) or external with a commitment hash. |
 | `Credit(id, address)` | Dispute-scoped token liability accrued by permissionless position settlement and withdrawable by its owner to an authorized destination. Keeping the assertion ID in the key preserves per-dispute accounting when one owner participates in several disputes. |
 

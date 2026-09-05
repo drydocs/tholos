@@ -6,3 +6,4 @@
 contracts/tholos/test_snapshots/test/proptest_vote_counting/
 contracts/tholos/test_snapshots/test/proptest_initialize_bounds/
 contracts/tholos-v2/test_snapshots/test/proptest_settlement/
+contracts/tholos-v2/test_snapshots/test/withheld_reveal_quorum/proptest_quorum/
