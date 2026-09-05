@@ -789,10 +789,7 @@ impl Tholos {
             .instance()
             .set(&DataKey::StallTimeoutSecs, &stall_timeout_secs);
 
-        StallTimeoutUpdated {
-            stall_timeout_secs,
-        }
-        .publish(&env);
+        StallTimeoutUpdated { stall_timeout_secs }.publish(&env);
 
         Ok(())
     }

@@ -2301,7 +2301,16 @@ mod stalled_dispute {
 
     /// Standalone helper that creates a full fixture with a known admin,
     /// configurable bond/window, and a stall timeout.
-    fn stalled_fixture(stall_timeout: u64) -> (Env, TholosClient<'static>, token::Client<'static>, Address, Address, Vec<Address>) {
+    fn stalled_fixture(
+        stall_timeout: u64,
+    ) -> (
+        Env,
+        TholosClient<'static>,
+        token::Client<'static>,
+        Address,
+        Address,
+        Vec<Address>,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let (token_id, resolvers) = setup(&env);
@@ -2314,14 +2323,26 @@ mod stalled_dispute {
         // zero, which is exactly Env::default()'s value.
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
         let admin = Address::generate(&env);
-        client.initialize(&admin, &token_id, &DEFAULT_BOND, &DEFAULT_WINDOW, &resolvers, &0u32);
+        client.initialize(
+            &admin,
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_WINDOW,
+            &resolvers,
+            &0u32,
+        );
         client.set_stall_timeout(&stall_timeout);
         token::StellarAssetClient::new(&env, &token_id).mint(&admin, &DEFAULT_MINT);
         (env, client, token, admin, token_id, resolvers)
     }
 
     /// Disputed assertion with both bonds locked in.
-    fn disputed(env: &Env, client: &TholosClient, token: &token::Client, token_id: &Address) -> (Address, Address, u64) {
+    fn disputed(
+        env: &Env,
+        client: &TholosClient,
+        token: &token::Client,
+        token_id: &Address,
+    ) -> (Address, Address, u64) {
         let asserter = Address::generate(env);
         let disputer = Address::generate(env);
         token::StellarAssetClient::new(env, token_id).mint(&asserter, &DEFAULT_MINT);
@@ -2344,7 +2365,6 @@ mod stalled_dispute {
         let result = client.try_set_stall_timeout(&too_big);
         assert_eq!(result, Err(Ok(Error::InvalidStallTimeout)));
     }
-
 
     #[test]
     fn test_reclaim_before_timeout_requires_normal_resolution() {
@@ -2383,10 +2403,7 @@ mod stalled_dispute {
         // Each side posted one bond of DEFAULT_BOND.
         assert_eq!(token.balance(&asserter), DEFAULT_MINT - DEFAULT_BOND);
         assert_eq!(token.balance(&disputer), DEFAULT_MINT - DEFAULT_BOND);
-        assert_eq!(
-            token.balance(&client.address),
-            2 * DEFAULT_BOND
-        );
+        assert_eq!(token.balance(&client.address), 2 * DEFAULT_BOND);
 
         // Elapse the stall timeout.
         env.ledger().with_mut(|l| l.timestamp += 3600);
