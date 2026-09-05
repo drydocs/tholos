@@ -1932,6 +1932,223 @@ fn test_finalize_is_not_reentrant() {
 }
 
 // ---------------------------------------------------------------------------
+// Fee-on-transfer token tests
+// ---------------------------------------------------------------------------
+
+mod fee_token {
+    use super::*;
+    use soroban_sdk::Map;
+
+    #[contracttype]
+    pub enum DataKey {
+        Balances,
+        FeeBps,
+    }
+
+    #[contract]
+    pub struct FeeToken;
+
+    #[contractimpl]
+    impl FeeToken {
+        pub fn set_fee_bps(env: Env, bps: u32) {
+            env.storage().instance().set(&DataKey::FeeBps, &bps);
+        }
+
+        pub fn credit(env: Env, addr: Address, amount: i128) {
+            let mut balances = Self::balances(&env);
+            let current = balances.get(addr.clone()).unwrap_or(0);
+            balances.set(addr, current + amount);
+            env.storage().instance().set(&DataKey::Balances, &balances);
+        }
+
+        pub fn balance(env: Env, addr: Address) -> i128 {
+            Self::balances(&env).get(addr).unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            let fee_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::FeeBps)
+                .unwrap_or(1_000);
+
+            let fee = amount * (fee_bps as i128) / 10_000;
+            let received = amount - fee;
+
+            let mut balances = Self::balances(&env);
+            let from_bal = balances.get(from.clone()).unwrap_or(0);
+            assert!(from_bal >= amount, "insufficient balance");
+            let to_bal = balances.get(to.clone()).unwrap_or(0);
+
+            balances.set(from, from_bal - amount);
+            balances.set(to, to_bal + received);
+            env.storage().instance().set(&DataKey::Balances, &balances);
+        }
+
+        fn balances(env: &Env) -> Map<Address, i128> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Balances)
+                .unwrap_or(Map::new(env))
+        }
+    }
+}
+
+fn fee_fixture(
+    env: &Env,
+    fee_bps: u32,
+) -> (
+    fee_token::FeeTokenClient<'static>,
+    TholosClient<'static>,
+    Address,
+    Vec<Address>,
+) {
+    use fee_token::FeeToken;
+
+    let fee_token_id = env.register(FeeToken, ());
+    let fee_token = fee_token::FeeTokenClient::new(env, &fee_token_id);
+    fee_token.set_fee_bps(&fee_bps);
+
+    let resolvers = Vec::from_array(
+        env,
+        [
+            Address::generate(env),
+            Address::generate(env),
+            Address::generate(env),
+        ],
+    );
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(env, &contract_id);
+
+    let admin = Address::generate(env);
+    client.initialize(
+        &admin,
+        &fee_token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    (fee_token, client, contract_id, resolvers)
+}
+
+#[test]
+fn test_fee_on_transfer_token_dispute_resolves_without_deadlock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (fee_token, client, contract_id, resolvers) = fee_fixture(&env, 1_000); // 10% fee
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    fee_token.credit(&asserter, &1_000);
+    fee_token.credit(&disputer, &1_000);
+
+    // assert_outcome requests DEFAULT_BOND (100).
+    // With 10% fee, 90 arrives in the contract.
+    let id = client.assert_outcome(&asserter, &true);
+    let assertion = client.get_assertion_state(&id);
+    assert_eq!(assertion.bond, 90);
+    assert_eq!(fee_token.balance(&contract_id), 90);
+    assert_eq!(fee_token.balance(&asserter), 900);
+
+    // dispute requests assertion.bond (90).
+    // With 10% fee, 81 arrives in the contract.
+    // Total in contract is now 90 + 81 = 171.
+    client.dispute(&disputer, &id);
+    assert_eq!(fee_token.balance(&contract_id), 171);
+    assert_eq!(fee_token.balance(&disputer), 910);
+
+    // Resolvers vote to reach strict majority (2 out of 3).
+    client.resolve(&resolvers.get(0).unwrap(), &id, &false);
+    let outcome = client.resolve(&resolvers.get(1).unwrap(), &id, &false);
+    assert_eq!(outcome, Some(false));
+
+    // Payout was capped at available balance (171), not nominal 90 * 2 = 180,
+    // so it did not deadlock or panic.
+    // Disputer (winner) receives 171 - 10% fee = 171 - 17 = 154 tokens.
+    assert_eq!(fee_token.balance(&contract_id), 0);
+    assert_eq!(fee_token.balance(&disputer), 910 + 154);
+
+    let state = client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Resolved);
+    assert_eq!(state.final_outcome, Some(false));
+}
+
+#[test]
+fn test_fee_on_transfer_token_finalize_resolves_without_deadlock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (fee_token, client, contract_id, _resolvers) = fee_fixture(&env, 1_000); // 10% fee
+
+    let asserter = Address::generate(&env);
+    let caller = Address::generate(&env);
+    fee_token.credit(&asserter, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+    let assertion = client.get_assertion_state(&id);
+    assert_eq!(assertion.bond, 90);
+    assert_eq!(fee_token.balance(&contract_id), 90);
+
+    env.ledger().with_mut(|l| l.timestamp += DEFAULT_WINDOW + 1);
+
+    let outcome = client.finalize(&caller, &id);
+    assert!(outcome);
+
+    assert_eq!(fee_token.balance(&contract_id), 0);
+    // Asserter receives 90 - 10% fee = 81
+    assert_eq!(fee_token.balance(&asserter), 900 + 81);
+
+    let state = client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Resolved);
+}
+
+#[test]
+fn test_resolve_is_capped_by_the_assertion_escrow() {
+    let f = Fixture::new();
+    let asserter_a = f.funded_address();
+    let disputer_a = f.funded_address();
+    let asserter_b = f.funded_address();
+    let disputer_b = f.funded_address();
+
+    let id_a = f.client.assert_outcome(&asserter_a, &true);
+    f.client.dispute(&disputer_a, &id_a);
+    let id_b = f.client.assert_outcome(&asserter_b, &true);
+    f.client.dispute(&disputer_b, &id_b);
+
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .persistent()
+            .set(&DataKey::AssertionEscrow(id_a), &DEFAULT_BOND);
+    });
+
+    f.client
+        .resolve(&f.resolvers.get(0).unwrap(), &id_a, &false);
+    f.client
+        .resolve(&f.resolvers.get(1).unwrap(), &id_a, &false);
+
+    assert_eq!(f.token.balance(&disputer_a), 1_000);
+    assert_eq!(f.token.balance(&asserter_b), 900);
+    assert_eq!(f.token.balance(&disputer_b), 900);
+    assert_eq!(f.token.balance(&f.client.address), 300);
+}
+
+#[test]
+fn test_zero_received_transfer_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    // 100% fee token: delivers 0 tokens on transfer
+    let (fee_token, client, _contract_id, _resolvers) = fee_fixture(&env, 10_000);
+
+    let asserter = Address::generate(&env);
+    fee_token.credit(&asserter, &1_000);
+
+    let result = client.try_assert_outcome(&asserter, &true);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+// ---------------------------------------------------------------------------
 // Property-based tests for resolver vote counting and majority logic
 // ---------------------------------------------------------------------------
 //

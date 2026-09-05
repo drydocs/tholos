@@ -68,12 +68,16 @@ export const Errors = {
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
   22: {message:"SelfDispute"},
-  23: {message:"NoAdminRotationProposal"}
+  23: {message:"NoAdminRotationProposal"},
+  /**
+   * Token transfer escrow overflow when adding a received amount.
+   */
+  24: {message:"TokenTransferMismatch"}
 }
 
 export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
 
-export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void};
+export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void} | {tag: "AssertionEscrow", values: readonly [u64]};
 
 
 
