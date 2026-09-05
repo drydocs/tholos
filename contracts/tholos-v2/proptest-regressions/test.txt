@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2d1f5f8fb09bc076c46441831d70ba274de3f32db972d3f8068dfa62602b3ff6 # shrinks to voter_count = 0, stake = 100, reveal_mask = 0, agree_mask = 0
+cc 66bd85768a343f57c17316fa8e2ad8b3d35233be4815b71ecd2b99ee61497410 # shrinks to voter_specs = [Voter { amount: 100, agrees: false, reveals: false }, Voter { amount: 300, agrees: false, reveals: false }]
+cc 5f279ecc3adcb3a6165f3af129d9f4f1ebebbd563d2b48a6ed7231b6179b64df # shrinks to voter_specs = [Voter { amount: 100, agrees: false, reveals: false }, Voter { amount: 300, agrees: false, reveals: false }]
