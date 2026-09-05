@@ -224,6 +224,31 @@
   font-family: var(--mono);
 }
 
+.milestone-ready {
+  font-weight: 600;
+  color: var(--success);
+}
+
+.button--refresh {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
+.button--refresh:hover {
+  color: var(--accent);
+}
+
+.button--refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .status-badge {
   padding: 2px 9px;
   border-radius: 999px;
