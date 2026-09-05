@@ -1697,17 +1697,21 @@ impl TholosV2 {
     /// alone may already close the assertion out (see its doc comment).
     /// Otherwise requires `Reveal` phase; if `reveal_deadline` has passed or
     /// `revealed_weight` has caught up with the frozen eligible total `W`,
-    /// locks the outcome (strict majority if reached, `OptimisticTimeout`
-    /// otherwise) and moves the assertion to `Resolved`. Idempotent: calling
-    /// it again on an already-`Resolved` assertion just returns the
-    /// already-decided `terminal_cause`.
+    /// locks the outcome: strict majority if reached, `OptimisticTimeout`
+    /// if revealed weight is a genuine majority (> half of `W`) but no
+    /// side won, or `RevealQuorumNotMet` if revealed weight is at or below
+    /// half of `W` (#167: the quorum gate withholds the optimistic default
+    /// and voids the round instead). In all three cases the assertion moves
+    /// to `Resolved`. Idempotent: calling it again on an already-`Resolved`
+    /// assertion just returns the already-decided `terminal_cause`.
     ///
     /// Fails with `NotReveal` if the assertion is `Pending` (nothing to
     /// resolve yet, it hasn't been disputed), `RegistrationNotClosed` if
     /// still `Registration` before its deadline, `RevealNotClosed` if still
     /// `Reveal` before its deadline with unrevealed weight remaining. Emits
-    /// `RevealOpened` and/or `Resolved` as those transitions actually
-    /// happen.
+    /// `RevealOpened` and/or `Resolved` (or `RoundVoided` instead of
+    /// `Resolved` when the quorum gate voids the round) as those
+    /// transitions actually happen.
     pub fn resolve_outcome(env: Env, id: u64) -> Result<TerminalCause, Error> {
         Self::check_reentrancy_guard(&env)?;
 
