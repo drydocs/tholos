@@ -147,9 +147,10 @@ live committee, the proposal is cleared, `RotationExecuted` and `ResolversUpdate
 are emitted, and the function returns `Some(true)`. If the remaining unvoted
 resolvers can no longer supply enough yes-votes to reach a majority, the proposal is
 cancelled automatically (deadlock guard), `RotationCancelled` is emitted, and the
-function returns `Some(false)`. Otherwise the vote is recorded and the proposal stays
-open, returning `None`. Fails with `NoRotationProposal`, `NotAResolver`, or
-`AlreadyVoted` as appropriate. Pause-exempt.
+function returns `Some(false)`. Otherwise the vote is recorded, `RotationVoted` is emitted (the resolver, their
+vote, and the current yes/no tally), and the proposal stays open, returning
+`None`. Fails with `NoRotationProposal`, `NotAResolver`, or `AlreadyVoted` as
+appropriate. Pause-exempt.
 
 ### `cancel_rotation(resolver)`
 
@@ -277,6 +278,7 @@ history without polling `get_assertion_state`:
 | `AdminUpdated` | `accept_admin` | `old_admin`, `new_admin` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
+| `RotationVoted` | `vote_rotation`, on a vote that neither passes nor deadlocks the proposal | `resolver`, `approve`, `yes_count`, `no_count` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
 
 `Finalized.finalizer` is always the address that called `finalize` — auth is required unconditionally, so this value is always verified regardless of whether `finalize_reward_bps` is non-zero. `Finalized.reward` is the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
