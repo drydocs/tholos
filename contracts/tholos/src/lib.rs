@@ -171,6 +171,10 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
+    /// The caller is a resolver who is also the asserter or disputer of the
+    /// assertion they are trying to resolve. A party to the dispute cannot
+    /// vote in their own favor.
+    ConflictOfInterest = 23,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -775,6 +779,9 @@ impl Tholos {
         }
         if assertion.voted.contains(&resolver) {
             return Err(Error::AlreadyVoted);
+        }
+        if resolver == assertion.asserter || Some(&resolver) == assertion.disputer.as_ref() {
+            return Err(Error::ConflictOfInterest);
         }
 
         assertion.voted.push_back(resolver);
