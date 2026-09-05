@@ -158,14 +158,6 @@ pub struct Assertion {
     pub opened_at: u64,
     pub status: Status,
     pub disputer: Option<Address>,
-    /// When `dispute` was called for this assertion. `None` while pending
-    /// or for pre-#166 assertions disputed before this upgrade (a missing
-    /// map key decodes as `None`, not a corrupt struct). Read by
-    /// `reclaim_stalled_dispute` to enforce the stall timeout relative to
-    /// the moment the dispute opened, never `opened_at` (the assertion's
-    /// creation time), because the stall clock starts when the committee
-    /// snaps in and the bonds are both committed.
-    pub disputed_at: Option<u64>,
     pub votes_for_outcome: u32,
     pub votes_against_outcome: u32,
     pub voted: Vec<Address>,
@@ -204,6 +196,12 @@ pub enum DataKey {
     /// permissionless recovery path exists and bonds can remain frozen
     /// indefinitely, the pre-#166 behavior. See `set_stall_timeout`.
     StallTimeoutSecs,
+    /// When `dispute` was called for assertion `u64`. Kept as a separate
+    /// storage key rather than a field on `Assertion` so adding it does not
+    /// break decoding of assertions already persisted before this upgrade
+    /// (#184). `None` means the assertion was disputed before this upgrade
+    /// or is still pending; `Some(ts)` is the ledger timestamp at dispute.
+    DisputedAt(u64),
 }
 
 #[contracterror]
@@ -840,12 +838,16 @@ impl Tholos {
         if stall_timeout_secs == 0 {
             return Err(Error::StallTimeoutNotConfigured);
         }
-        // Pre-upgrade disputes have disputed_at == None (never set). They
+        // Pre-upgrade disputes have no DisputedAt entry (never set). They
         // are not reclaimable under a timeout configured after the fact;
-        // see set_stall_timeout's doc comment. Using Option rather than a
-        // bare 0 sentinel avoids aliasing epoch (ledger timestamp 0), which
-        // is a legitimate value, into "never set."
-        let disputed_at = match assertion.disputed_at {
+        // see set_stall_timeout's doc comment. Keeping disputed_at as a
+        // separate storage key avoids adding a field to Assertion, which
+        // would break decoding of pre-upgrade assertions (#184).
+        let disputed_at: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputedAt(id));
+        let disputed_at = match disputed_at {
             Some(ts) => ts,
             None => return Err(Error::StallTimeoutNotConfigured),
         };
@@ -988,9 +990,11 @@ impl Tholos {
         // Pinned at the moment the dispute opens: the stall clock for
         // `reclaim_stalled_dispute` (#166) starts here, not at `opened_at`,
         // because this is the moment both bonds are committed and the
-        // committee snapshot takes over.
-        assertion.disputed_at = Some(env.ledger().timestamp());
-        Self::set_assertion(&env, id, &assertion);
+        // committee snapshot takes over. Stored as a separate key so
+        // pre-upgrade Assertion structs decode unchanged (#184).
+        env.storage()
+            .persistent()
+            .set(&DataKey::DisputedAt(id), &env.ledger().timestamp());
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         token::Client::new(&env, &token_id).transfer(
