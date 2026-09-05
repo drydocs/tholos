@@ -115,7 +115,7 @@ bond: i128;
  * creation time), because the stall clock starts when the committee
  * snaps in and the bonds are both committed.
  */
-disputed_at: u64;
+disputed_at: Option<u64>;
   disputer: Option<string>;
   /**
  * The authoritative outcome once the assertion is resolved. `None` while
@@ -362,7 +362,7 @@ export interface Client {
    * The timeout only applies to assertions disputed after this upgrade:
    * their `disputed_at` is pinned by `dispute`. Assertions disputed
    * before the upgrade (or while no timeout was configured) have
-   * `disputed_at == 0` and are never reclaimable, since a timeout
+   * `disputed_at == None` and are never reclaimable, since a timeout
    * configured after the fact would retroactively apply to disp
    */
   set_stall_timeout: ({stall_timeout_secs}: {stall_timeout_secs: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>

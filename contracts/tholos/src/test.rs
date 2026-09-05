@@ -2317,10 +2317,10 @@ mod stalled_dispute {
         let token = token::Client::new(&env, &token_id);
         let contract_id = env.register(Tholos, ());
         let client = TholosClient::new(&env, &contract_id);
-        // Nonzero base timestamp so `disputed_at` pinned by `dispute` can
-        // never alias 0: the pre-upgrade guard (disputed_at == 0 -> not
-        // reclaimable) would otherwise misfire on a ledger whose clock reads
-        // zero, which is exactly Env::default()'s value.
+        // Nonzero base timestamp so the stall-timeout comparison is
+        // meaningful. Env::default()'s timestamp is 0, which is a valid
+        // ledger value now that disputed_at uses Option<u64> (None is the
+        // sentinel, not 0), but a nonzero base keeps the test realistic.
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
         let admin = Address::generate(&env);
         client.initialize(
@@ -2357,11 +2357,11 @@ mod stalled_dispute {
     fn test_set_stall_timeout_validates_bounds() {
         let (env, client, _token, _admin, _tid, _) = stalled_fixture(0);
         let _ = &env;
-        // within bounds
+        // within bounds (max is now 7 days, not 30, to leave TTL headroom)
         assert!(client.try_set_stall_timeout(&3600).is_ok());
-        assert!(client.try_set_stall_timeout(&(30 * 24 * 3600)).is_ok());
+        assert!(client.try_set_stall_timeout(&(7 * 24 * 3600)).is_ok());
         // out of bounds
-        let too_big = 30 * 24 * 3600 + 1;
+        let too_big = 7 * 24 * 3600 + 1;
         let result = client.try_set_stall_timeout(&too_big);
         assert_eq!(result, Err(Ok(Error::InvalidStallTimeout)));
     }

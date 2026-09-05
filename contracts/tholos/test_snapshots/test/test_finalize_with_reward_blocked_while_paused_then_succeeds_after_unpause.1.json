@@ -310,9 +310,7 @@
                     "key": {
                       "symbol": "disputed_at"
                     },
-                    "val": {
-                      "u64": "0"
-                    }
+                    "val": "void"
                   },
                   {
                     "key": {

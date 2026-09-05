@@ -158,13 +158,14 @@ pub struct Assertion {
     pub opened_at: u64,
     pub status: Status,
     pub disputer: Option<Address>,
-    /// When `dispute` was called for this assertion. `0` while pending or
-    /// for pre-#166 assertions disputed before this upgrade. Read by
+    /// When `dispute` was called for this assertion. `None` while pending
+    /// or for pre-#166 assertions disputed before this upgrade (a missing
+    /// map key decodes as `None`, not a corrupt struct). Read by
     /// `reclaim_stalled_dispute` to enforce the stall timeout relative to
     /// the moment the dispute opened, never `opened_at` (the assertion's
     /// creation time), because the stall clock starts when the committee
     /// snaps in and the bonds are both committed.
-    pub disputed_at: u64,
+    pub disputed_at: Option<u64>,
     pub votes_for_outcome: u32,
     pub votes_against_outcome: u32,
     pub voted: Vec<Address>,
@@ -264,11 +265,12 @@ const ASSERTION_LIFETIME_THRESHOLD: u32 = ASSERTION_BUMP_AMOUNT - DAY_IN_LEDGERS
 const MAX_CHALLENGE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Upper bound for `set_stall_timeout`. Generous enough for any realistic
-/// committee recovery timeline, while far below the 30-day assertion TTL
-/// bump so a stalled dispute cannot be archived out from under the fallback
-/// while it is still reclaimable. 30 days also matches ASSERTION_BUMP_AMOUNT
-/// headroom the same way MAX_CHALLENGE_WINDOW_SECS does for `finalize`.
-const MAX_STALL_TIMEOUT_SECS: u64 = 30 * 24 * 60 * 60;
+/// committee recovery timeline, while leaving 23 days of TTL headroom
+/// within the 30-day assertion bump (same headroom `finalize` gets via
+/// `MAX_CHALLENGE_WINDOW_SECS`). A stall timeout equal to the full bump
+/// would leave zero headroom: the assertion could be archived before
+/// `reclaim_stalled_dispute` can run.
+const MAX_STALL_TIMEOUT_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// A resolver committee larger than this gets copied in full onto every
 /// disputed assertion (see `Assertion.resolvers`), so an unbounded size
@@ -765,7 +767,7 @@ impl Tholos {
     /// The timeout only applies to assertions disputed after this upgrade:
     /// their `disputed_at` is pinned by `dispute`. Assertions disputed
     /// before the upgrade (or while no timeout was configured) have
-    /// `disputed_at == 0` and are never reclaimable, since a timeout
+    /// `disputed_at == None` and are never reclaimable, since a timeout
     /// configured after the fact would retroactively apply to disputes
     /// opened under different expectations.
     ///
@@ -838,14 +840,16 @@ impl Tholos {
         if stall_timeout_secs == 0 {
             return Err(Error::StallTimeoutNotConfigured);
         }
-        // Pre-upgrade disputes have disputed_at == 0 (never set). They are
-        // not reclaimable under a timeout configured after the fact; see
-        // set_stall_timeout's doc comment. A never-set timestamp must not
-        // alias epoch (1970) into "definitely elapsed" decades later.
-        if assertion.disputed_at == 0 {
-            return Err(Error::StallTimeoutNotConfigured);
-        }
-        if env.ledger().timestamp() < assertion.disputed_at + stall_timeout_secs {
+        // Pre-upgrade disputes have disputed_at == None (never set). They
+        // are not reclaimable under a timeout configured after the fact;
+        // see set_stall_timeout's doc comment. Using Option rather than a
+        // bare 0 sentinel avoids aliasing epoch (ledger timestamp 0), which
+        // is a legitimate value, into "never set."
+        let disputed_at = match assertion.disputed_at {
+            Some(ts) => ts,
+            None => return Err(Error::StallTimeoutNotConfigured),
+        };
+        if env.ledger().timestamp() < disputed_at + stall_timeout_secs {
             return Err(Error::DisputeNotStalled);
         }
 
@@ -919,7 +923,7 @@ impl Tholos {
             opened_at: env.ledger().timestamp(),
             status: Status::Pending,
             disputer: None,
-            disputed_at: 0,
+            disputed_at: None,
             votes_for_outcome: 0,
             votes_against_outcome: 0,
             voted: Vec::new(&env),
@@ -985,7 +989,7 @@ impl Tholos {
         // `reclaim_stalled_dispute` (#166) starts here, not at `opened_at`,
         // because this is the moment both bonds are committed and the
         // committee snapshot takes over.
-        assertion.disputed_at = env.ledger().timestamp();
+        assertion.disputed_at = Some(env.ledger().timestamp());
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
