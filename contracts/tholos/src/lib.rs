@@ -204,6 +204,10 @@ pub enum Error {
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
     NoAdminRotationProposal = 23,
+    // A resolver attempting to vote on an assertion where they are also the
+    // asserter or disputer. This would let a party vote in their own favour,
+    // violating the impartiality guarantee of the resolver committee.
+    ResolverIsParty = 24,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -908,6 +912,12 @@ impl Tholos {
         }
         if assertion.voted.contains(&resolver) {
             return Err(Error::AlreadyVoted);
+        }
+        // A resolver must never vote on an assertion where they are also a
+        // party. In the degenerate case of a size-1 committee, this would let
+        // a single address guarantee their own win with zero collusion (#165).
+        if resolver == assertion.asserter || assertion.disputer == Some(resolver.clone()) {
+            return Err(Error::ResolverIsParty);
         }
 
         assertion.voted.push_back(resolver);

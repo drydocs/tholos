@@ -593,6 +593,48 @@ fn test_resolver_cannot_vote_twice() {
 }
 
 #[test]
+fn test_resolver_who_is_asserter_cannot_vote() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    // Make the asserter also a resolver.
+    let mut resolvers = Vec::new(&f.env);
+    for r in f.resolvers.iter() {
+        resolvers.push_back(r.clone());
+    }
+    resolvers.push_back(asserter.clone());
+    f.client.update_resolvers(&resolvers);
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_resolve(&asserter, &id, &true);
+    assert_eq!(result, Err(Ok(Error::ResolverIsParty)));
+}
+
+#[test]
+fn test_resolver_who_is_disputer_cannot_vote() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    // Make the disputer also a resolver.
+    let mut resolvers = Vec::new(&f.env);
+    for r in f.resolvers.iter() {
+        resolvers.push_back(r.clone());
+    }
+    resolvers.push_back(disputer.clone());
+    f.client.update_resolvers(&resolvers);
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_resolve(&disputer, &id, &true);
+    assert_eq!(result, Err(Ok(Error::ResolverIsParty)));
+}
+
+#[test]
 fn test_cannot_resolve_a_non_disputed_assertion() {
     let f = Fixture::new();
     let asserter = f.funded_address();
