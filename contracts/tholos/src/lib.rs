@@ -271,24 +271,48 @@ pub struct Tholos;
 
 #[contractimpl]
 impl Tholos {
-    /// Initializes the contract. `resolvers` must have an odd length so a
-    /// simple majority vote can never tie. `finalize_reward_bps` sets the
-    /// fraction of the bond (in basis points, 0–1000) paid to whoever calls
-    /// `finalize` as an incentive for prompt finalization; 0 disables the
-    /// reward entirely and preserves the original behavior where the full
-    /// bond is returned to the asserter.
+    /// Pins `admin` atomically with contract creation. Soroban invokes a
+    /// contract's constructor (`__constructor`) as part of the same
+    /// `CreateContractV2` host operation, so no other transaction can ever
+    /// execute between "this contract now exists" and "its admin is
+    /// recorded". Unlike a deploy-then-call-`initialize(admin)` two-step,
+    /// there is no window for a third party watching the mempool to claim
+    /// the admin role first (#158).
+    pub fn __constructor(env: Env, admin: Address) {
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::touch_instance_ttl(&env);
+    }
+
+    /// One-time setup, pinning the deployment-wide defaults every future
+    /// assertion is built from. Requires the signature of the admin fixed
+    /// at deploy time by `__constructor` (this call no longer accepts an
+    /// `admin` parameter of its own; see `__constructor`'s doc comment for
+    /// why). Fails with `AlreadyInitialized` if called twice.
     pub fn initialize(
         env: Env,
-        admin: Address,
         token: Address,
         bond_amount: i128,
         challenge_window_secs: u64,
         resolvers: Vec<Address>,
         finalize_reward_bps: u32,
     ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Token) {
             return Err(Error::AlreadyInitialized);
         }
+
+        // Set by `__constructor`, which every live instance has already run
+        // by the time any call reaches here; `NotInitialized` is defensive
+        // (matches every other Admin lookup in this contract) rather than a
+        // reachable path in practice.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
         if resolvers.is_empty() || resolvers.len().is_multiple_of(2) {
             return Err(Error::InvalidResolverCount);
         }
@@ -306,9 +330,6 @@ impl Tholos {
             return Err(Error::InvalidFinalizeReward);
         }
 
-        admin.require_auth();
-
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage()
             .instance()
@@ -641,7 +662,7 @@ impl Tholos {
     /// be disputed during its challenge window if that window overlapped a
     /// pause, so `finalize` is blocked too rather than letting it finalize
     /// uncontested; it becomes callable again once unpaused. Only callable by
-    /// the admin set at initialization.
+    /// the admin fixed at `__constructor`.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -658,7 +679,7 @@ impl Tholos {
     }
 
     /// Updates the bond amount required for assertions created from this
-    /// point on. Only callable by the admin set at initialization, validated
+    /// point on. Only callable by the admin fixed at `__constructor`, validated
     /// against the same bounds `initialize` already enforces
     /// (`new_bond_amount > 0`, `new_bond_amount <= MAX_BOND_AMOUNT`).
     /// Pause-exempt, like `update_resolvers` and `set_paused`.
