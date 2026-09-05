@@ -62,37 +62,77 @@ function mapAssertionToPatch(assertion: Assertion): Partial<Milestone> {
 }
 
 /**
+ * Per-JobsProvider bookkeeping shared by every reconcileFromChain call:
+ * `counter` hands each call a strictly increasing id the moment it starts
+ * (so issue order across concurrent calls — a background poll vs. an
+ * action's own reconcile — is always resolvable), and `applied` remembers
+ * the highest id actually written to state per milestone, so a result is
+ * only ever dropped when a *later-issued* result has *already applied* —
+ * never just because another call is merely in flight.
+ */
+interface ReconcileTracker {
+  counter: number;
+  applied: Map<string, number>;
+}
+
+/**
  * Re-reads real on-chain state for one milestone's assertion and reconciles
  * local status from it. Used both right after an action (instead of trusting
  * a hardcoded guess about what the call must have done) and from background
- * polling / a manual refresh — one code path either way.
+ * polling / a manual refresh — one code path either way, so a background
+ * poll and an action-triggered reconcile can genuinely be in flight for the
+ * same milestone at once.
  *
- * Deliberately swallows read failures: by the time this runs, the action
- * that triggered it (if any) has already succeeded on-chain, so surfacing a
- * transient RPC error here would misreport a successful transaction as
- * failed. Whoever's polling will retry on the next tick.
+ * Two failure modes this guards against:
+ * - Out-of-order responses: `tracker` drops a response whose call was
+ *   superseded by a later-issued call that has already applied its result,
+ *   so a slow stale poll response can never overwrite a fresher one.
+ * - A failed read right after a call whose contract invocation already
+ *   returned the real, deterministic outcome (finalize's and resolve's own
+ *   return values, not a guess about what they must have done): if the
+ *   caller passes `fallbackPatch` built from that value, it's applied
+ *   instead of leaving the UI on stale pre-action status with nothing but a
+ *   console.warn to show for it.
  */
 async function reconcileFromChain(
   setJobs: Dispatch<SetStateAction<Job[]>>,
+  tracker: { current: ReconcileTracker },
   jobId: string,
   milestoneId: string,
   assertionId: string,
   readAs: string,
+  fallbackPatch?: Partial<Milestone>,
 ): Promise<void> {
+  const key = `${jobId}:${milestoneId}`;
+  const mySeq = ++tracker.current.counter;
+
+  function applyIfNewest(patch: Partial<Milestone>) {
+    if (mySeq <= (tracker.current.applied.get(key) ?? 0)) {
+      return;
+    }
+    tracker.current.applied.set(key, mySeq);
+    setJobs((current) => updateMilestone(current, jobId, milestoneId, patch));
+  }
+
   try {
     const { getAssertionState } = await loadTholosClient();
     const assertion = await getAssertionState(BigInt(assertionId), readAs);
-    setJobs((current) => updateMilestone(current, jobId, milestoneId, mapAssertionToPatch(assertion)));
+    applyIfNewest(mapAssertionToPatch(assertion));
   } catch (err) {
     console.warn(
-      `Could not read back on-chain state for milestone ${milestoneId} (assertion ${assertionId}); will retry on next refresh.`,
+      `Could not read back on-chain state for milestone ${milestoneId} (assertion ${assertionId})` +
+        (fallbackPatch ? "; applying the already-known result instead." : "; will retry on next refresh."),
       err,
     );
+    if (fallbackPatch) {
+      applyIfNewest(fallbackPatch);
+    }
   }
 }
 
 export function JobsProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<Job[]>(seedJobs);
+  const reconcileTrackerRef = useRef<ReconcileTracker>({ counter: 0, applied: new Map() });
 
   const createJob = useCallback((input: NewJobInput) => {
     const jobId = `job-${crypto.randomUUID()}`;
@@ -127,7 +167,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         assertionId,
       }),
     );
-    await reconcileFromChain(setJobs, jobId, milestoneId, assertionId, signerAddress);
+    await reconcileFromChain(setJobs, reconcileTrackerRef, jobId, milestoneId, assertionId, signerAddress);
   }, []);
 
   const disputeMilestone = useCallback(async (jobId: string, milestoneId: string, signerAddress: string) => {
@@ -142,7 +182,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     setJobs((current) =>
       updateMilestone(current, jobId, milestoneId, { status: "disputed" satisfies MilestoneStatus }),
     );
-    await reconcileFromChain(setJobs, jobId, milestoneId, milestone.assertionId, signerAddress);
+    await reconcileFromChain(setJobs, reconcileTrackerRef, jobId, milestoneId, milestone.assertionId, signerAddress);
   }, [jobs]);
 
   const voteOnMilestone = useCallback(
@@ -157,7 +197,18 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         // Majority not reached yet; still Disputed, nothing to reconcile.
         return;
       }
-      await reconcileFromChain(setJobs, jobId, milestoneId, milestone.assertionId, resolverAddress);
+      // resolve succeeding with a non-null verdict guarantees the same
+      // outcome mapping mapAssertionToPatch uses for a Resolved assertion;
+      // pass it as the known fallback in case the follow-up read fails.
+      await reconcileFromChain(
+        setJobs,
+        reconcileTrackerRef,
+        jobId,
+        milestoneId,
+        milestone.assertionId,
+        resolverAddress,
+        { status: (decided ? "released" : "returned") satisfies MilestoneStatus },
+      );
     },
     [jobs],
   );
@@ -168,8 +219,20 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       return;
     }
     const { finalizeAssertion } = await loadTholosClient();
-    await finalizeAssertion(callerAddress, BigInt(milestone.assertionId));
-    await reconcileFromChain(setJobs, jobId, milestoneId, milestone.assertionId, callerAddress);
+    const outcome = await finalizeAssertion(callerAddress, BigInt(milestone.assertionId));
+    // finalizeAssertion already returns the contract's own outcome for this
+    // assertion (same true/false meaning as mapAssertionToPatch's Resolved
+    // case) — use that real result as the known fallback in case the
+    // follow-up read fails, instead of assuming what it must have been.
+    await reconcileFromChain(
+      setJobs,
+      reconcileTrackerRef,
+      jobId,
+      milestoneId,
+      milestone.assertionId,
+      callerAddress,
+      { status: (outcome ? "released" : "returned") satisfies MilestoneStatus },
+    );
   }, [jobs]);
 
   // Kept in sync with `jobs` on every render, but deliberately not a
@@ -185,7 +248,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     if (!milestone?.assertionId) {
       return;
     }
-    await reconcileFromChain(setJobs, jobId, milestoneId, milestone.assertionId, readAs);
+    await reconcileFromChain(setJobs, reconcileTrackerRef, jobId, milestoneId, milestone.assertionId, readAs);
   }, []);
 
   const value = useMemo<JobsContextValue>(
