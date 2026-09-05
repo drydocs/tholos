@@ -1576,6 +1576,37 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
     assert!(voter_position.revealed);
 }
 
+
+#[test]
+fn test_reveal_opens_phase_publishes_revealed_events_for_fixed_voters() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    let policy_hash = f.client.get_assertion(&id).policy_hash;
+    let s = salt(&f.env, 1);
+    let c = compute_commitment(&f.env, &f.client.address, &policy_hash, id, &voter, true, &s);
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
+
+    let events_before = f.env.events().all().events().len();
+
+    f.advance_past_registration_deadline(id);
+    f.client.reveal(&voter, &id, &true, &s);
+
+    let events_after = f.env.events().all().events().len();
+    // open_reveal_phase auto-reveals asserter and disputer, publishing
+    // Revealed for each, plus RevealOpened for the phase transition,
+    // plus the explicit voter Revealed from reveal() itself.
+    assert!(
+        events_after >= events_before + 3,
+        "expected at least 3 new events (2 Revealed + 1 RevealOpened + voter Revealed), got {}",
+        events_after - events_before
+    );
+}
+
 #[test]
 fn test_reveal_disagreeing_choice_counts_disagree_weight() {
     let f = Fixture::new();
