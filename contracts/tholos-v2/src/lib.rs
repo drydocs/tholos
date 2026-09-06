@@ -665,9 +665,7 @@ impl TholosV2 {
         admin.require_auth();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
     }
 
     /// One-time setup, pinning the deployment-wide defaults every future
@@ -790,8 +788,9 @@ impl TholosV2 {
 
     /// Replaces the deployment admin. Only the current admin may authorize
     /// the change. The old admin loses authority as soon as this call
-    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
-    /// `AdminUpdated` on success.
+    /// succeeds. `admin` is pinned by `__constructor`, not `initialize`, so
+    /// this succeeds as soon as the contract has been deployed — even
+    /// before `initialize` is ever called. Emits `AdminUpdated` on success.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let old_admin: Address = env
             .storage()

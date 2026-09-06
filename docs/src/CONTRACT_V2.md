@@ -251,8 +251,10 @@ currently pinned from. Fails with `NotInitialized` before `initialize`.
 Replaces the deployment admin. Requires the *current* admin's signature —
 the address `__constructor` originally pinned, or whoever it was last
 rotated to. The old admin loses authority the instant this call succeeds;
-there's no grace period or two-step handoff. Fails with `NotInitialized`
-before `initialize`. Emits `AdminUpdated { old_admin, new_admin }`.
+there's no grace period or two-step handoff. `admin` is pinned by
+`__constructor`, not `initialize`, so this succeeds as soon as the
+contract has been deployed — even before `initialize` is ever called.
+Emits `AdminUpdated { old_admin, new_admin }`.
 
 ### `set_paused_v2(paused)`
 
