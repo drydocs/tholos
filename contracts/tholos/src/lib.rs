@@ -770,7 +770,7 @@ impl Tholos {
     /// opened under different expectations.
     ///
     /// Only callable by the admin. Fails with `InvalidStallTimeout` if
-    /// `stall_timeout_secs` exceeds `MAX_STALL_TIMEOUT_SECS` (30 days).
+    /// `stall_timeout_secs` exceeds `MAX_STALL_TIMEOUT_SECS` (7 days).
     pub fn set_stall_timeout(env: Env, stall_timeout_secs: u64) -> Result<(), Error> {
         let admin: Address = env
             .storage()
