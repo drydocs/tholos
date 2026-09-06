@@ -2,7 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
@@ -645,6 +646,115 @@ fn test_admin_can_update_resolvers() {
 }
 
 #[test]
+fn test_admin_rotation_updates_authority() {
+    let env = Env::default();
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let old_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let arbitrary = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (
+                old_admin.clone(),
+                token_id.clone(),
+                DEFAULT_BOND,
+                DEFAULT_WINDOW,
+                resolvers.clone(),
+                0u32,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.initialize(
+        &old_admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    // An arbitrary address cannot authorize a rotation: propose_admin always
+    // requires the admin currently stored by the contract.
+    env.mock_auths(&[MockAuth {
+        address: &arbitrary,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_propose_admin(&new_admin).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin(&new_admin);
+
+    // The old admin cannot complete the proposal because the new admin must
+    // explicitly authorize acceptance.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_accept_admin().is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.accept_admin();
+
+    // After acceptance the previous admin can no longer use an admin-only
+    // entrypoint, while the new admin can.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_paused(&true).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_paused(&true);
+}
+
+#[test]
 fn test_resolvers_updated_mid_dispute_do_not_affect_it() {
     let f = Fixture::new();
     let asserter = f.funded_address();
@@ -671,6 +781,105 @@ fn test_resolvers_updated_mid_dispute_do_not_affect_it() {
     f.client.resolve(&f.resolvers.get(0).unwrap(), &id, &false);
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
+}
+// ---------------------------------------------------------------------------
+// set_bond_amount tests
+// ---------------------------------------------------------------------------
+
+/// Covers both the happy path and the regression the issue calls for: a bond
+/// change never retroactively affects an assertion opened before it.
+#[test]
+fn test_admin_can_set_bond_amount_and_it_only_affects_future_assertions() {
+    let f = Fixture::new();
+    let asserter_a = f.funded_address();
+    let caller = f.generate();
+
+    // Assertion A opens under the original bond (100).
+    let id_a = f.client.assert_outcome(&asserter_a, &true);
+    assert_eq!(f.client.get_assertion_state(&id_a).bond, DEFAULT_BOND);
+
+    f.client.set_bond_amount(&200);
+
+    // Assertion B, opened after the change, uses the new bond.
+    let asserter_b = f.funded_address(); // funded with 1_000, plenty for 200
+    let id_b = f.client.assert_outcome(&asserter_b, &true);
+    assert_eq!(f.client.get_assertion_state(&id_b).bond, 200);
+
+    // Assertion A is untouched: still pinned at 100, and its payout reflects
+    // that, not the live (now 200) bond amount.
+    assert_eq!(f.client.get_assertion_state(&id_a).bond, DEFAULT_BOND);
+    f.advance_past_window();
+    f.client.finalize(&caller, &id_a);
+    assert_eq!(f.token.balance(&asserter_a), 1_000); // 900 + 100, not + 200
+}
+
+#[test]
+fn test_set_bond_amount_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (token_id, resolvers) = setup(&env);
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    client.set_bond_amount(&200);
+
+    // env.auths() returns every require_auth invocation from the last call;
+    // the admin's must appear, proving set_bond_amount is admin-gated.
+    let auths = env.auths();
+    let admin_was_authed = auths.iter().any(|(addr, _)| *addr == admin);
+    assert!(
+        admin_was_authed,
+        "admin's require_auth was not invoked during set_bond_amount"
+    );
+}
+
+#[test]
+fn test_cannot_set_bond_amount_to_zero() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&0);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_negative() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&-1);
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_above_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&(MAX_BOND_AMOUNT + 1));
+    assert_eq!(result, Err(Ok(Error::InvalidBondAmount)));
+}
+
+#[test]
+fn test_can_set_bond_amount_exactly_at_max() {
+    let f = Fixture::new();
+    let result = f.client.try_set_bond_amount(&MAX_BOND_AMOUNT);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_cannot_set_bond_amount_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+
+    let result = client.try_set_bond_amount(&DEFAULT_BOND);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
 #[test]

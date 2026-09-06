@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::IntoVal;
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_CHALLENGE_WINDOW: u64 = 3600;
@@ -1255,6 +1256,119 @@ fn test_register_top_up_with_different_commitment_fails() {
     assert_eq!(result, Err(Ok(Error::CommitmentMismatch)));
 }
 
+#[test]
+fn test_register_position_amount_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // Lift the position and weight caps to the contract's legal maximum
+    // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
+    // the only bound crossed is i128::MAX itself, exercising the
+    // checked_add in register().
+    init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+    )
+    .unwrap()
+    .unwrap();
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let voter = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+    // Only need the small top-up amount on hand.
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &10);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    let voter_commitment = commitment(&env, 1);
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::Position(id, voter.clone()),
+            &Position {
+                amount: i128::MAX - 1,
+                kind: PositionKind::External(voter_commitment.clone()),
+                revealed: false,
+                agrees_with_outcome: None,
+                settled: false,
+            },
+        );
+    });
+
+    let result = client.try_register(&voter, &id, &2, &voter_commitment);
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
+
+#[test]
+fn test_register_eligible_total_overflow_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // Lift the position and weight caps to the contract's legal maximum
+    // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
+    // the only bound crossed is i128::MAX itself, exercising the
+    // checked_sub/checked_add chain.
+    init_full(
+        &client,
+        &admin,
+        &token_id,
+        DEFAULT_REGISTRATION_SECS,
+        DEFAULT_ANTI_SNIPE_EXT_SECS,
+        DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+        DEFAULT_REVEAL_SECS,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+        MAX_SETTLEMENT_TOTAL_WEIGHT,
+    )
+    .unwrap()
+    .unwrap();
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let voter = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+    // Enough to clear the min-resolution-bond gate; the transfer never
+    // executes because the arithmetic overflows first.
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &DEFAULT_BOND);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    // eligible_total already at i128::MAX; adding any new position must
+    // overflow the total-weight arithmetic even though the position
+    // amount itself is tiny.
+    env.as_contract(&client.address, || {
+        let mut resolution: Resolution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Resolution(id))
+            .unwrap();
+        resolution.eligible_total = i128::MAX;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Resolution(id), &resolution);
+    });
+
+    let result = client.try_register(&voter, &id, &DEFAULT_BOND, &commitment(&env, 1));
+    assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
+}
 #[test]
 fn test_register_exceeds_max_position_fails() {
     let env = Env::default();
@@ -2586,10 +2700,9 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
     // reentered mid-transfer and never released it, without needing a
     // custom malicious-token contract to actually trigger reentrancy.
     //
-    // dispute() and register() only check the guard right before their own
-    // transfer (after their other validation), so each needs its own state
-    // that would otherwise succeed, to prove the guard is what's actually
-    // blocking them rather than an unrelated validation error.
+    // All guarded entrypoints check or acquire the guard at entry (immediately
+    // after auth), keeping validation and state changes protected while
+    // a transfer is in flight.
     let f = Fixture::new();
     let asserter = f.funded_address();
     let disputer = f.funded_address();
@@ -2683,6 +2796,61 @@ fn test_reentrancy_guard_blocks_calls_while_held() {
 }
 
 #[test]
+fn test_reentrancy_guard_blocks_calls_before_validation() {
+    // This regression test does not simulate an external callback. Instead, it
+    // holds the reentrancy guard before each entrypoint call and deliberately
+    // supplies inputs that would fail at the old pre-guard validation points:
+    // assert_outcome is paused, while dispute/register/withdraw use invalid or
+    // nonexistent assertion state. If any of those validations runs before the
+    // guard, a different error would be returned. ReentrancyGuardActive winning
+    // in every case therefore pins down the required ordering: after
+    // require_auth(), the guard must be acquired before validation or state
+    // lookups.
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    // Pause contract so assert_outcome would otherwise fail with Paused.
+    f.client.set_paused_v2(&true);
+
+    // Hold the guard.
+    f.env.as_contract(&f.client.address, || {
+        f.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyGuard, &true);
+    });
+
+    // Without the early guard this would return Paused first.
+    assert_eq!(
+        f.client.try_assert_outcome(&asserter, &true),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would return AssertionNotFound first.
+    assert_eq!(
+        f.client.try_dispute(&disputer, &999_999),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would reach the invalid amount/assertion
+    // validation first.
+    assert_eq!(
+        f.client
+            .try_register(&voter, &999_999, &0i128, &commitment(&f.env, 1)),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+
+    // Without the early guard this would reach the assertion lookup/credit
+    // validation first.
+    assert_eq!(
+        f.client.try_withdraw(&asserter, &999_999, &asserter),
+        Err(Ok(Error::ReentrancyGuardActive))
+    );
+}
+
+#[test]
 fn test_set_paused_v2_blocks_new_assertions() {
     let f = Fixture::new();
     let asserter = f.funded_address();
@@ -2694,6 +2862,122 @@ fn test_set_paused_v2_blocks_new_assertions() {
 
     f.client.set_paused_v2(&false);
     f.client.assert_outcome(&asserter, &true);
+}
+
+#[test]
+fn test_admin_state_changes_renew_instance_storage_ttl() {
+    let f = Fixture::new();
+
+    let instance_ttl = || {
+        f.env
+            .as_contract(&f.client.address, || f.env.storage().instance().get_ttl())
+    };
+
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_paused_v2(&true);
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+
+    f.env
+        .ledger()
+        .with_mut(|l| l.sequence_number += INSTANCE_BUMP_AMOUNT - 10);
+    f.client.set_admin(&f.generate());
+    assert_eq!(instance_ttl(), INSTANCE_BUMP_AMOUNT);
+}
+
+#[test]
+fn test_admin_rotation_updates_authority() {
+    let env = Env::default();
+    let token_id = setup(&env);
+    let contract_id = env.register(TholosV2, ());
+    let client = TholosV2Client::new(&env, &contract_id);
+    let old_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let arbitrary = Address::generate(&env);
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "initialize",
+            args: (
+                old_admin.clone(),
+                token_id.clone(),
+                DEFAULT_BOND,
+                DEFAULT_CHALLENGE_WINDOW,
+                DEFAULT_FINALIZE_REWARD_BPS,
+                DEFAULT_REGISTRATION_SECS,
+                DEFAULT_ANTI_SNIPE_EXT_SECS,
+                DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+                DEFAULT_REVEAL_SECS,
+                DEFAULT_MAX_POSITION,
+                DEFAULT_MAX_TOTAL_WEIGHT,
+            )
+                .into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    init(
+        &client,
+        &old_admin,
+        &token_id,
+        DEFAULT_BOND,
+        DEFAULT_CHALLENGE_WINDOW,
+        DEFAULT_FINALIZE_REWARD_BPS,
+    )
+    .unwrap()
+    .unwrap();
+
+    // An arbitrary address cannot authorize a rotation: set_admin always
+    // requires the admin currently stored by the contract.
+    env.mock_auths(&[MockAuth {
+        address: &arbitrary,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_admin(&new_admin).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_admin(&new_admin);
+
+    // Rotation is immediate: the previous admin can no longer use an
+    // admin-only entrypoint, while the new admin can.
+    env.mock_auths(&[MockAuth {
+        address: &old_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused_v2",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_set_paused_v2(&true).is_err());
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "set_paused_v2",
+            args: (true,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.set_paused_v2(&true);
 }
 
 #[test]

@@ -54,7 +54,7 @@ export const jobs: Job[] = [
         id: "job-1-m1",
         title: "Wireframes and content outline",
         amount: "250",
-        status: "released",
+        status: "in_progress",
       },
       {
         id: "job-1-m2",
@@ -106,7 +106,7 @@ export const jobs: Job[] = [
         id: "job-3-m1",
         title: "Middleware implementation",
         amount: "500",
-        status: "released",
+        status: "in_progress",
       },
       {
         id: "job-3-m2",

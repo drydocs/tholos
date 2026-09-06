@@ -212,6 +212,12 @@ pub struct PauseUpdated {
 }
 
 #[contractevent]
+pub struct AdminUpdated {
+    pub old_admin: Address,
+    pub new_admin: Address,
+}
+
+#[contractevent]
 pub struct RoundCancelled {
     #[topic]
     pub id: u64,
@@ -733,9 +739,7 @@ impl TholosV2 {
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::touch_instance_ttl(&env);
 
         Ok(())
     }
@@ -748,6 +752,29 @@ impl TholosV2 {
             .instance()
             .get(&DataKey::Policy)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Replaces the deployment admin. Only the current admin may authorize
+    /// the change. The old admin loses authority as soon as this call
+    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
+    /// `AdminUpdated` on success.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        old_admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Self::touch_instance_ttl(&env);
+        AdminUpdated {
+            old_admin,
+            new_admin,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
@@ -765,6 +792,7 @@ impl TholosV2 {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
+        Self::touch_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Paused, &paused);
         PauseUpdated { paused }.publish(&env);
 
@@ -778,6 +806,16 @@ impl TholosV2 {
             .persistent()
             .get(&DataKey::AssertionV2(id))
             .ok_or(Error::AssertionNotFound)
+    }
+
+    /// Renews instance storage after a state-changing call that uses the
+    /// deployment-wide instance entries. Keeping this in one helper prevents
+    /// an admin or pause operation from leaving those entries to expire while
+    /// the contract is still in use.
+    fn touch_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// TTL bump `(threshold, amount)`, in ledgers, sized to cover one
@@ -852,22 +890,15 @@ impl TholosV2 {
     }
 
     /// Acquires the contract-wide reentrancy mutex, failing with
-    /// `ReentrancyGuardActive` if it's already held. Every function that
-    /// initiates an external token transfer calls this immediately before
-    /// that transfer (after writing whatever state the transfer follows,
-    /// matching the existing state-before-external-call ordering) and
-    /// `exit_reentrancy_guard` immediately after. A non-standard token
-    /// whose `transfer` implementation calls back into this contract mid-
-    /// transfer, instead of a well-behaved SEP-41 token that just updates
-    /// balances, would otherwise be able to act on state that looks
-    /// complete (because it was written before the transfer) while the
-    /// tokens backing it haven't actually moved yet.
+    /// `ReentrancyGuardActive` if it's already held. Guarded entrypoints
+    /// should call this immediately after authentication, before validation
+    /// or any state changes that a reentrant call could observe or act on.
+    /// The guard remains held through any external token transfer and must
+    /// be released with `exit_reentrancy_guard` afterward.
     ///
     /// `reveal`, `resolve_outcome`, `settle`, and `cancel_round` also check
-    /// this at their own entry, even though none of them move tokens
-    /// themselves: all four can act on a position's weight, credit, or
-    /// terminal state, which the guard above exists specifically to keep
-    /// provisional until its funding transfer actually completes.
+    /// this guard on entry so they cannot act on partially completed state
+    /// while a guarded entrypoint is in progress.
     fn enter_reentrancy_guard(env: &Env) -> Result<(), Error> {
         Self::check_reentrancy_guard(env)?;
         env.storage()
@@ -961,6 +992,7 @@ impl TholosV2 {
     /// the new assertion id. Emits `Asserted`.
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         asserter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
         Self::require_not_paused(&env)?;
 
         let policy: PolicySnapshotV2 = env
@@ -975,7 +1007,6 @@ impl TholosV2 {
         // not-yet-incremented id.
         let id = Self::create_pending_assertion(&env, asserter.clone(), outcome)?;
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &asserter,
             env.current_contract_address(),
@@ -1072,6 +1103,7 @@ impl TholosV2 {
     /// Emits `Disputed`.
     pub fn dispute(env: Env, disputer: Address, id: u64) -> Result<(), Error> {
         disputer.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let mut assertion: AssertionV2 = env
             .storage()
@@ -1138,7 +1170,6 @@ impl TholosV2 {
         };
         Self::set_resolution(&env, id, &resolution, &policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &policy.token).transfer(
             &disputer,
             env.current_contract_address(),
@@ -1185,6 +1216,7 @@ impl TholosV2 {
         commitment: BytesN<32>,
     ) -> Result<(), Error> {
         voter.require_auth();
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -1251,11 +1283,18 @@ impl TholosV2 {
             }
         };
 
-        let new_amount = previous_amount + amount;
+        let new_amount = previous_amount
+            .checked_add(amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
         if new_amount > assertion.policy.max_position {
             return Err(Error::PositionExceedsMax);
         }
-        let new_total = resolution.eligible_total - previous_amount + new_amount;
+        let new_total = resolution
+            .eligible_total
+            .checked_sub(previous_amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?
+            .checked_add(new_amount)
+            .ok_or(Error::SettlementArithmeticOverflow)?;
         if new_total > assertion.policy.max_total_weight {
             return Err(Error::EligibleTotalExceedsMax);
         }
@@ -1280,7 +1319,6 @@ impl TholosV2 {
         resolution.eligible_total = new_total;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &voter,
             env.current_contract_address(),
@@ -1972,7 +2010,7 @@ impl TholosV2 {
         destination: Address,
     ) -> Result<i128, Error> {
         owner.require_auth();
-        Self::check_reentrancy_guard(&env)?;
+        Self::enter_reentrancy_guard(&env)?;
 
         let assertion: AssertionV2 = env
             .storage()
@@ -2015,7 +2053,6 @@ impl TholosV2 {
             .ok_or(Error::SettlementArithmeticOverflow)?;
         Self::set_resolution(&env, id, &resolution, &assertion.policy);
 
-        Self::enter_reentrancy_guard(&env)?;
         token::Client::new(&env, &assertion.policy.token).transfer(
             &env.current_contract_address(),
             &destination,

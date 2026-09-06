@@ -31,7 +31,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `asserter` | `Address` | Who posted the claim |
 | `outcome` | `bool` | The claimed outcome |
 | `final_outcome` | `Option<bool>` | The authoritative resolved outcome; `None` until the assertion reaches `Resolved` |
-| `bond` | `i128` | Bond amount posted (in the configured token) |
+| `bond` | `i128` | Bond amount posted (in the configured token), pinned at the moment `assert_outcome` created the assertion; a later `set_bond_amount` call never changes it retroactively |
 | `opened_at` | `u64` | Ledger timestamp the assertion was posted |
 | `status` | `Status` | Current state |
 | `disputer` | `Option<Address>` | Who disputed it, if disputed |
@@ -65,6 +65,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `ResolverNotInCommittee` | The `old_resolver` named for removal isn't a current resolver |
 | `RotationTargetAlreadyResolver` | The `new_resolver` named for addition is already on the committee (or equals `old_resolver`) |
 | `NotProposer` | Caller isn't the proposer and the proposal can still reach a majority, so can't cancel it |
+| `NoAdminRotationProposal` | `accept_admin` called without a pending admin proposal |
 
 ## Functions
 
@@ -82,6 +83,18 @@ to whoever calls `finalize` as an incentive for prompt finalization; 0 disables 
 reward entirely and the full bond is returned to the asserter.
 Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
 
+### `propose_admin(new_admin)`
+
+Opens or replaces a deployment-admin rotation proposal. Requires the currently
+stored admin's signature; authority remains unchanged until the proposed address
+accepts. Emits `AdminRotationProposed`.
+
+### `accept_admin()`
+
+Completes the pending deployment-admin rotation. Requires the proposed new
+admin's signature, then replaces the stored admin and emits `AdminUpdated` with
+both addresses. Fails with `NoAdminRotationProposal` when no proposal is open.
+
 ### `update_resolvers(new_resolvers)`
 
 Replaces the resolver committee used for assertions disputed *after* this call.
@@ -97,6 +110,19 @@ an open `RotationProposal` is cleared (emitting `RotationCancelled` when one was
 present), so a committee-driven rotation can never execute against a committee it
 wasn't built for. Day-to-day committee changes go through `propose_rotation` /
 `vote_rotation` instead.
+
+### `set_bond_amount(new_bond_amount)`
+
+Updates the bond amount required for assertions created *after* this call. Requires
+the stored admin's signature. Same bounds as `initialize`: `new_bond_amount` must be
+positive and no greater than `MAX_BOND_AMOUNT`. Pause-exempt, like `update_resolvers`
+and `set_paused`. Emits `BondAmountUpdated`.
+
+Has no effect on assertions already open: `Assertion.bond` pins the bond amount at
+the moment `assert_outcome` created the assertion, and every payout path (`dispute`,
+`finalize`, `resolve`) reads that field, never the live bond amount. Fails with
+`InvalidBondAmount` if `new_bond_amount` is zero, negative, or above
+`MAX_BOND_AMOUNT`, or `NotInitialized` if called before `initialize`.
 
 ### `propose_rotation(resolver, old_resolver, new_resolver)`
 
@@ -246,6 +272,9 @@ history without polling `get_assertion_state`:
 | `Resolved` | `resolve`, once a majority is reached | `id`, `outcome` |
 | `ResolversUpdated` | `update_resolvers`, `vote_rotation` (on execution) | `resolvers` (the new committee) |
 | `PauseUpdated` | `set_paused` | `paused` |
+| `BondAmountUpdated` | `set_bond_amount` | `bond_amount` (the new value) |
+| `AdminRotationProposed` | `propose_admin` | `new_admin`, `proposed_by` |
+| `AdminUpdated` | `accept_admin` | `old_admin`, `new_admin` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
@@ -288,8 +317,10 @@ resolve.
 - No fee/reward mechanism for uncontested finalizes: the original design called for
   a small reward funded by market fees, but no fee-generating market layer exists
   yet, so `finalize` just returns the bond as-is.
-- `set_paused` is still a single-admin-key operation. `update_resolvers` is too,
-  but it's now an *emergency override*: a resolver self-rotation scheme
+- `set_paused` and `update_resolvers` are still single-admin-key operations at
+  any given moment, but `propose_admin` / `accept_admin` let the current admin
+  rotate that key with explicit consent from the new admin.
+  `update_resolvers` is now an *emergency override*: a resolver self-rotation scheme
   (`propose_rotation` / `vote_rotation` / `cancel_rotation`) lets the committee vote
   to replace one of its own by a strict majority, removing the admin as the only path
   to committee membership. `update_resolvers` stays as the break-glass for a
