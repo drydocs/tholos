@@ -30,102 +30,106 @@ if (typeof window !== "undefined") {
   window.Buffer = window.Buffer || Buffer;
 }
 
-
-
-
 export const Errors = {
-  1: {message:"AlreadyInitialized"},
-  2: {message:"NotInitialized"},
-  3: {message:"InvalidResolverCount"},
-  4: {message:"AssertionNotFound"},
-  5: {message:"NotPending"},
-  6: {message:"NotDisputed"},
-  7: {message:"ChallengeWindowClosed"},
-  8: {message:"ChallengeWindowOpen"},
-  9: {message:"NotAResolver"},
-  10: {message:"AlreadyVoted"},
-  11: {message:"Paused"},
+  1: { message: "AlreadyInitialized" },
+  2: { message: "NotInitialized" },
+  3: { message: "InvalidResolverCount" },
+  4: { message: "AssertionNotFound" },
+  5: { message: "NotPending" },
+  6: { message: "NotDisputed" },
+  7: { message: "ChallengeWindowClosed" },
+  8: { message: "ChallengeWindowOpen" },
+  9: { message: "NotAResolver" },
+  10: { message: "AlreadyVoted" },
+  11: { message: "Paused" },
   /**
    * `bond_amount` was not positive, or exceeded `MAX_BOND_AMOUNT`.
    */
-  12: {message:"InvalidBondAmount"},
-  13: {message:"InvalidChallengeWindow"},
-  14: {message:"TooManyResolvers"},
+  12: { message: "InvalidBondAmount" },
+  13: { message: "InvalidChallengeWindow" },
+  14: { message: "TooManyResolvers" },
   /**
    * `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS` (1000).
    */
-  15: {message:"InvalidFinalizeReward"},
-  16: {message:"DuplicateResolvers"},
-  17: {message:"RotationInProgress"},
-  18: {message:"NoRotationProposal"},
-  19: {message:"ResolverNotInCommittee"},
-  20: {message:"RotationTargetAlreadyResolver"},
-  21: {message:"NotProposer"},
+  15: { message: "InvalidFinalizeReward" },
+  16: { message: "DuplicateResolvers" },
+  17: { message: "RotationInProgress" },
+  18: { message: "NoRotationProposal" },
+  19: { message: "ResolverNotInCommittee" },
+  20: { message: "RotationTargetAlreadyResolver" },
+  21: { message: "NotProposer" },
   /**
    * The caller is the asserter of the assertion they are trying to dispute.
    * An asserter disputing their own assertion would consume the one dispute
    * slot without any economic risk (they receive both bonds back regardless
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
-  22: {message:"SelfDispute"},
-  23: {message:"NoAdminRotationProposal"},
+  22: { message: "SelfDispute" },
+  23: { message: "NoAdminRotationProposal" },
   /**
    * Token transfer escrow overflow when adding a received amount.
    */
-  24: {message:"TokenTransferMismatch"}
-}
+  24: { message: "TokenTransferMismatch" },
+};
 
-export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
+export type Status =
+  | { tag: "Pending"; values: void }
+  | { tag: "Disputed"; values: void }
+  | { tag: "Resolved"; values: void };
 
-export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void} | {tag: "AssertionEscrow", values: readonly [u64]};
-
-
-
-
+export type DataKey =
+  | { tag: "Admin"; values: void }
+  | { tag: "Token"; values: void }
+  | { tag: "BondAmount"; values: void }
+  | { tag: "ChallengeWindow"; values: void }
+  | { tag: "Resolvers"; values: void }
+  | { tag: "Assertion"; values: readonly [u64] }
+  | { tag: "NextId"; values: void }
+  | { tag: "Paused"; values: void }
+  | { tag: "FinalizeRewardBps"; values: void }
+  | { tag: "RotationProposal"; values: void }
+  | { tag: "AdminRotationProposal"; values: void }
+  | { tag: "AssertionEscrow"; values: readonly [u64] };
 
 export interface Assertion {
   asserter: string;
   /**
- * The bond amount required to dispute this assertion and the amount
- * paid out to the winning side. Pinned to the live `DataKey::BondAmount`
- * at the moment `assert_outcome` created this assertion; a later
- * `set_bond_amount` call never changes it retroactively. Every payout
- * path (`dispute`, `finalize`, `resolve`) reads this field, never the
- * live `DataKey::BondAmount`, so this guarantee holds structurally.
- */
-bond: i128;
+   * The bond amount required to dispute this assertion and the amount
+   * paid out to the winning side. Pinned to the live `DataKey::BondAmount`
+   * at the moment `assert_outcome` created this assertion; a later
+   * `set_bond_amount` call never changes it retroactively. Every payout
+   * path (`dispute`, `finalize`, `resolve`) reads this field, never the
+   * live `DataKey::BondAmount`, so this guarantee holds structurally.
+   */
+  bond: i128;
   disputer: Option<string>;
   /**
- * The authoritative outcome once the assertion is resolved. `None` while
- * the assertion is still pending or disputed.
- */
-final_outcome: Option<boolean>;
+   * The authoritative outcome once the assertion is resolved. `None` while
+   * the assertion is still pending or disputed.
+   */
+  final_outcome: Option<boolean>;
   /**
- * Who called `finalize`. `None` until the assertion is finalized via
- * `finalize` (never set for assertions resolved via `resolve`). Always
- * `Some` after `finalize` completes — the caller must authorize the call
- * unconditionally, so this is always a verified address.
- */
-finalizer: Option<string>;
+   * Who called `finalize`. `None` until the assertion is finalized via
+   * `finalize` (never set for assertions resolved via `resolve`). Always
+   * `Some` after `finalize` completes — the caller must authorize the call
+   * unconditionally, so this is always a verified address.
+   */
+  finalizer: Option<string>;
   opened_at: u64;
   outcome: boolean;
   /**
- * The resolver committee at the moment this assertion was disputed.
- * Empty until `dispute` is called. Voting and majority are always
- * computed against this snapshot, not the live committee, so an
- * `update_resolvers` call mid-dispute can't change who gets to decide
- * an already-disputed assertion.
- */
-resolvers: Array<string>;
+   * The resolver committee at the moment this assertion was disputed.
+   * Empty until `dispute` is called. Voting and majority are always
+   * computed against this snapshot, not the live committee, so an
+   * `update_resolvers` call mid-dispute can't change who gets to decide
+   * an already-disputed assertion.
+   */
+  resolvers: Array<string>;
   status: Status;
   voted: Array<string>;
   votes_against_outcome: u32;
   votes_for_outcome: u32;
 }
-
-
-
-
 
 /**
  * An in-flight single-slot committee rotation proposed by a current resolver.
@@ -134,32 +138,26 @@ resolvers: Array<string>;
  */
 export interface RotationProposal {
   /**
- * The new resolver to add. Must not already be on the committee.
- */
-new_resolver: string;
+   * The new resolver to add. Must not already be on the committee.
+   */
+  new_resolver: string;
   /**
- * Resolvers who voted no, to prevent double-voting and detect deadlock.
- */
-no: Array<string>;
+   * Resolvers who voted no, to prevent double-voting and detect deadlock.
+   */
+  no: Array<string>;
   /**
- * The current resolver to remove. Must be on the committee when proposed.
- */
-old_resolver: string;
+   * The current resolver to remove. Must be on the committee when proposed.
+   */
+  old_resolver: string;
   /**
- * The resolver who opened the proposal.
- */
-proposed_by: string;
+   * The resolver who opened the proposal.
+   */
+  proposed_by: string;
   /**
- * Resolvers who voted yes, to prevent double-voting.
- */
-yes: Array<string>;
+   * Resolvers who voted yes, to prevent double-voting.
+   */
+  yes: Array<string>;
 }
-
-
-
-
-
-
 
 /**
  * A pending deployment-admin rotation. The current admin proposes a target,
@@ -169,13 +167,15 @@ export interface AdminRotationProposal {
   new_admin: string;
 }
 
-
 export interface Client {
   /**
    * Construct and simulate a dispute transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Disputes a pending assertion within the challenge window by matching its bond.
    */
-  dispute: ({disputer, id}: {disputer: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  dispute: (
+    { disputer, id }: { disputer: string; id: u64 },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a resolve transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -184,7 +184,14 @@ export interface Client {
    * side (asserter if the original outcome stands, disputer otherwise)
    * receives both bonds.
    */
-  resolve: ({resolver, id, agrees_with_asserter}: {resolver: string, id: u64, agrees_with_asserter: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Option<boolean>>>>
+  resolve: (
+    {
+      resolver,
+      id,
+      agrees_with_asserter,
+    }: { resolver: string; id: u64; agrees_with_asserter: boolean },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<Option<boolean>>>>;
 
   /**
    * Construct and simulate a finalize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -202,7 +209,10 @@ export interface Client {
    * remainder; when it is zero the full bond is returned to the asserter
    * and no reward is paid. Returns the asserted outcome.
    */
-  finalize: ({caller, id}: {caller: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<boolean>>>
+  finalize: (
+    { caller, id }: { caller: string; id: u64 },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<boolean>>>;
 
   /**
    * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -213,7 +223,24 @@ export interface Client {
    * reward entirely and preserves the original behavior where the full
    * bond is returned to the asserter.
    */
-  initialize: ({admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps}: {admin: string, token: string, bond_amount: i128, challenge_window_secs: u64, resolvers: Array<string>, finalize_reward_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  initialize: (
+    {
+      admin,
+      token,
+      bond_amount,
+      challenge_window_secs,
+      resolvers,
+      finalize_reward_bps,
+    }: {
+      admin: string;
+      token: string;
+      bond_amount: i128;
+      challenge_window_secs: u64;
+      resolvers: Array<string>;
+      finalize_reward_bps: u32;
+    },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -224,7 +251,10 @@ export interface Client {
    * uncontested; it becomes callable again once unpaused. Only callable by
    * the admin set at initialization.
    */
-  set_paused: ({paused}: {paused: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  set_paused: (
+    { paused }: { paused: boolean },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -232,7 +262,9 @@ export interface Client {
    * must authorize this call, so a current admin cannot complete a rotation
    * without the new admin's consent. Fails when no proposal exists.
    */
-  accept_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  accept_admin: (
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -240,7 +272,10 @@ export interface Client {
    * authorize the proposal; authority remains unchanged until the proposed
    * address calls `accept_admin`.
    */
-  propose_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  propose_admin: (
+    { new_admin }: { new_admin: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a vote_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -253,13 +288,19 @@ export interface Client {
    * Returns `Some(true)` if the rotation executed, `Some(false)` if it was
    * auto-cancelled as dead, and `None` if the proposal remains open.
    */
-  vote_rotation: ({resolver, approve}: {resolver: string, approve: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Option<boolean>>>>
+  vote_rotation: (
+    { resolver, approve }: { resolver: string; approve: boolean },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<Option<boolean>>>>;
 
   /**
    * Construct and simulate a assert_outcome transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Posts a bonded claim about an outcome. Returns the new assertion id.
    */
-  assert_outcome: ({asserter, outcome}: {asserter: string, outcome: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u64>>>
+  assert_outcome: (
+    { asserter, outcome }: { asserter: string; outcome: boolean },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<u64>>>;
 
   /**
    * Construct and simulate a cancel_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -268,7 +309,10 @@ export interface Client {
    * a majority (deadlock guard), so a lost proposer key can't permanently
    * block rotation. Emits `RotationCancelled`.
    */
-  cancel_rotation: ({resolver}: {resolver: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  cancel_rotation: (
+    { resolver }: { resolver: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a set_bond_amount transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -277,19 +321,22 @@ export interface Client {
    * against the same bounds `initialize` already enforces
    * (`new_bond_amount > 0`, `new_bond_amount <= MAX_BOND_AMOUNT`).
    * Pause-exempt, like `update_resolvers` and `set_paused`.
-   * 
+   *
    * This only affects assertions created after the change: `Assertion.bond`
    * pins the bond amount at the moment `assert_outcome` creates the
    * assertion, and every payout path (`dispute`, `finalize`, `resolve`)
    * reads `assertion.bond`, never the live `DataKey::BondAmount`. An
    * already-open assertion's payout is therefore unaffected by a later
    * `set_bond_amount` call.
-   * 
+   *
    * Fails with `NotInitialized` if called before `initialize`, or
    * `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
    * than `MAX_BOND_AMOUNT`.
    */
-  set_bond_amount: ({new_bond_amount}: {new_bond_amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  set_bond_amount: (
+    { new_bond_amount }: { new_bond_amount: i128 },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a propose_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -303,7 +350,14 @@ export interface Client {
    * committee was snapshotted at `dispute` time). Pause-exempt, like
    * `update_resolvers`.
    */
-  propose_rotation: ({resolver, old_resolver, new_resolver}: {resolver: string, old_resolver: string, new_resolver: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  propose_rotation: (
+    {
+      resolver,
+      old_resolver,
+      new_resolver,
+    }: { resolver: string; old_resolver: string; new_resolver: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a update_resolvers transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -311,20 +365,25 @@ export interface Client {
    * initialization. `new_resolvers` must have an odd length so a simple
    * majority vote can never tie. Callable even while paused, so a
    * compromised committee can be replaced without waiting to unpause.
-   * 
+   *
    * This is the emergency override path. It supersedes any in-flight
    * self-rotation vote: an open `RotationProposal` is cleared (emitting
    * `RotationCancelled` when one was present), so a proposal can never
    * execute against a committee it wasn't built for. Day-to-day committee
    * changes go through `propose_rotation` / `vote_rotation` instead.
    */
-  update_resolvers: ({new_resolvers}: {new_resolvers: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  update_resolvers: (
+    { new_resolvers }: { new_resolvers: Array<string> },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
 
   /**
    * Construct and simulate a get_assertion_state transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
-  get_assertion_state: ({id}: {id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Assertion>>>
-
+  get_assertion_state: (
+    { id }: { id: u64 },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<Assertion>>>;
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -337,13 +396,14 @@ export class Client extends ContractClient {
         salt?: Buffer | Uint8Array;
         /** The format used to decode `wasmHash`, if it's provided as a string. */
         format?: "hex" | "base64";
-      }
+      },
   ): Promise<AssembledTransaction<T>> {
-    return ContractClient.deploy(null, options)
+    return ContractClient.deploy(null, options);
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAFwAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFw==",
+      new ContractSpec([
+        "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAFwAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFw==",
         "AAAAAgAAAAAAAAAAAAAABlN0YXR1cwAAAAAAAwAAAAAAAAAAAAAAB1BlbmRpbmcAAAAAAAAAAAAAAAAIRGlzcHV0ZWQAAAAAAAAAAAAAAAhSZXNvbHZlZA==",
         "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACwAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAFVG9rZW4AAAAAAAAAAAAAAAAAAApCb25kQW1vdW50AAAAAAAAAAAAAAAAAA9DaGFsbGVuZ2VXaW5kb3cAAAAAAAAAAAAAAAAJUmVzb2x2ZXJzAAAAAAAAAQAAAAAAAAAJQXNzZXJ0aW9uAAAAAAAAAQAAAAYAAAAAAAAAAAAAAAZOZXh0SWQAAAAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAAAAAMhCYXNpcyBwb2ludHMgKDDigJMxMDAwKSBvZiB0aGUgYm9uZCBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcwphbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb24uIDAgbWVhbnMgbm8gcmV3YXJkIGlzIHRha2VuOyB0aGUKZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlciAob3JpZ2luYWwgYmVoYXZpb3IpLgAAABFGaW5hbGl6ZVJld2FyZEJwcwAAAAAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAA=",
         "AAAAAAAAAE5EaXNwdXRlcyBhIHBlbmRpbmcgYXNzZXJ0aW9uIHdpdGhpbiB0aGUgY2hhbGxlbmdlIHdpbmRvdyBieSBtYXRjaGluZyBpdHMgYm9uZC4AAAAAAAdkaXNwdXRlAAAAAAIAAAAAAAAACGRpc3B1dGVyAAAAEwAAAAAAAAACaWQAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
@@ -374,24 +434,25 @@ export class Client extends ContractClient {
         "AAAABQAAAAAAAAAAAAAAEVJvdGF0aW9uQ2FuY2VsbGVkAAAAAAAAAQAAABJyb3RhdGlvbl9jYW5jZWxsZWQAAAAAAAIAAAAAAAAADG9sZF9yZXNvbHZlcgAAABMAAAAAAAAAAAAAAAxuZXdfcmVzb2x2ZXIAAAATAAAAAAAAAAI=",
         "AAAAAAAAAAAAAAATZ2V0X2Fzc2VydGlvbl9zdGF0ZQAAAAABAAAAAAAAAAJpZAAAAAAABgAAAAEAAAPpAAAH0AAAAAlBc3NlcnRpb24AAAAAAAAD",
         "AAAAAQAAAJJBIHBlbmRpbmcgZGVwbG95bWVudC1hZG1pbiByb3RhdGlvbi4gVGhlIGN1cnJlbnQgYWRtaW4gcHJvcG9zZXMgYSB0YXJnZXQsCnRoZW4gdGhhdCB0YXJnZXQgbXVzdCBhdXRob3JpemUgYGFjY2VwdF9hZG1pbmAgYmVmb3JlIGF1dGhvcml0eSBjaGFuZ2VzLgAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAAT",
-        "AAAABQAAAAAAAAAAAAAAFUFkbWluUm90YXRpb25Qcm9wb3NlZAAAAAAAAAEAAAAXYWRtaW5fcm90YXRpb25fcHJvcG9zZWQAAAAAAgAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAAAAAAAAAAAC3Byb3Bvc2VkX2J5AAAAABMAAAAAAAAAAg==" ]),
-      options
-    )
+        "AAAABQAAAAAAAAAAAAAAFUFkbWluUm90YXRpb25Qcm9wb3NlZAAAAAAAAAEAAAAXYWRtaW5fcm90YXRpb25fcHJvcG9zZWQAAAAAAgAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAAAAAAAAAAAC3Byb3Bvc2VkX2J5AAAAABMAAAAAAAAAAg==",
+      ]),
+      options,
+    );
   }
   public readonly fromJSON = {
     dispute: this.txFromJSON<Result<void>>,
-        resolve: this.txFromJSON<Result<Option<boolean>>>,
-        finalize: this.txFromJSON<Result<boolean>>,
-        initialize: this.txFromJSON<Result<void>>,
-        set_paused: this.txFromJSON<Result<void>>,
-        accept_admin: this.txFromJSON<Result<void>>,
-        propose_admin: this.txFromJSON<Result<void>>,
-        vote_rotation: this.txFromJSON<Result<Option<boolean>>>,
-        assert_outcome: this.txFromJSON<Result<u64>>,
-        cancel_rotation: this.txFromJSON<Result<void>>,
-        set_bond_amount: this.txFromJSON<Result<void>>,
-        propose_rotation: this.txFromJSON<Result<void>>,
-        update_resolvers: this.txFromJSON<Result<void>>,
-        get_assertion_state: this.txFromJSON<Result<Assertion>>
-  }
+    resolve: this.txFromJSON<Result<Option<boolean>>>,
+    finalize: this.txFromJSON<Result<boolean>>,
+    initialize: this.txFromJSON<Result<void>>,
+    set_paused: this.txFromJSON<Result<void>>,
+    accept_admin: this.txFromJSON<Result<void>>,
+    propose_admin: this.txFromJSON<Result<void>>,
+    vote_rotation: this.txFromJSON<Result<Option<boolean>>>,
+    assert_outcome: this.txFromJSON<Result<u64>>,
+    cancel_rotation: this.txFromJSON<Result<void>>,
+    set_bond_amount: this.txFromJSON<Result<void>>,
+    propose_rotation: this.txFromJSON<Result<void>>,
+    update_resolvers: this.txFromJSON<Result<void>>,
+    get_assertion_state: this.txFromJSON<Result<Assertion>>,
+  };
 }
