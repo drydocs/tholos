@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke};
-use soroban_sdk::IntoVal;
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger, MockAuth, MockAuthInvoke};
+use soroban_sdk::{Event as _, IntoVal};
 
 const DEFAULT_BOND: i128 = 100;
 const DEFAULT_WINDOW: u64 = 3600;
@@ -560,6 +560,172 @@ fn test_asserter_cannot_dispute_own_assertion() {
         asserter_balance_after_assert,
         "asserter balance must be unchanged after a rejected self-dispute"
     );
+}
+
+#[test]
+fn test_resolver_cannot_vote_as_asserter() {
+    let f = Fixture::new();
+    let asserter = f.resolvers.get(0).unwrap();
+    f.mint(&asserter, DEFAULT_MINT);
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_resolve(&asserter, &id, &true);
+    assert_eq!(result, Err(Ok(Error::SelfVote)));
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Disputed);
+    assert_eq!(state.voted.len(), 0);
+    assert_eq!(state.votes_for_outcome, 0);
+    assert_eq!(state.votes_against_outcome, 0);
+}
+
+#[test]
+fn test_resolver_cannot_vote_as_disputer() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.resolvers.get(0).unwrap();
+    f.mint(&disputer, DEFAULT_MINT);
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let result = f.client.try_resolve(&disputer, &id, &false);
+    assert_eq!(result, Err(Ok(Error::SelfVote)));
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Disputed);
+    assert_eq!(state.voted.len(), 0);
+    assert_eq!(state.votes_for_outcome, 0);
+    assert_eq!(state.votes_against_outcome, 0);
+}
+
+#[test]
+fn test_neutral_resolver_can_still_vote() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    let resolver = f.resolvers.get(0).unwrap();
+    let outcome = f.client.resolve(&resolver, &id, &true);
+    assert_eq!(outcome, None);
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Disputed);
+    assert_eq!(state.voted.len(), 1);
+    assert_eq!(state.votes_for_outcome, 1);
+}
+
+#[test]
+fn test_size_one_conflicted_committee_cannot_resolve_when_stall_timeout_is_unset() {
+    // Documented trade-off, not a committee-size change: initialize still
+    // accepts a size-1 committee. If that sole resolver is later the
+    // asserter, SelfVote blocks the only possible vote, an outsider is
+    // NotAResolver, and reclaim_stalled_dispute is disabled at stall
+    // timeout 0 (the default). The dispute stays Disputed with both bonds
+    // frozen.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token = token::Client::new(&env, &token_id);
+
+    let sole = Address::generate(&env);
+    let resolvers = Vec::from_array(&env, [sole.clone()]);
+
+    let contract_id = env.register(Tholos, ());
+    let client = TholosClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    token::StellarAssetClient::new(&env, &token_id).mint(&sole, &DEFAULT_MINT);
+    let disputer = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
+
+    let id = client.assert_outcome(&sole, &true);
+    client.dispute(&disputer, &id);
+
+    assert_eq!(
+        client.try_resolve(&sole, &id, &true),
+        Err(Ok(Error::SelfVote))
+    );
+    let outsider = Address::generate(&env);
+    assert_eq!(
+        client.try_resolve(&outsider, &id, &true),
+        Err(Ok(Error::NotAResolver))
+    );
+
+    let state = client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Disputed);
+    assert_eq!(state.voted.len(), 0);
+    assert_eq!(state.votes_for_outcome, 0);
+    assert_eq!(state.votes_against_outcome, 0);
+    assert_eq!(token.balance(&client.address), 2 * DEFAULT_BOND);
+
+    env.ledger().with_mut(|l| l.timestamp += 30 * 24 * 3600);
+    let trigger = Address::generate(&env);
+    assert_eq!(
+        client.try_reclaim_stalled_dispute(&trigger, &id),
+        Err(Ok(Error::StallTimeoutNotConfigured))
+    );
+    assert_eq!(
+        client.get_assertion_state(&id).status,
+        Status::Disputed,
+        "bonds remain frozen: no majority is reachable and reclaim is disabled"
+    );
+    assert_eq!(token.balance(&client.address), 2 * DEFAULT_BOND);
+}
+
+#[test]
+fn test_size_three_both_parties_on_committee_cannot_reach_majority_when_stall_timeout_is_unset() {
+    // Same freeze on a larger odd committee: both parties on a size-3
+    // snapshot leave one disinterested resolver, below majority (2). Their
+    // vote records but never finalizes, and reclaim is still off at timeout 0.
+    let f = Fixture::new();
+    let asserter = f.resolvers.get(0).unwrap();
+    let disputer = f.resolvers.get(1).unwrap();
+    let remaining = f.resolvers.get(2).unwrap();
+    f.mint(&asserter, DEFAULT_MINT);
+    f.mint(&disputer, DEFAULT_MINT);
+
+    let id = f.client.assert_outcome(&asserter, &true);
+    f.client.dispute(&disputer, &id);
+
+    assert_eq!(
+        f.client.try_resolve(&asserter, &id, &true),
+        Err(Ok(Error::SelfVote))
+    );
+    assert_eq!(
+        f.client.try_resolve(&disputer, &id, &false),
+        Err(Ok(Error::SelfVote))
+    );
+
+    let outcome = f.client.resolve(&remaining, &id, &true);
+    assert_eq!(outcome, None);
+    let state = f.client.get_assertion_state(&id);
+    assert_eq!(state.status, Status::Disputed);
+    assert_eq!(state.voted.len(), 1);
+    assert_eq!(state.votes_for_outcome, 1);
+
+    f.env.ledger().with_mut(|l| l.timestamp += 30 * 24 * 3600);
+    let trigger = f.generate();
+    assert_eq!(
+        f.client.try_reclaim_stalled_dispute(&trigger, &id),
+        Err(Ok(Error::StallTimeoutNotConfigured))
+    );
+    assert_eq!(f.client.get_assertion_state(&id).status, Status::Disputed);
 }
 
 #[test]
@@ -1432,6 +1598,30 @@ fn test_rotation_requires_majority_then_executes() {
     f.client.resolve(&new_resolver, &id, &false);
     f.client.resolve(&f.resolvers.get(1).unwrap(), &id, &false);
     assert_eq!(f.token.balance(&disputer), 1_100);
+}
+
+#[test]
+fn test_rotation_vote_still_open_emits_rotation_voted_event() {
+    let f = Fixture::new();
+    f.client.propose_rotation(
+        &f.resolvers.get(0).unwrap(),
+        &f.resolvers.get(0).unwrap(),
+        &f.generate(),
+    );
+
+    let voter = f.resolvers.get(1).unwrap();
+    // One yes of three: not yet a majority (needs 2), proposal stays open.
+    let r = f.client.try_vote_rotation(&voter, &true);
+    assert_eq!(r, Ok(Ok(None)));
+
+    let expected = RotationVoted {
+        resolver: voter,
+        approve: true,
+        yes_count: 1,
+        no_count: 0,
+    }
+    .to_xdr(&f.env, &f.client.address);
+    assert_eq!(f.env.events().all().events(), &[expected][..]);
 }
 
 #[test]
@@ -2506,5 +2696,177 @@ mod proptest_initialize_bounds {
                 ),
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #166: stalled-dispute liveness fallback.
+// -----------------------------------------------------------------------
+
+mod stalled_dispute {
+    use super::*;
+
+    /// Standalone helper that creates a full fixture with a known admin,
+    /// configurable bond/window, and a stall timeout.
+    fn stalled_fixture(
+        stall_timeout: u64,
+    ) -> (
+        Env,
+        TholosClient<'static>,
+        token::Client<'static>,
+        Address,
+        Address,
+        Vec<Address>,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token_id, resolvers) = setup(&env);
+        let token = token::Client::new(&env, &token_id);
+        let contract_id = env.register(Tholos, ());
+        let client = TholosClient::new(&env, &contract_id);
+        // Nonzero base timestamp so the stall-timeout comparison is
+        // meaningful. Env::default()'s timestamp is 0, which is a valid
+        // ledger value now that disputed_at uses Option<u64> (None is the
+        // sentinel, not 0), but a nonzero base keeps the test realistic.
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_WINDOW,
+            &resolvers,
+            &0u32,
+        );
+        client.set_stall_timeout(&stall_timeout);
+        token::StellarAssetClient::new(&env, &token_id).mint(&admin, &DEFAULT_MINT);
+        (env, client, token, admin, token_id, resolvers)
+    }
+
+    /// Disputed assertion with both bonds locked in.
+    fn disputed(
+        env: &Env,
+        client: &TholosClient,
+        token: &token::Client,
+        token_id: &Address,
+    ) -> (Address, Address, u64) {
+        let asserter = Address::generate(env);
+        let disputer = Address::generate(env);
+        token::StellarAssetClient::new(env, token_id).mint(&asserter, &DEFAULT_MINT);
+        token::StellarAssetClient::new(env, token_id).mint(&disputer, &DEFAULT_MINT);
+        let id = client.assert_outcome(&asserter, &true);
+        client.dispute(&disputer, &id);
+        let _ = token;
+        (asserter, disputer, id)
+    }
+
+    #[test]
+    fn test_set_stall_timeout_validates_bounds() {
+        let (env, client, _token, _admin, _tid, _) = stalled_fixture(0);
+        let _ = &env;
+        // within bounds (max is now 7 days, not 30, to leave TTL headroom)
+        assert!(client.try_set_stall_timeout(&3600).is_ok());
+        assert!(client.try_set_stall_timeout(&(7 * 24 * 3600)).is_ok());
+        // out of bounds
+        let too_big = 7 * 24 * 3600 + 1;
+        let result = client.try_set_stall_timeout(&too_big);
+        assert_eq!(result, Err(Ok(Error::InvalidStallTimeout)));
+    }
+
+    #[test]
+    fn test_reclaim_before_timeout_requires_normal_resolution() {
+        // After the dispute opens but before the stall timeout elapses, the
+        // fallback is not callable and normal resolution is still required.
+        let (env, client, token, admin, token_id, resolvers) = stalled_fixture(3600);
+        let _ = admin;
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = disputer;
+
+        // Not yet stalled: ledger timestamp is ~0 (Env::default), dispute
+        // opened at the same timestamp, timeout 3600 not elapsed.
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::DisputeNotStalled)));
+
+        // The committee can still resolve normally in the meantime.
+        let r1 = resolvers.get(0).unwrap().clone();
+        let r2 = resolvers.get(1).unwrap().clone();
+        client.resolve(&r1, &id, &true);
+        client.resolve(&r2, &id, &true);
+        assert_eq!(client.get_assertion_state(&id).final_outcome, Some(true));
+        // Winner (asserter) got both bonds; resolution closed the dispute.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT + DEFAULT_BOND);
+
+        // Post-resolution reclaim fails with NotDisputed.
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::NotDisputed)));
+    }
+
+    #[test]
+    fn test_reclaim_after_timeout_returns_both_bonds_no_winner() {
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(3600);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+
+        // Each side posted one bond of DEFAULT_BOND.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT - DEFAULT_BOND);
+        assert_eq!(token.balance(&disputer), DEFAULT_MINT - DEFAULT_BOND);
+        assert_eq!(token.balance(&client.address), 2 * DEFAULT_BOND);
+
+        // Elapse the stall timeout.
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+
+        let trigger = Address::generate(&env);
+        client.reclaim_stalled_dispute(&trigger, &id);
+
+        // Both bonds returned in full; no winner, no forfeiture.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT);
+        assert_eq!(token.balance(&disputer), DEFAULT_MINT);
+        assert_eq!(token.balance(&client.address), 0);
+        // Trigger got nothing: no reward on this path.
+        assert_eq!(token.balance(&trigger), 0);
+
+        // Terminal state: Resolved with final_outcome None (voided).
+        let state = client.get_assertion_state(&id);
+        assert_eq!(state.status, Status::Resolved);
+        assert_eq!(state.final_outcome, None);
+
+        // Idempotence: a second reclaim now fails NotDisputed.
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::NotDisputed)));
+    }
+
+    #[test]
+    fn test_reclaim_disabled_with_zero_timeout() {
+        // stall timeout 0 = fallback disabled (pre-#166 behavior).
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(0);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = (asserter, disputer);
+
+        // Even far past any plausible timeout, reclaim is disabled.
+        env.ledger().with_mut(|l| l.timestamp += 30 * 24 * 3600);
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::StallTimeoutNotConfigured)));
+    }
+
+    #[test]
+    fn test_reclaim_blocked_while_paused() {
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(3600);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = (asserter, disputer);
+
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+
+        // Freeze the deployment. The fallback races a normal resolve that
+        // never got a chance to act — it must be blocked until unpaused.
+        client.set_paused(&true);
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::Paused)));
+
+        // Unpause: now the fallback fires.
+        client.set_paused(&false);
+        client.reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(token.balance(&client.address), 0);
     }
 }

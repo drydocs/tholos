@@ -10,6 +10,7 @@
     - [Contract Reference (v2)](CONTRACT_V2.md)
 - [Deployment & Operations](DEPLOYMENT.md)
     - [Bond Sizing Analysis](BOND_SIZING.md)
+    - [V1 Mainnet Parameter Selection](V1_MAINNET_PARAMETERS.md)
     - [Deployment & Operations: Protocol v2](DEPLOYMENT_V2.md)
         - [V2 Bond Sizing and Window Analysis](V2_BOND_SIZING.md)
 - [Integration Guide](INTEGRATION.md)

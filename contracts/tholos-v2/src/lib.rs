@@ -14,10 +14,12 @@
 //! #69 (settlement: converting a locked outcome into per-position
 //! entitlements, forfeiture, and pro-rata reward distribution), #70
 //! (credit withdrawal and the reentrancy guard on every token-moving
-//! entrypoint), and #71 (`set_paused_v2` and `cancel_round`, the emergency
+//! entrypoint), #71 (`set_paused_v2` and `cancel_round`, the emergency
 //! mechanism for an already-active round, distinct from v1's narrower
-//! new-assertions-only pause). Remaining issues (#72 onward) land as this
-//! crate grows.
+//! new-assertions-only pause), and #154 (pinning `admin` in `__constructor`,
+//! atomically with contract creation, so a separate `initialize` call can no
+//! longer be front-run to claim the admin role). Remaining issues (#72
+//! onward) land as this crate grows.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, token, xdr::ToXdr, Address,
@@ -41,6 +43,16 @@ pub enum WeightRuleVersion {
 /// optimistic-default design decision), kept as an enum so a future
 /// `Inconclusive`-style rule could be pinned per-deployment without touching
 /// already-open assertions under the old rule.
+///
+/// Since #167 the default is gated: it only applies when revealed weight
+/// is a genuine majority of the frozen eligible total (strictly more than
+/// half, the same subtraction form the strict-majority check uses). Below
+/// or tied at half, the round voids instead (`TerminalCause::
+/// RevealQuorumNotMet`: bonds back, no forfeiture) rather than rewarding
+/// register-heavy, reveal-light abstention with the asserted outcome's
+/// standing. The quorum floor is 50% of `eligible_total` as a starting
+/// hypothesis, to be stress-tested per the trade-off analysis in issue
+/// #167 before being treated as settled.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimeoutDefaultRule {
@@ -98,6 +110,20 @@ pub enum TerminalCause {
     /// same `settle`/`withdraw` path a normal outcome uses, no forfeiture
     /// and no reward: see `settlement_pool`.
     AdminCancelled,
+    /// Set when the reveal deadline closes with revealed weight at or
+    /// below half of the frozen eligible total (#167): what showed up
+    /// isn't a genuine majority of everything committed, so the
+    /// optimistic timeout default is withheld and the round voided
+    /// instead. Every funded position, revealed or not, recovers its
+    /// exact principal through the same `settle`/`withdraw` path a real
+    /// outcome uses, no forfeiture and no reward: the same bonds-back,
+    /// no-winner shape a stalled v1 dispute gets (#166).
+    ///
+    /// Appended last rather than slotted in next to its timeout sibling
+    /// on purpose: `contracttype` enums encode variants by position, so
+    /// appending at the end keeps every already-persisted
+    /// `TerminalCause` decoding to the same value it was written with.
+    RevealQuorumNotMet,
 }
 
 #[contractevent]
@@ -221,6 +247,26 @@ pub struct AdminUpdated {
 pub struct RoundCancelled {
     #[topic]
     pub id: u64,
+}
+
+/// Emitted instead of `Resolved` (#167) when a dispute closes with
+/// revealed weight at or below half of the frozen eligible total: the
+/// reveal-quorum floor is not met, so the round is voided with
+/// `TerminalCause::RevealQuorumNotMet` rather than the optimistic
+/// timeout defaulting the asserted outcome to a win. A distinct event
+/// from `Resolved` for the same reason `RoundCancelled` is: indexers
+/// must be able to tell a real resolved outcome from a round that
+/// produced none, without inferring it from `assertion` state.
+#[contractevent]
+pub struct RoundVoided {
+    #[topic]
+    pub id: u64,
+    /// The revealed weight that closed below the floor, and the frozen
+    /// eligible total it was checked against, so a reader can verify the
+    /// voiding condition (`revealed * 2 <= eligible`) directly from the
+    /// event.
+    pub revealed_weight: i128,
+    pub eligible_total: i128,
 }
 
 /// What kind of position this is, and (for a `Fixed` one) which side it's
@@ -645,13 +691,35 @@ pub struct TholosV2;
 
 #[contractimpl]
 impl TholosV2 {
+    /// Pins `admin` atomically with contract creation. Soroban invokes a
+    /// contract's constructor (a function literally named `__constructor`)
+    /// as part of the same `CreateContractV2` host operation that creates
+    /// the instance, and the host will not accept a separate, later
+    /// invocation of it: no other transaction can ever execute in between
+    /// "this contract now exists" and "its admin is recorded", so unlike a
+    /// deploy-then-call-`initialize(admin)` two-step, there is no window
+    /// for a third party watching the mempool to submit their own call
+    /// first and become admin of an instance someone else paid to deploy
+    /// (#154). The rest of the deployment-wide policy is still pinned by a
+    /// separate `initialize` call below, but that call no longer accepts an
+    /// `admin` parameter at all: it authenticates against the admin fixed
+    /// here, so nothing a later caller supplies can change who holds the
+    /// role.
+    pub fn __constructor(env: Env, admin: Address) {
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::touch_instance_ttl(&env);
+    }
+
     /// One-time setup, pinning the deployment-wide defaults every future
-    /// assertion's `PolicySnapshotV2` is built from. Requires `admin`'s
-    /// signature. Fails with `AlreadyInitialized` if called twice.
+    /// assertion's `PolicySnapshotV2` is built from. Requires the signature
+    /// of the admin `__constructor` fixed at deploy time (this call takes
+    /// no `admin` parameter of its own; see `__constructor`'s doc comment
+    /// for why). Fails with `AlreadyInitialized` if called twice.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
-        admin: Address,
         token: Address,
         base_bond: i128,
         challenge_window_secs: u64,
@@ -663,11 +731,20 @@ impl TholosV2 {
         max_position: i128,
         max_total_weight: i128,
     ) -> Result<(), Error> {
-        admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Policy) {
             return Err(Error::AlreadyInitialized);
         }
+
+        // Set by `__constructor`, which every live instance has already run
+        // by the time any call reaches here; `NotInitialized` is defensive
+        // (matches every other Admin lookup in this contract) rather than a
+        // reachable path in practice.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
 
         if base_bond <= 0 || base_bond > MAX_BOND_AMOUNT {
             return Err(Error::InvalidBondAmount);
@@ -735,7 +812,6 @@ impl TholosV2 {
             max_total_weight,
         };
 
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Policy, &policy);
         env.storage().instance().set(&DataKey::NextId, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -756,8 +832,9 @@ impl TholosV2 {
 
     /// Replaces the deployment admin. Only the current admin may authorize
     /// the change. The old admin loses authority as soon as this call
-    /// succeeds. Fails with `NotInitialized` before `initialize` and emits
-    /// `AdminUpdated` on success.
+    /// succeeds. `admin` is pinned by `__constructor`, not `initialize`, so
+    /// this succeeds as soon as the contract has been deployed — even
+    /// before `initialize` is ever called. Emits `AdminUpdated` on success.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let old_admin: Address = env
             .storage()
@@ -778,7 +855,7 @@ impl TholosV2 {
     }
 
     /// Blocks or unblocks new `assert_outcome` calls. Only callable by the
-    /// admin set at `initialize`. Does not affect any already-active
+    /// admin fixed at `__constructor`. Does not affect any already-active
     /// round: registration, reveal, `resolve_outcome`, `settle`, and
     /// `withdraw` all continue normally while paused, since blocking them
     /// would strand capital already locked into a round rather than
@@ -1392,6 +1469,13 @@ impl TholosV2 {
             position.revealed = true;
             position.agrees_with_outcome = Some(agrees_with_asserter);
             Self::set_position(env, id, fixed_voter, &position, &assertion.policy);
+
+            Revealed {
+                id,
+                voter: fixed_voter.clone(),
+                choice: agrees_with_asserter,
+            }
+            .publish(env);
         }
 
         Self::set_resolution(env, id, &resolution, &assertion.policy);
@@ -1460,20 +1544,56 @@ impl TholosV2 {
         }
 
         if assertion.terminal_cause == TerminalCause::NotYetDecided {
-            assertion.terminal_cause = TerminalCause::OptimisticTimeout;
-            assertion.final_outcome = Some(assertion.outcome);
+            // #167: before the optimistic default applies, revealed weight
+            // must be a genuine majority of everything committed -- more
+            // than half of the frozen eligible total, the same subtraction
+            // form the strict-majority lock uses (`side_weight > W -
+            // side_weight`) so tied and below-half revealed weight never
+            // qualifies. An actor registering weight purely to inflate the
+            // denominator and never revealing it gets exactly what this
+            // issue's attack description lays out: otherwise they could
+            // push a dispute into the timeout default (asserted outcome
+            // stands), so a register-heavy, reveal-light coalition's
+            // preferred result, at the cost of forfeiture they can partly
+            // recycle through positions that did reveal. Withholding the
+            // default when the quorum fails voids the round instead
+            // (#166's bonds-back, no-forfeiture shape): the round produces
+            // no outcome, nobody is rewarded for withholding, and -- the
+            // trade-off accepted here -- a genuinely undecided, low-
+            // participation dispute also produces no outcome rather than
+            // defaulting to the asserter.
+            let w = resolution.eligible_total;
+            let r = resolution.revealed_weight();
+            if r > w - r {
+                assertion.terminal_cause = TerminalCause::OptimisticTimeout;
+                assertion.final_outcome = Some(assertion.outcome);
+            } else {
+                assertion.terminal_cause = TerminalCause::RevealQuorumNotMet;
+            }
         }
         assertion.phase = PhaseV2::Resolved;
         Self::set_assertion(env, id, &assertion);
 
-        Resolved {
-            id,
-            terminal_cause: assertion.terminal_cause,
-            final_outcome: assertion
-                .final_outcome
-                .expect("terminal_cause locked above always sets final_outcome alongside it"),
+        if assertion.terminal_cause == TerminalCause::RevealQuorumNotMet {
+            // A voided round (#167) has no outcome to announce: emit
+            // `RoundVoided` instead of `Resolved`, the same separation
+            // `RoundCancelled` keeps from `Resolved`.
+            RoundVoided {
+                id,
+                revealed_weight: resolution.revealed_weight(),
+                eligible_total: resolution.eligible_total,
+            }
+            .publish(env);
+        } else {
+            Resolved {
+                id,
+                terminal_cause: assertion.terminal_cause,
+                final_outcome: assertion
+                    .final_outcome
+                    .expect("terminal_cause locked above always sets final_outcome alongside it"),
+            }
+            .publish(env);
         }
-        .publish(env);
 
         assertion
     }
@@ -1617,17 +1737,21 @@ impl TholosV2 {
     /// alone may already close the assertion out (see its doc comment).
     /// Otherwise requires `Reveal` phase; if `reveal_deadline` has passed or
     /// `revealed_weight` has caught up with the frozen eligible total `W`,
-    /// locks the outcome (strict majority if reached, `OptimisticTimeout`
-    /// otherwise) and moves the assertion to `Resolved`. Idempotent: calling
-    /// it again on an already-`Resolved` assertion just returns the
-    /// already-decided `terminal_cause`.
+    /// locks the outcome: strict majority if reached, `OptimisticTimeout`
+    /// if revealed weight is a genuine majority (> half of `W`) but no
+    /// side won, or `RevealQuorumNotMet` if revealed weight is at or below
+    /// half of `W` (#167: the quorum gate withholds the optimistic default
+    /// and voids the round instead). In all three cases the assertion moves
+    /// to `Resolved`. Idempotent: calling it again on an already-`Resolved`
+    /// assertion just returns the already-decided `terminal_cause`.
     ///
     /// Fails with `NotReveal` if the assertion is `Pending` (nothing to
     /// resolve yet, it hasn't been disputed), `RegistrationNotClosed` if
     /// still `Registration` before its deadline, `RevealNotClosed` if still
     /// `Reveal` before its deadline with unrevealed weight remaining. Emits
-    /// `RevealOpened` and/or `Resolved` as those transitions actually
-    /// happen.
+    /// `RevealOpened` and/or `Resolved` (or `RoundVoided` instead of
+    /// `Resolved` when the quorum gate voids the round) as those
+    /// transitions actually happen.
     pub fn resolve_outcome(env: Env, id: u64) -> Result<TerminalCause, Error> {
         Self::check_reentrancy_guard(&env)?;
 
@@ -1691,6 +1815,12 @@ impl TholosV2 {
     ///   a cancelled `Pending` assertion never had a `Resolution` created
     ///   at all, so it's refunded directly in `cancel_round` instead and
     ///   never reaches `settle`.
+    /// - `RevealQuorumNotMet` (#167): the same as `AdminCancelled`'s
+    ///   bonds-back pool. Only reachable when the reveal deadline closed
+    ///   the round with revealed weight at or below half of
+    ///   `eligible_total`, so the quorum gate withheld the optimistic
+    ///   default; nothing is forfeited because the withheld behavior must
+    ///   not be rewarded (see `close_reveal_if_ready`).
     ///
     /// Panics (via `unreachable!`) for `NotYetDecided` or
     /// `UncontestedFinalize`: `settle` rejects `UncontestedFinalize` itself
@@ -1698,15 +1828,20 @@ impl TholosV2 {
     /// `NotYetDecided` is impossible once `phase == Resolved`, which
     /// `close_reveal_if_ready` and `cancel_round` (the only two places
     /// that set it, besides `finalize`'s own `UncontestedFinalize` path)
-    /// always pair with one of the four causes handled here.
+    /// always pair with one of the five causes handled here.
     fn settlement_pool(terminal_cause: TerminalCause, resolution: &Resolution) -> (i128, i128) {
         let recipient_weight = match terminal_cause {
             TerminalCause::StrictMajorityFor => resolution.agree_weight,
             TerminalCause::StrictMajorityAgainst => resolution.disagree_weight,
             TerminalCause::OptimisticTimeout => resolution.revealed_weight(),
-            TerminalCause::AdminCancelled => resolution.eligible_total,
+            // A voided round (#167) settles the same bonds-back way a
+            // cancelled one does: every funded position, revealed or not,
+            // is a recipient, so nothing is forfeited.
+            TerminalCause::AdminCancelled | TerminalCause::RevealQuorumNotMet => {
+                resolution.eligible_total
+            }
             _ => unreachable!(
-                "settle only runs once phase == Resolved, which always pairs with one of these four terminal causes"
+                "settle only runs once phase == Resolved, which always pairs with one of these five terminal causes"
             ),
         };
         let forfeited_pool = resolution.eligible_total - recipient_weight;
@@ -1895,8 +2030,9 @@ impl TholosV2 {
             TerminalCause::StrictMajorityAgainst => position.agrees_with_outcome == Some(false),
             TerminalCause::OptimisticTimeout => position.agrees_with_outcome.is_some(),
             // Every funded position recovers its principal on a
-            // cancellation, revealed or not: see settlement_pool.
-            TerminalCause::AdminCancelled => true,
+            // cancellation or a quorum-voided round (#167), revealed or
+            // not: see settlement_pool.
+            TerminalCause::AdminCancelled | TerminalCause::RevealQuorumNotMet => true,
             _ => unreachable!("settlement_pool above already panics for any other terminal_cause"),
         };
 
@@ -1937,13 +2073,14 @@ impl TholosV2 {
                             .clone()
                             .expect("disputer set once phase reaches Registration"),
                         TerminalCause::OptimisticTimeout => assertion.asserter.clone(),
-                        // Unreachable in practice: AdminCancelled's
-                        // forfeited_pool is always 0 (see settlement_pool),
-                        // so the forfeited_pool > 0 guard above already
-                        // skips this whole block for it; any other cause
-                        // would already have panicked in settlement_pool.
+                        // Unreachable in practice: AdminCancelled's and a
+                        // quorum-voided round's (#167) forfeited_pool is
+                        // always 0 (see settlement_pool), so the
+                        // forfeited_pool > 0 guard above already skips this
+                        // whole block for them; any other cause would
+                        // already have panicked in settlement_pool.
                         _ => unreachable!(
-                            "dust only exists when forfeited_pool > 0, which excludes AdminCancelled, and settlement_pool above already panics for any other terminal_cause"
+                            "dust only exists when forfeited_pool > 0, which excludes AdminCancelled and RevealQuorumNotMet, and settlement_pool above already panics for any other terminal_cause"
                         ),
                     };
                     Self::add_credit(&env, id, &dust_recipient, dust, &assertion.policy)?;
@@ -2074,7 +2211,7 @@ impl TholosV2 {
     /// Cancels an active round before any terminal outcome has locked,
     /// refunding every already-funded position its exact principal, no
     /// forfeiture, no reward, as if the round never happened. Only callable
-    /// by the admin set at `initialize`, and only while paused
+    /// by the admin fixed at `__constructor`, and only while paused
     /// (`NotPaused` otherwise): cancellation is an emergency measure, not
     /// a routine one, and requiring a pause first means it can never
     /// happen as a surprise to a caller in the middle of an ordinary

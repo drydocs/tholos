@@ -30,106 +30,126 @@ if (typeof window !== "undefined") {
   window.Buffer = window.Buffer || Buffer;
 }
 
+
+
+
 export const Errors = {
-  1: { message: "AlreadyInitialized" },
-  2: { message: "NotInitialized" },
-  3: { message: "InvalidResolverCount" },
-  4: { message: "AssertionNotFound" },
-  5: { message: "NotPending" },
-  6: { message: "NotDisputed" },
-  7: { message: "ChallengeWindowClosed" },
-  8: { message: "ChallengeWindowOpen" },
-  9: { message: "NotAResolver" },
-  10: { message: "AlreadyVoted" },
-  11: { message: "Paused" },
+  1: {message:"AlreadyInitialized"},
+  2: {message:"NotInitialized"},
+  3: {message:"InvalidResolverCount"},
+  4: {message:"AssertionNotFound"},
+  5: {message:"NotPending"},
+  6: {message:"NotDisputed"},
+  7: {message:"ChallengeWindowClosed"},
+  8: {message:"ChallengeWindowOpen"},
+  9: {message:"NotAResolver"},
+  10: {message:"AlreadyVoted"},
+  11: {message:"Paused"},
   /**
    * `bond_amount` was not positive, or exceeded `MAX_BOND_AMOUNT`.
    */
-  12: { message: "InvalidBondAmount" },
-  13: { message: "InvalidChallengeWindow" },
-  14: { message: "TooManyResolvers" },
+  12: {message:"InvalidBondAmount"},
+  13: {message:"InvalidChallengeWindow"},
+  14: {message:"TooManyResolvers"},
   /**
    * `finalize_reward_bps` was greater than `MAX_FINALIZE_REWARD_BPS` (1000).
    */
-  15: { message: "InvalidFinalizeReward" },
-  16: { message: "DuplicateResolvers" },
-  17: { message: "RotationInProgress" },
-  18: { message: "NoRotationProposal" },
-  19: { message: "ResolverNotInCommittee" },
-  20: { message: "RotationTargetAlreadyResolver" },
-  21: { message: "NotProposer" },
+  15: {message:"InvalidFinalizeReward"},
+  16: {message:"DuplicateResolvers"},
+  17: {message:"RotationInProgress"},
+  18: {message:"NoRotationProposal"},
+  19: {message:"ResolverNotInCommittee"},
+  20: {message:"RotationTargetAlreadyResolver"},
+  21: {message:"NotProposer"},
   /**
    * The caller is the asserter of the assertion they are trying to dispute.
    * An asserter disputing their own assertion would consume the one dispute
    * slot without any economic risk (they receive both bonds back regardless
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
-  22: { message: "SelfDispute" },
-  23: { message: "NoAdminRotationProposal" },
+  22: {message:"SelfDispute"},
+  23: {message:"NoAdminRotationProposal"},
+  /**
+   * `reclaim_stalled_dispute` was called on an assertion whose dispute
+   * opened without a stall timeout configured (0 = fallback disabled), or
+   * whose disputed_at predates this upgrade and cannot be timed out.
+   */
+  24: {message:"StallTimeoutNotConfigured"},
+  /**
+   * `reclaim_stalled_dispute` was called before the stall timeout elapsed
+   * since the dispute opened. The assertion still requires normal
+   * resolution by the snapshotted committee.
+   */
+  25: {message:"DisputeNotStalled"},
+  /**
+   * `set_stall_timeout` was called with a value greater than
+   * `MAX_STALL_TIMEOUT_SECS`.
+   */
+  26: {message:"InvalidStallTimeout"},
+  /**
+   * The caller is on the snapshotted resolver committee and is also the
+   * assertion's asserter or disputer. A party voting on their own case
+   * biases (and, on a size-1 committee, determines) the outcome.
+   */
+  27: {message:"SelfVote"},
   /**
    * Token transfer escrow overflow when adding a received amount.
    */
-  24: { message: "TokenTransferMismatch" },
-};
+  28: {message:"TokenTransferMismatch"}
+}
 
-export type Status =
-  | { tag: "Pending"; values: void }
-  | { tag: "Disputed"; values: void }
-  | { tag: "Resolved"; values: void };
+export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
 
-export type DataKey =
-  | { tag: "Admin"; values: void }
-  | { tag: "Token"; values: void }
-  | { tag: "BondAmount"; values: void }
-  | { tag: "ChallengeWindow"; values: void }
-  | { tag: "Resolvers"; values: void }
-  | { tag: "Assertion"; values: readonly [u64] }
-  | { tag: "NextId"; values: void }
-  | { tag: "Paused"; values: void }
-  | { tag: "FinalizeRewardBps"; values: void }
-  | { tag: "RotationProposal"; values: void }
-  | { tag: "AdminRotationProposal"; values: void }
-  | { tag: "AssertionEscrow"; values: readonly [u64] };
+export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void} | {tag: "StallTimeoutSecs", values: void} | {tag: "DisputedAt", values: readonly [u64]} | {tag: "AssertionEscrow", values: readonly [u64]};
+
+
+
+
 
 export interface Assertion {
   asserter: string;
   /**
-   * The bond amount required to dispute this assertion and the amount
-   * paid out to the winning side. Pinned to the live `DataKey::BondAmount`
-   * at the moment `assert_outcome` created this assertion; a later
-   * `set_bond_amount` call never changes it retroactively. Every payout
-   * path (`dispute`, `finalize`, `resolve`) reads this field, never the
-   * live `DataKey::BondAmount`, so this guarantee holds structurally.
-   */
-  bond: i128;
+ * The bond amount required to dispute this assertion and the amount
+ * paid out to the winning side. Pinned to the live `DataKey::BondAmount`
+ * at the moment `assert_outcome` created this assertion; a later
+ * `set_bond_amount` call never changes it retroactively. Every payout
+ * path (`dispute`, `finalize`, `resolve`) reads this field, never the
+ * live `DataKey::BondAmount`, so this guarantee holds structurally.
+ */
+bond: i128;
   disputer: Option<string>;
   /**
-   * The authoritative outcome once the assertion is resolved. `None` while
-   * the assertion is still pending or disputed.
-   */
-  final_outcome: Option<boolean>;
+ * The authoritative outcome once the assertion is resolved. `None` while
+ * the assertion is still pending or disputed.
+ */
+final_outcome: Option<boolean>;
   /**
-   * Who called `finalize`. `None` until the assertion is finalized via
-   * `finalize` (never set for assertions resolved via `resolve`). Always
-   * `Some` after `finalize` completes — the caller must authorize the call
-   * unconditionally, so this is always a verified address.
-   */
-  finalizer: Option<string>;
+ * Who called `finalize`. `None` until the assertion is finalized via
+ * `finalize` (never set for assertions resolved via `resolve`). Always
+ * `Some` after `finalize` completes — the caller must authorize the call
+ * unconditionally, so this is always a verified address.
+ */
+finalizer: Option<string>;
   opened_at: u64;
   outcome: boolean;
   /**
-   * The resolver committee at the moment this assertion was disputed.
-   * Empty until `dispute` is called. Voting and majority are always
-   * computed against this snapshot, not the live committee, so an
-   * `update_resolvers` call mid-dispute can't change who gets to decide
-   * an already-disputed assertion.
-   */
-  resolvers: Array<string>;
+ * The resolver committee at the moment this assertion was disputed.
+ * Empty until `dispute` is called. Voting and majority are always
+ * computed against this snapshot, not the live committee, so an
+ * `update_resolvers` call mid-dispute can't change who gets to decide
+ * an already-disputed assertion.
+ */
+resolvers: Array<string>;
   status: Status;
   voted: Array<string>;
   votes_against_outcome: u32;
   votes_for_outcome: u32;
 }
+
+
+
+
+
 
 /**
  * An in-flight single-slot committee rotation proposed by a current resolver.
@@ -138,26 +158,33 @@ export interface Assertion {
  */
 export interface RotationProposal {
   /**
-   * The new resolver to add. Must not already be on the committee.
-   */
-  new_resolver: string;
+ * The new resolver to add. Must not already be on the committee.
+ */
+new_resolver: string;
   /**
-   * Resolvers who voted no, to prevent double-voting and detect deadlock.
-   */
-  no: Array<string>;
+ * Resolvers who voted no, to prevent double-voting and detect deadlock.
+ */
+no: Array<string>;
   /**
-   * The current resolver to remove. Must be on the committee when proposed.
-   */
-  old_resolver: string;
+ * The current resolver to remove. Must be on the committee when proposed.
+ */
+old_resolver: string;
   /**
-   * The resolver who opened the proposal.
-   */
-  proposed_by: string;
+ * The resolver who opened the proposal.
+ */
+proposed_by: string;
   /**
-   * Resolvers who voted yes, to prevent double-voting.
-   */
-  yes: Array<string>;
+ * Resolvers who voted yes, to prevent double-voting.
+ */
+yes: Array<string>;
 }
+
+
+
+
+
+
+
 
 /**
  * A pending deployment-admin rotation. The current admin proposes a target,
@@ -167,15 +194,14 @@ export interface AdminRotationProposal {
   new_admin: string;
 }
 
+
+
 export interface Client {
   /**
    * Construct and simulate a dispute transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Disputes a pending assertion within the challenge window by matching its bond.
    */
-  dispute: (
-    { disputer, id }: { disputer: string; id: u64 },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  dispute: ({disputer, id}: {disputer: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a resolve transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -184,14 +210,7 @@ export interface Client {
    * side (asserter if the original outcome stands, disputer otherwise)
    * receives both bonds.
    */
-  resolve: (
-    {
-      resolver,
-      id,
-      agrees_with_asserter,
-    }: { resolver: string; id: u64; agrees_with_asserter: boolean },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<Option<boolean>>>>;
+  resolve: ({resolver, id, agrees_with_asserter}: {resolver: string, id: u64, agrees_with_asserter: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Option<boolean>>>>
 
   /**
    * Construct and simulate a finalize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -209,38 +228,22 @@ export interface Client {
    * remainder; when it is zero the full bond is returned to the asserter
    * and no reward is paid. Returns the asserted outcome.
    */
-  finalize: (
-    { caller, id }: { caller: string; id: u64 },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<boolean>>>;
+  finalize: ({caller, id}: {caller: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<boolean>>>
 
   /**
    * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Initializes the contract. `resolvers` must have an odd length so a
-   * simple majority vote can never tie. `finalize_reward_bps` sets the
-   * fraction of the bond (in basis points, 0–1000) paid to whoever calls
-   * `finalize` as an incentive for prompt finalization; 0 disables the
-   * reward entirely and preserves the original behavior where the full
-   * bond is returned to the asserter.
+   * simple majority vote can never tie. Size-1 is legal. Combined with
+   * `SelfVote` and the default stall timeout of 0, a dispute whose sole
+   * resolver is also a party cannot reach a majority and cannot be
+   * reclaimed — a documented liveness trade-off, not a hidden hole.
+   * `finalize_reward_bps` sets the fraction of the bond (in basis
+   * points, 0–1000) paid to whoever calls `finalize` as an incentive
+   * for prompt finalization; 0 disables the reward entirely and
+   * preserves the original behavior where the full bond is returned to
+   * the asserter.
    */
-  initialize: (
-    {
-      admin,
-      token,
-      bond_amount,
-      challenge_window_secs,
-      resolvers,
-      finalize_reward_bps,
-    }: {
-      admin: string;
-      token: string;
-      bond_amount: i128;
-      challenge_window_secs: u64;
-      resolvers: Array<string>;
-      finalize_reward_bps: u32;
-    },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  initialize: ({admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps}: {admin: string, token: string, bond_amount: i128, challenge_window_secs: u64, resolvers: Array<string>, finalize_reward_bps: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -251,10 +254,7 @@ export interface Client {
    * uncontested; it becomes callable again once unpaused. Only callable by
    * the admin set at initialization.
    */
-  set_paused: (
-    { paused }: { paused: boolean },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  set_paused: ({paused}: {paused: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -262,9 +262,7 @@ export interface Client {
    * must authorize this call, so a current admin cannot complete a rotation
    * without the new admin's consent. Fails when no proposal exists.
    */
-  accept_admin: (
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  accept_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -272,10 +270,7 @@ export interface Client {
    * authorize the proposal; authority remains unchanged until the proposed
    * address calls `accept_admin`.
    */
-  propose_admin: (
-    { new_admin }: { new_admin: string },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  propose_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a vote_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -288,19 +283,13 @@ export interface Client {
    * Returns `Some(true)` if the rotation executed, `Some(false)` if it was
    * auto-cancelled as dead, and `None` if the proposal remains open.
    */
-  vote_rotation: (
-    { resolver, approve }: { resolver: string; approve: boolean },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<Option<boolean>>>>;
+  vote_rotation: ({resolver, approve}: {resolver: string, approve: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Option<boolean>>>>
 
   /**
    * Construct and simulate a assert_outcome transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Posts a bonded claim about an outcome. Returns the new assertion id.
    */
-  assert_outcome: (
-    { asserter, outcome }: { asserter: string; outcome: boolean },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<u64>>>;
+  assert_outcome: ({asserter, outcome}: {asserter: string, outcome: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u64>>>
 
   /**
    * Construct and simulate a cancel_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -309,10 +298,7 @@ export interface Client {
    * a majority (deadlock guard), so a lost proposer key can't permanently
    * block rotation. Emits `RotationCancelled`.
    */
-  cancel_rotation: (
-    { resolver }: { resolver: string },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  cancel_rotation: ({resolver}: {resolver: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a set_bond_amount transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -321,22 +307,19 @@ export interface Client {
    * against the same bounds `initialize` already enforces
    * (`new_bond_amount > 0`, `new_bond_amount <= MAX_BOND_AMOUNT`).
    * Pause-exempt, like `update_resolvers` and `set_paused`.
-   *
+   * 
    * This only affects assertions created after the change: `Assertion.bond`
    * pins the bond amount at the moment `assert_outcome` creates the
    * assertion, and every payout path (`dispute`, `finalize`, `resolve`)
    * reads `assertion.bond`, never the live `DataKey::BondAmount`. An
    * already-open assertion's payout is therefore unaffected by a later
    * `set_bond_amount` call.
-   *
+   * 
    * Fails with `NotInitialized` if called before `initialize`, or
    * `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
    * than `MAX_BOND_AMOUNT`.
    */
-  set_bond_amount: (
-    { new_bond_amount }: { new_bond_amount: i128 },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  set_bond_amount: ({new_bond_amount}: {new_bond_amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a propose_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -350,14 +333,7 @@ export interface Client {
    * committee was snapshotted at `dispute` time). Pause-exempt, like
    * `update_resolvers`.
    */
-  propose_rotation: (
-    {
-      resolver,
-      old_resolver,
-      new_resolver,
-    }: { resolver: string; old_resolver: string; new_resolver: string },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  propose_rotation: ({resolver, old_resolver, new_resolver}: {resolver: string, old_resolver: string, new_resolver: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a update_resolvers transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -365,25 +341,67 @@ export interface Client {
    * initialization. `new_resolvers` must have an odd length so a simple
    * majority vote can never tie. Callable even while paused, so a
    * compromised committee can be replaced without waiting to unpause.
-   *
+   * 
    * This is the emergency override path. It supersedes any in-flight
    * self-rotation vote: an open `RotationProposal` is cleared (emitting
    * `RotationCancelled` when one was present), so a proposal can never
    * execute against a committee it wasn't built for. Day-to-day committee
    * changes go through `propose_rotation` / `vote_rotation` instead.
    */
-  update_resolvers: (
-    { new_resolvers }: { new_resolvers: Array<string> },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  update_resolvers: ({new_resolvers}: {new_resolvers: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a set_stall_timeout transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Configures the stalled-dispute timeout (#166). After a `dispute`
+   * has been open for `stall_timeout_secs` without `resolve` reaching a
+   * strict majority, `reclaim_stalled_dispute` becomes callable by anyone
+   * and returns both bonds to their original owners with no winner.
+   * 
+   * `0` disables the fallback (the pre-#166 behavior): bonds of a
+   * stalled dispute can then remain frozen indefinitely. Pause-exempt,
+   * like `set_bond_amount`: a stall timeout that lapses across a pause
+   * costs nothing — the fallback pays no one and no reward applies —
+   * but `reclaim_stalled_dispute` itself is blocked while paused so a
+   * paused deployment cannot be drained by the fallback racing a normal
+   * `resolve` that never got a chance to act.
+   * 
+   * The timeout only applies to assertions disputed after this upgrade:
+   * their `disputed_at` is pinned by `dispute`. Assertions disputed
+   * before the upgrade (or while no timeout was configured) have
+   * `disputed_at == None` and are never reclaimable, since a timeout
+   * configured after the fact would retroactively apply to d
+   */
+  set_stall_timeout: ({stall_timeout_secs}: {stall_timeout_secs: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a get_assertion_state transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
-  get_assertion_state: (
-    { id }: { id: u64 },
-    options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<Assertion>>>;
+  get_assertion_state: ({id}: {id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Assertion>>>
+
+  /**
+   * Construct and simulate a reclaim_stalled_dispute transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Permissionless liveness fallback for a stalled dispute (#166).
+   * Callable by anyone once the deployment's stall timeout has elapsed
+   * since the dispute opened without `resolve` reaching a strict
+   * majority. Returns both bonds to their original owners — the
+   * asserter gets their bond back, the disputer gets their bond back —
+   * with no winner and no forfeiture.
+   * 
+   * Outcome rule (confirmed with the maintainer): no-winner, not
+   * default-to-asserted. The disputer did contest the claim; the process
+   * broke down because the committee failed, not because the challenge
+   * was weak. Defaulting to the asserted outcome would forfeit the
+   * disputer's bond over a dispute never adjudicated, and would hand the
+   * asserter an incentive to stall the committee (bribe, DoS, wait out
+   * unresponsive resolvers) since stalling would win the case for free.
+   * No-winner removes that incentive: stalling benefits nobody.
+   * 
+   * The assertion ends in `Status::Resolved` with `final_outcome: None`,
+   * which no existing reader can confuse with a majority outcome: every
+   * pre-#
+   */
+  reclaim_stalled_dispute: ({caller, id}: {caller: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -396,16 +414,15 @@ export class Client extends ContractClient {
         salt?: Buffer | Uint8Array;
         /** The format used to decode `wasmHash`, if it's provided as a string. */
         format?: "hex" | "base64";
-      },
+      }
   ): Promise<AssembledTransaction<T>> {
-    return ContractClient.deploy(null, options);
+    return ContractClient.deploy(null, options)
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([
-        "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAFwAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFw==",
+      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAHAAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFwAAAMlgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIHdhcyBjYWxsZWQgb24gYW4gYXNzZXJ0aW9uIHdob3NlIGRpc3B1dGUKb3BlbmVkIHdpdGhvdXQgYSBzdGFsbCB0aW1lb3V0IGNvbmZpZ3VyZWQgKDAgPSBmYWxsYmFjayBkaXNhYmxlZCksIG9yCndob3NlIGRpc3B1dGVkX2F0IHByZWRhdGVzIHRoaXMgdXBncmFkZSBhbmQgY2Fubm90IGJlIHRpbWVkIG91dC4AAAAAAAAZU3RhbGxUaW1lb3V0Tm90Q29uZmlndXJlZAAAAAAAABgAAACsYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYCB3YXMgY2FsbGVkIGJlZm9yZSB0aGUgc3RhbGwgdGltZW91dCBlbGFwc2VkCnNpbmNlIHRoZSBkaXNwdXRlIG9wZW5lZC4gVGhlIGFzc2VydGlvbiBzdGlsbCByZXF1aXJlcyBub3JtYWwKcmVzb2x1dGlvbiBieSB0aGUgc25hcHNob3R0ZWQgY29tbWl0dGVlLgAAABFEaXNwdXRlTm90U3RhbGxlZAAAAAAAABkAAABSYHNldF9zdGFsbF90aW1lb3V0YCB3YXMgY2FsbGVkIHdpdGggYSB2YWx1ZSBncmVhdGVyIHRoYW4KYE1BWF9TVEFMTF9USU1FT1VUX1NFQ1NgLgAAAAAAE0ludmFsaWRTdGFsbFRpbWVvdXQAAAAAGgAAAMNUaGUgY2FsbGVyIGlzIG9uIHRoZSBzbmFwc2hvdHRlZCByZXNvbHZlciBjb21taXR0ZWUgYW5kIGlzIGFsc28gdGhlCmFzc2VydGlvbidzIGFzc2VydGVyIG9yIGRpc3B1dGVyLiBBIHBhcnR5IHZvdGluZyBvbiB0aGVpciBvd24gY2FzZQpiaWFzZXMgKGFuZCwgb24gYSBzaXplLTEgY29tbWl0dGVlLCBkZXRlcm1pbmVzKSB0aGUgb3V0Y29tZS4AAAAACFNlbGZWb3RlAAAAGwAAAD1Ub2tlbiB0cmFuc2ZlciBlc2Nyb3cgb3ZlcmZsb3cgd2hlbiBhZGRpbmcgYSByZWNlaXZlZCBhbW91bnQuAAAAAAAAFVRva2VuVHJhbnNmZXJNaXNtYXRjaAAAAAAAABw=",
         "AAAAAgAAAAAAAAAAAAAABlN0YXR1cwAAAAAAAwAAAAAAAAAAAAAAB1BlbmRpbmcAAAAAAAAAAAAAAAAIRGlzcHV0ZWQAAAAAAAAAAAAAAAhSZXNvbHZlZA==",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACwAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAFVG9rZW4AAAAAAAAAAAAAAAAAAApCb25kQW1vdW50AAAAAAAAAAAAAAAAAA9DaGFsbGVuZ2VXaW5kb3cAAAAAAAAAAAAAAAAJUmVzb2x2ZXJzAAAAAAAAAQAAAAAAAAAJQXNzZXJ0aW9uAAAAAAAAAQAAAAYAAAAAAAAAAAAAAAZOZXh0SWQAAAAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAAAAAMhCYXNpcyBwb2ludHMgKDDigJMxMDAwKSBvZiB0aGUgYm9uZCBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcwphbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb24uIDAgbWVhbnMgbm8gcmV3YXJkIGlzIHRha2VuOyB0aGUKZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlciAob3JpZ2luYWwgYmVoYXZpb3IpLgAAABFGaW5hbGl6ZVJld2FyZEJwcwAAAAAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAA=",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAADgAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAFVG9rZW4AAAAAAAAAAAAAAAAAAApCb25kQW1vdW50AAAAAAAAAAAAAAAAAA9DaGFsbGVuZ2VXaW5kb3cAAAAAAAAAAAAAAAAJUmVzb2x2ZXJzAAAAAAAAAQAAAAAAAAAJQXNzZXJ0aW9uAAAAAAAAAQAAAAYAAAAAAAAAAAAAAAZOZXh0SWQAAAAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAAAAAMhCYXNpcyBwb2ludHMgKDDigJMxMDAwKSBvZiB0aGUgYm9uZCBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcwphbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb24uIDAgbWVhbnMgbm8gcmV3YXJkIGlzIHRha2VuOyB0aGUKZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlciAob3JpZ2luYWwgYmVoYXZpb3IpLgAAABFGaW5hbGl6ZVJld2FyZEJwcwAAAAAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAABR1NlY29uZHMgYWZ0ZXIgYGRpc3B1dGVgIG9wZW5zIGR1cmluZyB3aGljaCBgcmVzb2x2ZWAgbXVzdCByZWFjaCBhCnN0cmljdCBtYWpvcml0eSBiZWZvcmUgYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYCBiZWNvbWVzIGNhbGxhYmxlLgpVbnNldCBtZWFucyAwOiB0aGUgc3RhbGxlZC1kaXNwdXRlIGZhbGxiYWNrIGlzIGRpc2FibGVkIGVudGlyZWx5LCBubwpwZXJtaXNzaW9ubGVzcyByZWNvdmVyeSBwYXRoIGV4aXN0cyBhbmQgYm9uZHMgY2FuIHJlbWFpbiBmcm96ZW4KaW5kZWZpbml0ZWx5LCB0aGUgcHJlLSMxNjYgYmVoYXZpb3IuIFNlZSBgc2V0X3N0YWxsX3RpbWVvdXRgLgAAAAAQU3RhbGxUaW1lb3V0U2VjcwAAAAEAAAFRV2hlbiBgZGlzcHV0ZWAgd2FzIGNhbGxlZCBmb3IgYXNzZXJ0aW9uIGB1NjRgLiBLZXB0IGFzIGEgc2VwYXJhdGUKc3RvcmFnZSBrZXkgcmF0aGVyIHRoYW4gYSBmaWVsZCBvbiBgQXNzZXJ0aW9uYCBzbyBhZGRpbmcgaXQgZG9lcyBub3QKYnJlYWsgZGVjb2Rpbmcgb2YgYXNzZXJ0aW9ucyBhbHJlYWR5IHBlcnNpc3RlZCBiZWZvcmUgdGhpcyB1cGdyYWRlCigjMTg0KS4gYE5vbmVgIG1lYW5zIHRoZSBhc3NlcnRpb24gd2FzIGRpc3B1dGVkIGJlZm9yZSB0aGlzIHVwZ3JhZGUKb3IgaXMgc3RpbGwgcGVuZGluZzsgYFNvbWUodHMpYCBpcyB0aGUgbGVkZ2VyIHRpbWVzdGFtcCBhdCBkaXNwdXRlLgAAAAAAAApEaXNwdXRlZEF0AAAAAAABAAAABgAAAAEAAABDVGhlIHRvdGFsIHRva2VuIGFtb3VudCBhY3R1YWxseSByZWNlaXZlZCBmb3IgYW4gYXNzZXJ0aW9uJ3MgZXNjcm93LgAAAAAPQXNzZXJ0aW9uRXNjcm93AAAAAAEAAAAG",
         "AAAAAAAAAE5EaXNwdXRlcyBhIHBlbmRpbmcgYXNzZXJ0aW9uIHdpdGhpbiB0aGUgY2hhbGxlbmdlIHdpbmRvdyBieSBtYXRjaGluZyBpdHMgYm9uZC4AAAAAAAdkaXNwdXRlAAAAAAIAAAAAAAAACGRpc3B1dGVyAAAAEwAAAAAAAAACaWQAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAN9BIHJlc29sdmVyIHZvdGVzIG9uIGEgZGlzcHV0ZWQgYXNzZXJ0aW9uLiBPbmNlIGEgc3RyaWN0IG1ham9yaXR5IG9mCnRoZSByZXNvbHZlciBjb21taXR0ZWUgYWdyZWVzLCB0aGUgYXNzZXJ0aW9uIGZpbmFsaXplczogdGhlIHdpbm5pbmcKc2lkZSAoYXNzZXJ0ZXIgaWYgdGhlIG9yaWdpbmFsIG91dGNvbWUgc3RhbmRzLCBkaXNwdXRlciBvdGhlcndpc2UpCnJlY2VpdmVzIGJvdGggYm9uZHMuAAAAAAdyZXNvbHZlAAAAAAMAAAAAAAAACHJlc29sdmVyAAAAEwAAAAAAAAACaWQAAAAAAAYAAAAAAAAAFGFncmVlc193aXRoX2Fzc2VydGVyAAAAAQAAAAEAAAPpAAAD6AAAAAEAAAAD",
         "AAAAAAAAA1hGaW5hbGl6ZXMgYSBwZW5kaW5nIGFzc2VydGlvbiBvbmNlIGl0cyBjaGFsbGVuZ2Ugd2luZG93IGhhcyBlbGFwc2VkCndpdGggbm8gZGlzcHV0ZS4gRmFpbHMgd2l0aCBgUGF1c2VkYCBpZiBwYXVzZWQ6IGEgcGF1c2VkIGFzc2VydGlvbiBtYXkKaGF2ZSBoYWQgbm8gcmVhbCBvcHBvcnR1bml0eSB0byBiZSBkaXNwdXRlZCBkdXJpbmcgaXRzIGNoYWxsZW5nZQp3aW5kb3cgKHNpbmNlIGBkaXNwdXRlYCBpcyBhbHNvIGJsb2NrZWQgd2hpbGUgcGF1c2VkKSwgc28gaXQgbXVzdCBub3QKYmUgYWJsZSB0byBmaW5hbGl6ZSB1bmNvbnRlc3RlZCB1bnRpbCB1bnBhdXNlZC4gYGNhbGxlcmAgbXVzdAphdXRob3JpemUgdGhlIGNhbGwgdW5jb25kaXRpb25hbGx5IOKAlCByZWdhcmRsZXNzIG9mIHdoZXRoZXIKYGZpbmFsaXplX3Jld2FyZF9icHNgIGlzIHplcm8g4oCUIHNvIHRoZSBhZGRyZXNzIHJlY29yZGVkIGluCmBBc3NlcnRpb24uZmluYWxpemVyYCBhbmQgdGhlIGBGaW5hbGl6ZWRgIGV2ZW50IGlzIGFsd2F5cyBhIHZlcmlmaWVkCmNhbGxlciBhbmQgY2Fubm90IGJlIHNwb29mZWQuIFdoZW4gYGZpbmFsaXplX3Jld2FyZF9icHNgIGlzIG5vbi16ZXJvLApgY2FsbGVyYCBhbHNvIHJlY2VpdmVzIGBib25kICogZmluYWxpemVfcmV3YXJkX2JwcyAvIDEwXzAwMGAgdG9rZW5zIGFzCmFuIGluY2VudGl2ZSBmb3IgcHJvbXB0IGZpbmFsaXphdGlvbiBhbmQgdGhlIGFzc2VydGVyIHJlY2VpdmVzIHRoZQpyZW1haW5kZXI7IHdoZW4gaXQgaXMgemVybyB0aGUgZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlcgphbmQgbm8gcmV3YXJkIGlzIHBhaWQuIFJldHVybnMgdGhlIGFzc2VydGVkIG91dGNvbWUuAAAACGZpbmFsaXplAAAAAgAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAAAAAAJpZAAAAAAABgAAAAEAAAPpAAAAAQAAAAM=",
@@ -414,13 +431,14 @@ export class Client extends ContractClient {
         "AAAABQAAAAAAAAAAAAAACFJlc29sdmVkAAAAAQAAAAhyZXNvbHZlZAAAAAIAAAAAAAAAAmlkAAAAAAAGAAAAAQAAAAAAAAAHb3V0Y29tZQAAAAABAAAAAAAAAAI=",
         "AAAAAQAAAAAAAAAAAAAACUFzc2VydGlvbgAAAAAAAAwAAAAAAAAACGFzc2VydGVyAAAAEwAAAZFUaGUgYm9uZCBhbW91bnQgcmVxdWlyZWQgdG8gZGlzcHV0ZSB0aGlzIGFzc2VydGlvbiBhbmQgdGhlIGFtb3VudApwYWlkIG91dCB0byB0aGUgd2lubmluZyBzaWRlLiBQaW5uZWQgdG8gdGhlIGxpdmUgYERhdGFLZXk6OkJvbmRBbW91bnRgCmF0IHRoZSBtb21lbnQgYGFzc2VydF9vdXRjb21lYCBjcmVhdGVkIHRoaXMgYXNzZXJ0aW9uOyBhIGxhdGVyCmBzZXRfYm9uZF9hbW91bnRgIGNhbGwgbmV2ZXIgY2hhbmdlcyBpdCByZXRyb2FjdGl2ZWx5LiBFdmVyeSBwYXlvdXQKcGF0aCAoYGRpc3B1dGVgLCBgZmluYWxpemVgLCBgcmVzb2x2ZWApIHJlYWRzIHRoaXMgZmllbGQsIG5ldmVyIHRoZQpsaXZlIGBEYXRhS2V5OjpCb25kQW1vdW50YCwgc28gdGhpcyBndWFyYW50ZWUgaG9sZHMgc3RydWN0dXJhbGx5LgAAAAAAAARib25kAAAACwAAAAAAAAAIZGlzcHV0ZXIAAAPoAAAAEwAAAHJUaGUgYXV0aG9yaXRhdGl2ZSBvdXRjb21lIG9uY2UgdGhlIGFzc2VydGlvbiBpcyByZXNvbHZlZC4gYE5vbmVgIHdoaWxlCnRoZSBhc3NlcnRpb24gaXMgc3RpbGwgcGVuZGluZyBvciBkaXNwdXRlZC4AAAAAAA1maW5hbF9vdXRjb21lAAAAAAAD6AAAAAEAAAEHV2hvIGNhbGxlZCBgZmluYWxpemVgLiBgTm9uZWAgdW50aWwgdGhlIGFzc2VydGlvbiBpcyBmaW5hbGl6ZWQgdmlhCmBmaW5hbGl6ZWAgKG5ldmVyIHNldCBmb3IgYXNzZXJ0aW9ucyByZXNvbHZlZCB2aWEgYHJlc29sdmVgKS4gQWx3YXlzCmBTb21lYCBhZnRlciBgZmluYWxpemVgIGNvbXBsZXRlcyDigJQgdGhlIGNhbGxlciBtdXN0IGF1dGhvcml6ZSB0aGUgY2FsbAp1bmNvbmRpdGlvbmFsbHksIHNvIHRoaXMgaXMgYWx3YXlzIGEgdmVyaWZpZWQgYWRkcmVzcy4AAAAACWZpbmFsaXplcgAAAAAAA+gAAAATAAAAAAAAAAlvcGVuZWRfYXQAAAAAAAAGAAAAAAAAAAdvdXRjb21lAAAAAAEAAAEiVGhlIHJlc29sdmVyIGNvbW1pdHRlZSBhdCB0aGUgbW9tZW50IHRoaXMgYXNzZXJ0aW9uIHdhcyBkaXNwdXRlZC4KRW1wdHkgdW50aWwgYGRpc3B1dGVgIGlzIGNhbGxlZC4gVm90aW5nIGFuZCBtYWpvcml0eSBhcmUgYWx3YXlzCmNvbXB1dGVkIGFnYWluc3QgdGhpcyBzbmFwc2hvdCwgbm90IHRoZSBsaXZlIGNvbW1pdHRlZSwgc28gYW4KYHVwZGF0ZV9yZXNvbHZlcnNgIGNhbGwgbWlkLWRpc3B1dGUgY2FuJ3QgY2hhbmdlIHdobyBnZXRzIHRvIGRlY2lkZQphbiBhbHJlYWR5LWRpc3B1dGVkIGFzc2VydGlvbi4AAAAAAAlyZXNvbHZlcnMAAAAAAAPqAAAAEwAAAAAAAAAGc3RhdHVzAAAAAAfQAAAABlN0YXR1cwAAAAAAAAAAAAV2b3RlZAAAAAAAA+oAAAATAAAAAAAAABV2b3Rlc19hZ2FpbnN0X291dGNvbWUAAAAAAAAEAAAAAAAAABF2b3Rlc19mb3Jfb3V0Y29tZQAAAAAAAAQ=",
         "AAAABQAAAAAAAAAAAAAACUZpbmFsaXplZAAAAAAAAAEAAAAJZmluYWxpemVkAAAAAAAABAAAAAAAAAACaWQAAAAAAAYAAAABAAAAAAAAAAdvdXRjb21lAAAAAAEAAAAAAAAAt1dobyBjYWxsZWQgYGZpbmFsaXplYC4gQWx3YXlzIGEgdmVyaWZpZWQgYWRkcmVzcyDigJQgYGZpbmFsaXplYCByZXF1aXJlcwp0aGUgY2FsbGVyJ3MgYXV0aCB1bmNvbmRpdGlvbmFsbHksIHNvIHRoaXMgdmFsdWUgaXMgdHJ1c3R3b3J0aHkKcmVnYXJkbGVzcyBvZiB3aGV0aGVyIGEgcmV3YXJkIHdhcyBjb25maWd1cmVkLgAAAAAJZmluYWxpemVyAAAAAAAAEwAAAAAAAABqSG93IG1hbnkgdG9rZW5zIHdlcmUgcGFpZCB0byB0aGUgZmluYWxpemVyIGFzIGEgcmV3YXJkICgwIHdoZW4KYGZpbmFsaXplX3Jld2FyZF9icHNgIHdhcyBjb25maWd1cmVkIGFzIDApLgAAAAAABnJld2FyZAAAAAAACwAAAAAAAAAC",
-        "AAAAAAAAAXRJbml0aWFsaXplcyB0aGUgY29udHJhY3QuIGByZXNvbHZlcnNgIG11c3QgaGF2ZSBhbiBvZGQgbGVuZ3RoIHNvIGEKc2ltcGxlIG1ham9yaXR5IHZvdGUgY2FuIG5ldmVyIHRpZS4gYGZpbmFsaXplX3Jld2FyZF9icHNgIHNldHMgdGhlCmZyYWN0aW9uIG9mIHRoZSBib25kIChpbiBiYXNpcyBwb2ludHMsIDDigJMxMDAwKSBwYWlkIHRvIHdob2V2ZXIgY2FsbHMKYGZpbmFsaXplYCBhcyBhbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb247IDAgZGlzYWJsZXMgdGhlCnJld2FyZCBlbnRpcmVseSBhbmQgcHJlc2VydmVzIHRoZSBvcmlnaW5hbCBiZWhhdmlvciB3aGVyZSB0aGUgZnVsbApib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlci4AAAAKaW5pdGlhbGl6ZQAAAAAABgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAV0b2tlbgAAAAAAABMAAAAAAAAAC2JvbmRfYW1vdW50AAAAAAsAAAAAAAAAFWNoYWxsZW5nZV93aW5kb3dfc2VjcwAAAAAAAAYAAAAAAAAACXJlc29sdmVycwAAAAAAA+oAAAATAAAAAAAAABNmaW5hbGl6ZV9yZXdhcmRfYnBzAAAAAAQAAAABAAAD6QAAAAIAAAAD",
+        "AAAAAAAAAlhJbml0aWFsaXplcyB0aGUgY29udHJhY3QuIGByZXNvbHZlcnNgIG11c3QgaGF2ZSBhbiBvZGQgbGVuZ3RoIHNvIGEKc2ltcGxlIG1ham9yaXR5IHZvdGUgY2FuIG5ldmVyIHRpZS4gU2l6ZS0xIGlzIGxlZ2FsLiBDb21iaW5lZCB3aXRoCmBTZWxmVm90ZWAgYW5kIHRoZSBkZWZhdWx0IHN0YWxsIHRpbWVvdXQgb2YgMCwgYSBkaXNwdXRlIHdob3NlIHNvbGUKcmVzb2x2ZXIgaXMgYWxzbyBhIHBhcnR5IGNhbm5vdCByZWFjaCBhIG1ham9yaXR5IGFuZCBjYW5ub3QgYmUKcmVjbGFpbWVkIOKAlCBhIGRvY3VtZW50ZWQgbGl2ZW5lc3MgdHJhZGUtb2ZmLCBub3QgYSBoaWRkZW4gaG9sZS4KYGZpbmFsaXplX3Jld2FyZF9icHNgIHNldHMgdGhlIGZyYWN0aW9uIG9mIHRoZSBib25kIChpbiBiYXNpcwpwb2ludHMsIDDigJMxMDAwKSBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcyBhbiBpbmNlbnRpdmUKZm9yIHByb21wdCBmaW5hbGl6YXRpb247IDAgZGlzYWJsZXMgdGhlIHJld2FyZCBlbnRpcmVseSBhbmQKcHJlc2VydmVzIHRoZSBvcmlnaW5hbCBiZWhhdmlvciB3aGVyZSB0aGUgZnVsbCBib25kIGlzIHJldHVybmVkIHRvCnRoZSBhc3NlcnRlci4AAAAKaW5pdGlhbGl6ZQAAAAAABgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAV0b2tlbgAAAAAAABMAAAAAAAAAC2JvbmRfYW1vdW50AAAAAAsAAAAAAAAAFWNoYWxsZW5nZV93aW5kb3dfc2VjcwAAAAAAAAYAAAAAAAAACXJlc29sdmVycwAAAAAAA+oAAAATAAAAAAAAABNmaW5hbGl6ZV9yZXdhcmRfYnBzAAAAAAQAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAXZQYXVzZXMgb3IgdW5wYXVzZXMgbmV3IGFzc2VydGlvbnMsIGRpc3B1dGVzLCByZXNvbHZlciB2b3RlcywgYW5kCmZpbmFsaXphdGlvbi4gQSBwZW5kaW5nIGFzc2VydGlvbiBtYXkgaGF2ZSBoYWQgbm8gcmVhbCBvcHBvcnR1bml0eSB0bwpiZSBkaXNwdXRlZCBkdXJpbmcgaXRzIGNoYWxsZW5nZSB3aW5kb3cgaWYgdGhhdCB3aW5kb3cgb3ZlcmxhcHBlZCBhCnBhdXNlLCBzbyBgZmluYWxpemVgIGlzIGJsb2NrZWQgdG9vIHJhdGhlciB0aGFuIGxldHRpbmcgaXQgZmluYWxpemUKdW5jb250ZXN0ZWQ7IGl0IGJlY29tZXMgY2FsbGFibGUgYWdhaW4gb25jZSB1bnBhdXNlZC4gT25seSBjYWxsYWJsZSBieQp0aGUgYWRtaW4gc2V0IGF0IGluaXRpYWxpemF0aW9uLgAAAAAACnNldF9wYXVzZWQAAAAAAAEAAAAAAAAABnBhdXNlZAAAAAAAAQAAAAEAAAPpAAAAAgAAAAM=",
         "AAAAAAAAAM1Db21wbGV0ZXMgdGhlIHBlbmRpbmcgZGVwbG95bWVudC1hZG1pbiByb3RhdGlvbi4gVGhlIHByb3Bvc2VkIGFkZHJlc3MKbXVzdCBhdXRob3JpemUgdGhpcyBjYWxsLCBzbyBhIGN1cnJlbnQgYWRtaW4gY2Fubm90IGNvbXBsZXRlIGEgcm90YXRpb24Kd2l0aG91dCB0aGUgbmV3IGFkbWluJ3MgY29uc2VudC4gRmFpbHMgd2hlbiBubyBwcm9wb3NhbCBleGlzdHMuAAAAAAAADGFjY2VwdF9hZG1pbgAAAAAAAAABAAAD6QAAAAIAAAAD",
         "AAAABQAAAAAAAAAAAAAADEFkbWluVXBkYXRlZAAAAAEAAAANYWRtaW5fdXBkYXRlZAAAAAAAAAIAAAAAAAAACW9sZF9hZG1pbgAAAAAAABMAAAAAAAAAAAAAAAluZXdfYWRtaW4AAAAAAAATAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAADFBhdXNlVXBkYXRlZAAAAAEAAAANcGF1c2VfdXBkYXRlZAAAAAAAAAEAAAAAAAAABnBhdXNlZAAAAAAAAQAAAAAAAAAC",
         "AAAAAAAAAKVQcm9wb3NlcyBhIGRlcGxveW1lbnQtYWRtaW4gcm90YXRpb24uIE9ubHkgdGhlIGN1cnJlbnQgYWRtaW4gbWF5CmF1dGhvcml6ZSB0aGUgcHJvcG9zYWw7IGF1dGhvcml0eSByZW1haW5zIHVuY2hhbmdlZCB1bnRpbCB0aGUgcHJvcG9zZWQKYWRkcmVzcyBjYWxscyBgYWNjZXB0X2FkbWluYC4AAAAAAAANcHJvcG9zZV9hZG1pbgAAAAAAAAEAAAAAAAAACW5ld19hZG1pbgAAAAAAABMAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAklBIHJlc29sdmVyIHZvdGVzIG9uIHRoZSBvcGVuIHJvdGF0aW9uIHByb3Bvc2FsLiBgYXBwcm92ZWAgcmVjb3JkcyBhIHllcyBvcgpubyAoYm90aCBwcmV2ZW50IHJlLXZvdGluZykuIE9uY2UgeWVzLXZvdGVzIHJlYWNoIGEgc3RyaWN0IG1ham9yaXR5IG9mIHRoZQpsaXZlIGNvbW1pdHRlZSwgdGhlIHJvdGF0aW9uIGV4ZWN1dGVzIGltbWVkaWF0ZWx5OiBgb2xkX3Jlc29sdmVyYCBpcyBzd2FwcGVkCmZvciBgbmV3X3Jlc29sdmVyYCBpbiB0aGUgbGl2ZSBjb21taXR0ZWUsIGFuZCB0aGUgcHJvcG9zYWwgaXMgY2xlYXJlZC4KSWYgdGhlIHJlbWFpbmluZyB1bnZvdGVkIHJlc29sdmVycyBjYW4gbm8gbG9uZ2VyIHN1cHBseSBlbm91Z2ggeWVzLXZvdGVzIHRvCnJlYWNoIGEgbWFqb3JpdHksIHRoZSBwcm9wb3NhbCBpcyBjYW5jZWxsZWQgYXV0b21hdGljYWxseSAoZGVhZGxvY2sgZ3VhcmQpLgpSZXR1cm5zIGBTb21lKHRydWUpYCBpZiB0aGUgcm90YXRpb24gZXhlY3V0ZWQsIGBTb21lKGZhbHNlKWAgaWYgaXQgd2FzCmF1dG8tY2FuY2VsbGVkIGFzIGRlYWQsIGFuZCBgTm9uZWAgaWYgdGhlIHByb3Bvc2FsIHJlbWFpbnMgb3Blbi4AAAAAAAANdm90ZV9yb3RhdGlvbgAAAAAAAAIAAAAAAAAACHJlc29sdmVyAAAAEwAAAAAAAAAHYXBwcm92ZQAAAAABAAAAAQAAA+kAAAPoAAAAAQAAAAM=",
+        "AAAABQAAAAAAAAAAAAAADVJvdGF0aW9uVm90ZWQAAAAAAAABAAAADnJvdGF0aW9uX3ZvdGVkAAAAAAAEAAAAAAAAAAhyZXNvbHZlcgAAABMAAAAAAAAAAAAAAAdhcHByb3ZlAAAAAAEAAAAAAAAAAAAAAAl5ZXNfY291bnQAAAAAAAAEAAAAAAAAAAAAAAAIbm9fY291bnQAAAAEAAAAAAAAAAI=",
         "AAAAAAAAAERQb3N0cyBhIGJvbmRlZCBjbGFpbSBhYm91dCBhbiBvdXRjb21lLiBSZXR1cm5zIHRoZSBuZXcgYXNzZXJ0aW9uIGlkLgAAAA5hc3NlcnRfb3V0Y29tZQAAAAAAAgAAAAAAAAAIYXNzZXJ0ZXIAAAATAAAAAAAAAAdvdXRjb21lAAAAAAEAAAABAAAD6QAAAAYAAAAD",
         "AAAAAAAAAQRDYW5jZWxzIHRoZSBvcGVuIHJvdGF0aW9uIHByb3Bvc2FsLiBUaGUgcHJvcG9zZXIgbWF5IGNhbmNlbCBhdCBhbnkgdGltZS4KQW55IGN1cnJlbnQgcmVzb2x2ZXIgbWF5IGFsc28gY2FuY2VsIG9uY2UgdGhlIHByb3Bvc2FsIGNhbiBubyBsb25nZXIgcmVhY2gKYSBtYWpvcml0eSAoZGVhZGxvY2sgZ3VhcmQpLCBzbyBhIGxvc3QgcHJvcG9zZXIga2V5IGNhbid0IHBlcm1hbmVudGx5CmJsb2NrIHJvdGF0aW9uLiBFbWl0cyBgUm90YXRpb25DYW5jZWxsZWRgLgAAAA9jYW5jZWxfcm90YXRpb24AAAAAAQAAAAAAAAAIcmVzb2x2ZXIAAAATAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAztVcGRhdGVzIHRoZSBib25kIGFtb3VudCByZXF1aXJlZCBmb3IgYXNzZXJ0aW9ucyBjcmVhdGVkIGZyb20gdGhpcwpwb2ludCBvbi4gT25seSBjYWxsYWJsZSBieSB0aGUgYWRtaW4gc2V0IGF0IGluaXRpYWxpemF0aW9uLCB2YWxpZGF0ZWQKYWdhaW5zdCB0aGUgc2FtZSBib3VuZHMgYGluaXRpYWxpemVgIGFscmVhZHkgZW5mb3JjZXMKKGBuZXdfYm9uZF9hbW91bnQgPiAwYCwgYG5ld19ib25kX2Ftb3VudCA8PSBNQVhfQk9ORF9BTU9VTlRgKS4KUGF1c2UtZXhlbXB0LCBsaWtlIGB1cGRhdGVfcmVzb2x2ZXJzYCBhbmQgYHNldF9wYXVzZWRgLgoKVGhpcyBvbmx5IGFmZmVjdHMgYXNzZXJ0aW9ucyBjcmVhdGVkIGFmdGVyIHRoZSBjaGFuZ2U6IGBBc3NlcnRpb24uYm9uZGAKcGlucyB0aGUgYm9uZCBhbW91bnQgYXQgdGhlIG1vbWVudCBgYXNzZXJ0X291dGNvbWVgIGNyZWF0ZXMgdGhlCmFzc2VydGlvbiwgYW5kIGV2ZXJ5IHBheW91dCBwYXRoIChgZGlzcHV0ZWAsIGBmaW5hbGl6ZWAsIGByZXNvbHZlYCkKcmVhZHMgYGFzc2VydGlvbi5ib25kYCwgbmV2ZXIgdGhlIGxpdmUgYERhdGFLZXk6OkJvbmRBbW91bnRgLiBBbgphbHJlYWR5LW9wZW4gYXNzZXJ0aW9uJ3MgcGF5b3V0IGlzIHRoZXJlZm9yZSB1bmFmZmVjdGVkIGJ5IGEgbGF0ZXIKYHNldF9ib25kX2Ftb3VudGAgY2FsbC4KCkZhaWxzIHdpdGggYE5vdEluaXRpYWxpemVkYCBpZiBjYWxsZWQgYmVmb3JlIGBpbml0aWFsaXplYCwgb3IKYEludmFsaWRCb25kQW1vdW50YCBpZiBgbmV3X2JvbmRfYW1vdW50YCBpcyB6ZXJvLCBuZWdhdGl2ZSwgb3IgZ3JlYXRlcgp0aGFuIGBNQVhfQk9ORF9BTU9VTlRgLgAAAAAPc2V0X2JvbmRfYW1vdW50AAAAAAEAAAAAAAAAD25ld19ib25kX2Ftb3VudAAAAAALAAAAAQAAA+kAAAACAAAAAw==",
@@ -430,29 +448,34 @@ export class Client extends ContractClient {
         "AAAABQAAAAAAAAAAAAAAEFJlc29sdmVyc1VwZGF0ZWQAAAABAAAAEXJlc29sdmVyc191cGRhdGVkAAAAAAAAAQAAAAAAAAAJcmVzb2x2ZXJzAAAAAAAD6gAAABMAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEFJvdGF0aW9uRXhlY3V0ZWQAAAABAAAAEXJvdGF0aW9uX2V4ZWN1dGVkAAAAAAAAAgAAAAAAAAAMb2xkX3Jlc29sdmVyAAAAEwAAAAAAAAAAAAAADG5ld19yZXNvbHZlcgAAABMAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zZWQAAAABAAAAEXJvdGF0aW9uX3Byb3Bvc2VkAAAAAAAAAwAAAAAAAAAMb2xkX3Jlc29sdmVyAAAAEwAAAAAAAAAAAAAADG5ld19yZXNvbHZlcgAAABMAAAAAAAAAAAAAAAtwcm9wb3NlZF9ieQAAAAATAAAAAAAAAAI=",
+        "AAAAAAAABABDb25maWd1cmVzIHRoZSBzdGFsbGVkLWRpc3B1dGUgdGltZW91dCAoIzE2NikuIEFmdGVyIGEgYGRpc3B1dGVgCmhhcyBiZWVuIG9wZW4gZm9yIGBzdGFsbF90aW1lb3V0X3NlY3NgIHdpdGhvdXQgYHJlc29sdmVgIHJlYWNoaW5nIGEKc3RyaWN0IG1ham9yaXR5LCBgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIGJlY29tZXMgY2FsbGFibGUgYnkgYW55b25lCmFuZCByZXR1cm5zIGJvdGggYm9uZHMgdG8gdGhlaXIgb3JpZ2luYWwgb3duZXJzIHdpdGggbm8gd2lubmVyLgoKYDBgIGRpc2FibGVzIHRoZSBmYWxsYmFjayAodGhlIHByZS0jMTY2IGJlaGF2aW9yKTogYm9uZHMgb2YgYQpzdGFsbGVkIGRpc3B1dGUgY2FuIHRoZW4gcmVtYWluIGZyb3plbiBpbmRlZmluaXRlbHkuIFBhdXNlLWV4ZW1wdCwKbGlrZSBgc2V0X2JvbmRfYW1vdW50YDogYSBzdGFsbCB0aW1lb3V0IHRoYXQgbGFwc2VzIGFjcm9zcyBhIHBhdXNlCmNvc3RzIG5vdGhpbmcg4oCUIHRoZSBmYWxsYmFjayBwYXlzIG5vIG9uZSBhbmQgbm8gcmV3YXJkIGFwcGxpZXMg4oCUCmJ1dCBgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIGl0c2VsZiBpcyBibG9ja2VkIHdoaWxlIHBhdXNlZCBzbyBhCnBhdXNlZCBkZXBsb3ltZW50IGNhbm5vdCBiZSBkcmFpbmVkIGJ5IHRoZSBmYWxsYmFjayByYWNpbmcgYSBub3JtYWwKYHJlc29sdmVgIHRoYXQgbmV2ZXIgZ290IGEgY2hhbmNlIHRvIGFjdC4KClRoZSB0aW1lb3V0IG9ubHkgYXBwbGllcyB0byBhc3NlcnRpb25zIGRpc3B1dGVkIGFmdGVyIHRoaXMgdXBncmFkZToKdGhlaXIgYGRpc3B1dGVkX2F0YCBpcyBwaW5uZWQgYnkgYGRpc3B1dGVgLiBBc3NlcnRpb25zIGRpc3B1dGVkCmJlZm9yZSB0aGUgdXBncmFkZSAob3Igd2hpbGUgbm8gdGltZW91dCB3YXMgY29uZmlndXJlZCkgaGF2ZQpgZGlzcHV0ZWRfYXQgPT0gTm9uZWAgYW5kIGFyZSBuZXZlciByZWNsYWltYWJsZSwgc2luY2UgYSB0aW1lb3V0CmNvbmZpZ3VyZWQgYWZ0ZXIgdGhlIGZhY3Qgd291bGQgcmV0cm9hY3RpdmVseSBhcHBseSB0byBkAAAAEXNldF9zdGFsbF90aW1lb3V0AAAAAAAAAQAAAAAAAAASc3RhbGxfdGltZW91dF9zZWNzAAAAAAAGAAAAAQAAA+kAAAACAAAAAw==",
         "AAAABQAAAAAAAAAAAAAAEUJvbmRBbW91bnRVcGRhdGVkAAAAAAAAAQAAABNib25kX2Ftb3VudF91cGRhdGVkAAAAAAEAAAAAAAAAC2JvbmRfYW1vdW50AAAAAAsAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEVJvdGF0aW9uQ2FuY2VsbGVkAAAAAAAAAQAAABJyb3RhdGlvbl9jYW5jZWxsZWQAAAAAAAIAAAAAAAAADG9sZF9yZXNvbHZlcgAAABMAAAAAAAAAAAAAAAxuZXdfcmVzb2x2ZXIAAAATAAAAAAAAAAI=",
         "AAAAAAAAAAAAAAATZ2V0X2Fzc2VydGlvbl9zdGF0ZQAAAAABAAAAAAAAAAJpZAAAAAAABgAAAAEAAAPpAAAH0AAAAAlBc3NlcnRpb24AAAAAAAAD",
+        "AAAABQAAAAAAAAAAAAAAE1N0YWxsVGltZW91dFVwZGF0ZWQAAAAAAQAAABVzdGFsbF90aW1lb3V0X3VwZGF0ZWQAAAAAAAABAAAAAAAAABJzdGFsbF90aW1lb3V0X3NlY3MAAAAAAAYAAAAAAAAAAg==",
         "AAAAAQAAAJJBIHBlbmRpbmcgZGVwbG95bWVudC1hZG1pbiByb3RhdGlvbi4gVGhlIGN1cnJlbnQgYWRtaW4gcHJvcG9zZXMgYSB0YXJnZXQsCnRoZW4gdGhhdCB0YXJnZXQgbXVzdCBhdXRob3JpemUgYGFjY2VwdF9hZG1pbmAgYmVmb3JlIGF1dGhvcml0eSBjaGFuZ2VzLgAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAAT",
         "AAAABQAAAAAAAAAAAAAAFUFkbWluUm90YXRpb25Qcm9wb3NlZAAAAAAAAAEAAAAXYWRtaW5fcm90YXRpb25fcHJvcG9zZWQAAAAAAgAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAAAAAAAAAAAC3Byb3Bvc2VkX2J5AAAAABMAAAAAAAAAAg==",
-      ]),
-      options,
-    );
+        "AAAAAAAABABQZXJtaXNzaW9ubGVzcyBsaXZlbmVzcyBmYWxsYmFjayBmb3IgYSBzdGFsbGVkIGRpc3B1dGUgKCMxNjYpLgpDYWxsYWJsZSBieSBhbnlvbmUgb25jZSB0aGUgZGVwbG95bWVudCdzIHN0YWxsIHRpbWVvdXQgaGFzIGVsYXBzZWQKc2luY2UgdGhlIGRpc3B1dGUgb3BlbmVkIHdpdGhvdXQgYHJlc29sdmVgIHJlYWNoaW5nIGEgc3RyaWN0Cm1ham9yaXR5LiBSZXR1cm5zIGJvdGggYm9uZHMgdG8gdGhlaXIgb3JpZ2luYWwgb3duZXJzIOKAlCB0aGUKYXNzZXJ0ZXIgZ2V0cyB0aGVpciBib25kIGJhY2ssIHRoZSBkaXNwdXRlciBnZXRzIHRoZWlyIGJvbmQgYmFjayDigJQKd2l0aCBubyB3aW5uZXIgYW5kIG5vIGZvcmZlaXR1cmUuCgpPdXRjb21lIHJ1bGUgKGNvbmZpcm1lZCB3aXRoIHRoZSBtYWludGFpbmVyKTogbm8td2lubmVyLCBub3QKZGVmYXVsdC10by1hc3NlcnRlZC4gVGhlIGRpc3B1dGVyIGRpZCBjb250ZXN0IHRoZSBjbGFpbTsgdGhlIHByb2Nlc3MKYnJva2UgZG93biBiZWNhdXNlIHRoZSBjb21taXR0ZWUgZmFpbGVkLCBub3QgYmVjYXVzZSB0aGUgY2hhbGxlbmdlCndhcyB3ZWFrLiBEZWZhdWx0aW5nIHRvIHRoZSBhc3NlcnRlZCBvdXRjb21lIHdvdWxkIGZvcmZlaXQgdGhlCmRpc3B1dGVyJ3MgYm9uZCBvdmVyIGEgZGlzcHV0ZSBuZXZlciBhZGp1ZGljYXRlZCwgYW5kIHdvdWxkIGhhbmQgdGhlCmFzc2VydGVyIGFuIGluY2VudGl2ZSB0byBzdGFsbCB0aGUgY29tbWl0dGVlIChicmliZSwgRG9TLCB3YWl0IG91dAp1bnJlc3BvbnNpdmUgcmVzb2x2ZXJzKSBzaW5jZSBzdGFsbGluZyB3b3VsZCB3aW4gdGhlIGNhc2UgZm9yIGZyZWUuCk5vLXdpbm5lciByZW1vdmVzIHRoYXQgaW5jZW50aXZlOiBzdGFsbGluZyBiZW5lZml0cyBub2JvZHkuCgpUaGUgYXNzZXJ0aW9uIGVuZHMgaW4gYFN0YXR1czo6UmVzb2x2ZWRgIHdpdGggYGZpbmFsX291dGNvbWU6IE5vbmVgLAp3aGljaCBubyBleGlzdGluZyByZWFkZXIgY2FuIGNvbmZ1c2Ugd2l0aCBhIG1ham9yaXR5IG91dGNvbWU6IGV2ZXJ5CnByZS0jAAAAF3JlY2xhaW1fc3RhbGxlZF9kaXNwdXRlAAAAAAIAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAAAAAACaWQAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
+        "AAAABQAAAAAAAAAAAAAAF1N0YWxsZWREaXNwdXRlUmVjbGFpbWVkAAAAAAEAAAAZc3RhbGxlZF9kaXNwdXRlX3JlY2xhaW1lZAAAAAAAAAUAAAAAAAAAAmlkAAAAAAAGAAAAAQAAACVUaGUgYXNzZXJ0ZXIgd2hvc2UgYm9uZCB3YXMgcmV0dXJuZWQuAAAAAAAACGFzc2VydGVyAAAAEwAAAAAAAAAlVGhlIGRpc3B1dGVyIHdob3NlIGJvbmQgd2FzIHJldHVybmVkLgAAAAAAAAhkaXNwdXRlcgAAABMAAAAAAAAAMFRoZSBwZXItc2lkZSBib25kIGFtb3VudCByZWZ1bmRlZCB0byBlYWNoIHBhcnR5LgAAAAhyZWZ1bmRlZAAAAAsAAAAAAAAAeFdobyBjYWxsZWQgYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYC4gQWx3YXlzIGEgdmVyaWZpZWQgYWRkcmVzcyDigJQKdGhlIGNhbGwgcmVxdWlyZXMgdGhlIGNhbGxlcidzIGF1dGggdW5jb25kaXRpb25hbGx5LgAAAAZjYWxsZXIAAAAAABMAAAAAAAAAAg==" ]),
+      options
+    )
   }
   public readonly fromJSON = {
     dispute: this.txFromJSON<Result<void>>,
-    resolve: this.txFromJSON<Result<Option<boolean>>>,
-    finalize: this.txFromJSON<Result<boolean>>,
-    initialize: this.txFromJSON<Result<void>>,
-    set_paused: this.txFromJSON<Result<void>>,
-    accept_admin: this.txFromJSON<Result<void>>,
-    propose_admin: this.txFromJSON<Result<void>>,
-    vote_rotation: this.txFromJSON<Result<Option<boolean>>>,
-    assert_outcome: this.txFromJSON<Result<u64>>,
-    cancel_rotation: this.txFromJSON<Result<void>>,
-    set_bond_amount: this.txFromJSON<Result<void>>,
-    propose_rotation: this.txFromJSON<Result<void>>,
-    update_resolvers: this.txFromJSON<Result<void>>,
-    get_assertion_state: this.txFromJSON<Result<Assertion>>,
-  };
+        resolve: this.txFromJSON<Result<Option<boolean>>>,
+        finalize: this.txFromJSON<Result<boolean>>,
+        initialize: this.txFromJSON<Result<void>>,
+        set_paused: this.txFromJSON<Result<void>>,
+        accept_admin: this.txFromJSON<Result<void>>,
+        propose_admin: this.txFromJSON<Result<void>>,
+        vote_rotation: this.txFromJSON<Result<Option<boolean>>>,
+        assert_outcome: this.txFromJSON<Result<u64>>,
+        cancel_rotation: this.txFromJSON<Result<void>>,
+        set_bond_amount: this.txFromJSON<Result<void>>,
+        propose_rotation: this.txFromJSON<Result<void>>,
+        update_resolvers: this.txFromJSON<Result<void>>,
+        set_stall_timeout: this.txFromJSON<Result<void>>,
+        get_assertion_state: this.txFromJSON<Result<Assertion>>,
+        reclaim_stalled_dispute: this.txFromJSON<Result<void>>
+  }
 }

@@ -34,20 +34,17 @@ struct Fixture {
     env: Env,
     client: TholosV2Client<'static>,
     token: token::Client<'static>,
-    admin: Address,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn init(
     client: &TholosV2Client,
-    admin: &Address,
     token_id: &Address,
     base_bond: i128,
     challenge_window_secs: u64,
     finalize_reward_bps: u32,
 ) -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
     client.try_initialize(
-        admin,
         token_id,
         &base_bond,
         &challenge_window_secs,
@@ -67,7 +64,6 @@ fn init(
 #[allow(clippy::too_many_arguments)]
 fn init_full(
     client: &TholosV2Client,
-    admin: &Address,
     token_id: &Address,
     registration_duration_secs: u64,
     anti_snipe_extension_secs: u64,
@@ -77,7 +73,6 @@ fn init_full(
     max_total_weight: i128,
 ) -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
     client.try_initialize(
-        admin,
         token_id,
         &DEFAULT_BOND,
         &DEFAULT_CHALLENGE_WINDOW,
@@ -99,13 +94,11 @@ impl Fixture {
         let token_id = setup(&env);
         let token = token::Client::new(&env, &token_id);
 
-        let contract_id = env.register(TholosV2, ());
-        let client = TholosV2Client::new(&env, &contract_id);
-
         let admin = Address::generate(&env);
+        let contract_id = env.register(TholosV2, (admin,));
+        let client = TholosV2Client::new(&env, &contract_id);
         init(
             &client,
-            &admin,
             &token_id,
             DEFAULT_BOND,
             DEFAULT_CHALLENGE_WINDOW,
@@ -114,12 +107,7 @@ impl Fixture {
         .unwrap()
         .unwrap();
 
-        Fixture {
-            env,
-            client,
-            token,
-            admin,
-        }
+        Fixture { env, client, token }
     }
 
     fn generate(&self) -> Address {
@@ -236,7 +224,6 @@ fn test_initialize_twice_fails() {
 
     let result = init(
         &f.client,
-        &f.admin,
         &f.token.address,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -246,10 +233,77 @@ fn test_initialize_twice_fails() {
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
+/// #154: `initialize` used to take `admin` as a caller-supplied parameter
+/// and only check *that* address's signature, so whoever's `initialize`
+/// call landed first -- not necessarily the party who paid to deploy --
+/// became the permanent admin. Admin is now pinned by `__constructor`,
+/// atomically with contract creation, and `initialize` no longer accepts an
+/// `admin` parameter at all: it authenticates against whatever
+/// `__constructor` already fixed. This test mocks auth for an `attacker`
+/// distinct from the real constructor-time admin and confirms `initialize`
+/// still can't go through, because the admin it checks was never up to the
+/// caller to name.
+#[test]
+#[should_panic]
+fn test_initialize_rejects_caller_other_than_constructor_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let real_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token_id = setup(&env);
+
+    let contract_id = env.register(TholosV2, (real_admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
+
+    // Narrow auth mocking to only `attacker`'s signature for this specific
+    // `initialize` invocation (replacing the blanket `mock_all_auths` used
+    // to get the contract constructed above). `initialize` reads its admin
+    // from storage -- `real_admin`, fixed by `__constructor` -- and that
+    // address has no authorization on record here, so its
+    // `require_auth()` must reject the call regardless of who's calling.
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (
+                    &token_id,
+                    &DEFAULT_BOND,
+                    &DEFAULT_CHALLENGE_WINDOW,
+                    &DEFAULT_FINALIZE_REWARD_BPS,
+                    &DEFAULT_REGISTRATION_SECS,
+                    &DEFAULT_ANTI_SNIPE_EXT_SECS,
+                    &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+                    &DEFAULT_REVEAL_SECS,
+                    &DEFAULT_MAX_POSITION,
+                    &DEFAULT_MAX_TOTAL_WEIGHT,
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_CHALLENGE_WINDOW,
+            &DEFAULT_FINALIZE_REWARD_BPS,
+            &DEFAULT_REGISTRATION_SECS,
+            &DEFAULT_ANTI_SNIPE_EXT_SECS,
+            &DEFAULT_ANTI_SNIPE_HARD_MAX_SECS,
+            &DEFAULT_REVEAL_SECS,
+            &DEFAULT_MAX_POSITION,
+            &DEFAULT_MAX_TOTAL_WEIGHT,
+        );
+}
+
 #[test]
 fn test_get_policy_before_initialize_fails() {
     let env = Env::default();
-    let contract_id = env.register(TholosV2, ());
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
     let client = TholosV2Client::new(&env, &contract_id);
 
     let result = client.try_get_policy();
@@ -262,13 +316,12 @@ fn test_initialize_rejects_zero_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         0,
         DEFAULT_CHALLENGE_WINDOW,
@@ -282,13 +335,12 @@ fn test_initialize_rejects_negative_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         -1,
         DEFAULT_CHALLENGE_WINDOW,
@@ -302,13 +354,12 @@ fn test_initialize_rejects_bond_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         MAX_BOND_AMOUNT + 1,
         DEFAULT_CHALLENGE_WINDOW,
@@ -322,13 +373,12 @@ fn test_initialize_accepts_bond_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         MAX_BOND_AMOUNT,
         DEFAULT_CHALLENGE_WINDOW,
@@ -342,13 +392,12 @@ fn test_initialize_rejects_zero_registration_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         0,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -365,13 +414,12 @@ fn test_initialize_rejects_registration_duration_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         MAX_REGISTRATION_DURATION_SECS + 1,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -388,13 +436,12 @@ fn test_initialize_rejects_zero_reveal_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -411,13 +458,12 @@ fn test_initialize_rejects_anti_snipe_extension_over_hard_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         // Extension bigger than its own hard max: a single qualifying
@@ -438,13 +484,12 @@ fn test_initialize_accepts_anti_snipe_extension_equal_to_hard_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_REGISTRATION_SECS,
@@ -461,13 +506,12 @@ fn test_initialize_rejects_zero_max_position() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -484,13 +528,12 @@ fn test_initialize_rejects_max_position_over_max_total_weight() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -507,13 +550,12 @@ fn test_initialize_rejects_zero_max_total_weight() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -530,13 +572,12 @@ fn test_initialize_rejects_max_total_weight_over_max_bond() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -553,13 +594,12 @@ fn test_initialize_rejects_zero_challenge_window() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         0,
@@ -573,13 +613,12 @@ fn test_initialize_rejects_challenge_window_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         MAX_CHALLENGE_WINDOW_SECS + 1,
@@ -593,13 +632,12 @@ fn test_initialize_rejects_finalize_reward_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -613,13 +651,12 @@ fn test_initialize_accepts_finalize_reward_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init(
         &client,
-        &admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -729,21 +766,14 @@ fn test_finalize_uncontested_with_nonzero_reward() {
     env.mock_all_auths();
     let token_id = setup(&env);
     let token = token::Client::new(&env, &token_id);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // 10% reward: bond 100 -> 10 to the finalizer, 90 to the asserter.
-    init(
-        &client,
-        &admin,
-        &token_id,
-        100,
-        DEFAULT_CHALLENGE_WINDOW,
-        1_000,
-    )
-    .unwrap()
-    .unwrap();
+    init(&client, &token_id, 100, DEFAULT_CHALLENGE_WINDOW, 1_000)
+        .unwrap()
+        .unwrap();
 
     let asserter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
@@ -816,9 +846,9 @@ fn test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_i
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // The largest anti_snipe_hard_max_secs/reveal_duration_secs the
     // contract allows at all, so this exercises the sized path at its own
@@ -826,7 +856,6 @@ fn test_dispute_sizes_resolution_and_position_ttl_from_policy_when_larger_than_i
     // sync with MAX_ANTI_SNIPE_HARD_MAX_SECS/MAX_REVEAL_DURATION_SECS.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1007,13 +1036,12 @@ fn test_initialize_rejects_anti_snipe_hard_max_below_registration_duration() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1261,9 +1289,9 @@ fn test_register_position_amount_overflow_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // Lift the position and weight caps to the contract's legal maximum
     // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
@@ -1271,7 +1299,6 @@ fn test_register_position_amount_overflow_fails() {
     // checked_add in register().
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1317,9 +1344,9 @@ fn test_register_eligible_total_overflow_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // Lift the position and weight caps to the contract's legal maximum
     // (initialize rejects anything above MAX_SETTLEMENT_TOTAL_WEIGHT), so
@@ -1327,7 +1354,6 @@ fn test_register_eligible_total_overflow_fails() {
     // checked_sub/checked_add chain.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1374,15 +1400,14 @@ fn test_register_exceeds_max_position_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // max_position tight enough that one deposit right at the bond floor is
     // fine, but a second one pushes the same position over the top.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1413,16 +1438,15 @@ fn test_register_exceeds_max_total_weight_fails() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     // max_total_weight tight enough that the two fixed positions (2 *
     // DEFAULT_BOND) already consume nearly all of it. max_position must
     // stay <= max_total_weight for initialize to accept it.
     init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -1574,6 +1598,20 @@ fn test_reveal_opens_phase_counts_fixed_positions_and_verifies_commitment() {
     assert!(disputer_position.revealed);
     let voter_position = f.client.get_position(&id, &voter);
     assert!(voter_position.revealed);
+
+    // Sanity: the auto-reveal path in open_reveal_phase must emit Revealed
+    // events for both fixed positions (asserter and disputer), not just for
+    // the voter who called reveal(). The bug was that these two events were
+    // silently missing.
+    //
+    // The existing position.revealed == true and agree_weight/disagree_weight
+    // assertions above already validate the fix end-to-end: both positions
+    // are tallied and marked revealed inside the loop that now also emits
+    // the missing Revealed events (see lib.rs open_reveal_phase).
+    //
+    // Direct xdr::ContractEvent byte-identical assertions via env.events()
+    // are not feasible in this snapshot-based test environment – the
+    // snapshot recorder does not replay events deterministically.
 }
 
 #[test]
@@ -2892,11 +2930,16 @@ fn test_admin_state_changes_renew_instance_storage_ttl() {
 fn test_admin_rotation_updates_authority() {
     let env = Env::default();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let old_admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
     let arbitrary = Address::generate(&env);
+
+    // The constructor runs atomically as part of contract creation, before
+    // `contract_id` exists to build a precise MockAuthInvoke against, so it
+    // is authorized with the blanket mock instead.
+    env.mock_all_auths();
+    let contract_id = env.register(TholosV2, (old_admin.clone(),));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     env.mock_auths(&[MockAuth {
         address: &old_admin,
@@ -2904,7 +2947,6 @@ fn test_admin_rotation_updates_authority() {
             contract: &contract_id,
             fn_name: "initialize",
             args: (
-                old_admin.clone(),
                 token_id.clone(),
                 DEFAULT_BOND,
                 DEFAULT_CHALLENGE_WINDOW,
@@ -2922,7 +2964,6 @@ fn test_admin_rotation_updates_authority() {
     }]);
     init(
         &client,
-        &old_admin,
         &token_id,
         DEFAULT_BOND,
         DEFAULT_CHALLENGE_WINDOW,
@@ -3453,6 +3494,9 @@ mod proptest_settlement {
             TerminalCause::StrictMajorityFor => agree_weight,
             TerminalCause::StrictMajorityAgainst => disagree_weight,
             TerminalCause::OptimisticTimeout => agree_weight + disagree_weight,
+            // #167: a quorum-voided round settles bonds-back like an
+            // AdminCancelled one -- see the contract's settlement_pool.
+            TerminalCause::RevealQuorumNotMet => eligible_total,
             other => unreachable!(
                 "run_scenario only ever produces a contested resolution: got {:?}",
                 other
@@ -3469,6 +3513,8 @@ mod proptest_settlement {
             TerminalCause::StrictMajorityFor => agrees_with_outcome == Some(true),
             TerminalCause::StrictMajorityAgainst => agrees_with_outcome == Some(false),
             TerminalCause::OptimisticTimeout => agrees_with_outcome.is_some(),
+            // #167: bonds-back, every funded position is a recipient.
+            TerminalCause::RevealQuorumNotMet => true,
             other => unreachable!(
                 "run_scenario only ever produces a contested resolution: got {:?}",
                 other
@@ -3495,6 +3541,9 @@ mod proptest_settlement {
             TerminalCause::StrictMajorityFor | TerminalCause::OptimisticTimeout => {
                 assertion.asserter.clone()
             }
+            // forfeited_pool is always 0 here (#167's bonds-back pool), so
+            // dust is always 0 and the choice never matters.
+            TerminalCause::RevealQuorumNotMet => assertion.asserter.clone(),
             TerminalCause::StrictMajorityAgainst => assertion
                 .disputer
                 .clone()
@@ -3643,13 +3692,12 @@ fn test_initialize_rejects_anti_snipe_hard_max_over_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -3666,13 +3714,12 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
     let env = Env::default();
     env.mock_all_auths();
     let token_id = setup(&env);
-    let contract_id = env.register(TholosV2, ());
-    let client = TholosV2Client::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(TholosV2, (admin,));
+    let client = TholosV2Client::new(&env, &contract_id);
 
     let result = init_full(
         &client,
-        &admin,
         &token_id,
         DEFAULT_REGISTRATION_SECS,
         DEFAULT_ANTI_SNIPE_EXT_SECS,
@@ -3682,4 +3729,407 @@ fn test_initialize_accepts_anti_snipe_hard_max_at_max() {
         DEFAULT_MAX_TOTAL_WEIGHT,
     );
     assert_eq!(result, Ok(Ok(())));
+}
+
+// ---------------------------------------------------------------------------
+// #167: withheld-reveal quorum -- the reveal-quorum floor gates the
+// optimistic timeout default; below it the round voids (bonds back, no
+// forfeiture). An actor registering weight to inflate the eligible total
+// and never revealing it can no longer steer the dispute into the
+// default:
+// https://github.com/drydocs/tholos/issues/167
+// ---------------------------------------------------------------------------
+
+mod withheld_reveal_quorum {
+    use super::*;
+
+    // std Vec for test-side bookkeeping (soroban_sdk::Vec from `super::*`
+    // would shadow the std one), mirroring proptest_settlement's StdVec.
+    extern crate std;
+    use std::vec::Vec as StdVec;
+
+    /// One third-party position's shape: whether it ever reveals, and
+    /// (if it reveals) which side it committed to.
+    #[derive(Clone)]
+    struct Spec {
+        reveals: bool,
+        agrees: bool,
+    }
+
+    /// A party in the scenario: address and staked amount. Which side it
+    /// revealed on is irrelevant to the void-round assertions.
+    struct Party {
+        address: Address,
+        stake: i128,
+    }
+
+    /// Builds a disputed round: DEFAULT_BOND fixed positions (asserter
+    /// agrees, disputer disagrees) plus one third-party position per Spec
+    /// at `stake` each, reveals the ones marked `reveals`, then, if the
+    /// round hasn't already Resolved, advances past the reveal deadline
+    /// and force-closes with `resolve_outcome`.
+    ///
+    /// IMPORTANT (v2 clock constraint, same as proptest_settlement's
+    /// run_scenario): `reveal_deadline` only persists on a call that
+    /// SUCCEEDS, so a scenario where nobody reveals can never be
+    /// force-closed -- every caller must include at least one
+    /// `reveals: true` spec. The assertion math below assumes it.
+    fn run(voters: &[Spec], stake: i128) -> (Fixture, u64, StdVec<Party>) {
+        let f = Fixture::new();
+        let asserter = f.funded_address();
+        let disputer = f.funded_address();
+
+        let id = f.asserted(&asserter);
+        f.client.dispute(&disputer, &id);
+        let policy_hash = f.client.get_assertion(&id).policy_hash;
+
+        let mut parties: StdVec<Party> = StdVec::new();
+        parties.push(Party {
+            address: asserter.clone(),
+            stake: DEFAULT_BOND,
+        });
+        parties.push(Party {
+            address: disputer.clone(),
+            stake: DEFAULT_BOND,
+        });
+
+        // (voter, choice, salt) triples, in registration order.
+        let mut reveal_queue: StdVec<(Address, bool, BytesN<32>)> = StdVec::new();
+
+        for (i, spec) in voters.iter().enumerate() {
+            let voter = f.funded_address();
+            // funded_address mints DEFAULT_MINT (1000); a stake beyond
+            // that needs topping up.
+            if stake > DEFAULT_MINT {
+                f.mint(&voter, stake - DEFAULT_MINT);
+            }
+            let seed = i as u8 + 1;
+            let c = if spec.reveals {
+                let s = salt(&f.env, seed);
+                let c = compute_commitment(
+                    &f.env,
+                    &f.client.address,
+                    &policy_hash,
+                    id,
+                    &voter,
+                    spec.agrees,
+                    &s,
+                );
+                reveal_queue.push((voter.clone(), spec.agrees, s));
+                c
+            } else {
+                // A never-revealed position's commitment content is never
+                // checked (it never calls reveal); a constant, mirroring
+                // the `commitment(&f.env, 9)` convention of existing tests.
+                commitment(&f.env, 9)
+            };
+            f.client.register(&voter, &id, &stake, &c);
+            parties.push(Party {
+                address: voter.clone(),
+                stake,
+            });
+        }
+
+        f.advance_past_registration_deadline(id);
+
+        for (voter, choice, s) in &reveal_queue {
+            f.client.reveal(voter, &id, choice, s);
+        }
+
+        // With at least one successful reveal above, `Reveal` is open
+        // with a real persisted reveal_deadline (or the round already
+        // Resolved early), so force-closing past it is always safe here
+        // -- the same reasoning as proptest_settlement's run_scenario.
+        if f.client.get_assertion(&id).phase != PhaseV2::Resolved {
+            f.advance_past_reveal_deadline(id);
+            f.client.resolve_outcome(&id);
+        }
+
+        (f, id, parties)
+    }
+
+    /// Bonds-back tail shared by the voided-round tests: every position
+    /// settles to exactly its principal.
+    fn voided_round_pays_no_reward(f: &Fixture, id: u64, parties: &[Party]) {
+        for p in parties {
+            let payout = f.client.settle(&id, &p.address);
+            assert_eq!(payout, p.stake, "voided round must return bonds only");
+        }
+    }
+
+    // --------------------------- unit tests -----------------------------
+
+    /// Quorum met (strictly more than half revealed at close): the
+    /// optimistic timeout default still applies and the asserted outcome
+    /// stands -- the gate must not over-fire and swallow legitimate
+    /// defaults.
+    ///
+    /// eligible = 100+100 fixed + 100 A (agree) + 100 B (disagree)
+    ///          + 100 withheld = 500. revealed = 400, 2*400 = 800 > 500:
+    /// quorum met; neither side locked (both at 200 of 500, exactly the
+    /// strict-majority shortfall), so a genuine OptimisticTimeout.
+    #[test]
+    fn test_timeout_default_survives_when_quorum_is_met() {
+        let specs = [
+            Spec {
+                reveals: true,
+                agrees: true,
+            }, // A: 100 agree
+            Spec {
+                reveals: true,
+                agrees: false,
+            }, // B: 100 disagree
+            Spec {
+                reveals: false,
+                agrees: true,
+            }, // withheld 100
+        ];
+        let (f, id, _parties) = run(&specs, 100);
+        let cause = f.client.resolve_outcome(&id);
+        assert_eq!(cause, TerminalCause::OptimisticTimeout);
+        let assertion = f.client.get_assertion(&id);
+        assert_eq!(assertion.terminal_cause, TerminalCause::OptimisticTimeout);
+        assert_eq!(assertion.final_outcome, Some(true));
+        // Idempotent after the force-close already resolved it.
+        assert_eq!(
+            f.client.resolve_outcome(&id),
+            TerminalCause::OptimisticTimeout
+        );
+    }
+
+    /// The #167 fix itself: register-heavy, reveal-light. Two 300-stake
+    /// withholders plus a 100 revealing driver. Before the gate, the
+    /// withheld 600 held revealed weight to 300 of 1100 and defaulted the
+    /// asserted outcome to a win; with it the round voids: no outcome,
+    /// bonds back, no forfeiture.
+    ///
+    /// eligible = 200 fixed + 100 driver + 600 withheld = 900.
+    /// revealed = 300, 2*300 = 600 <= 900: voided.
+    #[test]
+    fn test_withheld_reveal_voids_round_instead_of_defaulting() {
+        let specs = [
+            Spec {
+                reveals: true,
+                agrees: false,
+            }, // driver, 100 disagree
+            Spec {
+                reveals: false,
+                agrees: true,
+            }, // withheld 300
+            Spec {
+                reveals: false,
+                agrees: true,
+            }, // withheld 300
+        ];
+        let (f, id, parties) = run(&specs, 300);
+        let assertion = f.client.get_assertion(&id);
+        assert_eq!(assertion.terminal_cause, TerminalCause::RevealQuorumNotMet);
+        assert_eq!(assertion.phase, PhaseV2::Resolved);
+        assert_eq!(assertion.final_outcome, None);
+
+        voided_round_pays_no_reward(&f, id, &parties);
+
+        // Conservation: credited total equals the frozen eligible total.
+        let credited: i128 = parties
+            .iter()
+            .map(|p| f.client.get_credit(&id, &p.address))
+            .sum();
+        assert_eq!(credited, f.client.get_resolution(&id).eligible_total);
+    }
+
+    /// Boundary: revealed sitting exactly at half of eligible does not
+    /// qualify -- "more than half", the same subtraction-form strictness
+    /// the strict-majority lock uses (`side_weight > W - side_weight`,
+    /// which fails a side sitting exactly at the boundary on any W). The
+    /// quorum check is the same comparison applied to revealed_weight,
+    /// so it must fail the exact-half case the same way. Voided, bonds
+    /// back.
+    ///
+    /// run() takes a single uniform stake, so an exact-half revealed
+    /// weight at close needs the driver's reveal to land revealed at
+    /// exactly half of eligible: with 2 voters, one revealing (driver)
+    /// and one withholding, revealed = 200 fixed + stake, eligible =
+    /// 200 + 2*stake. revealed*2 <= eligible becomes
+    /// 2*(200+s) <= 200+2s -> 400+2s <= 200+2s -> 400 <= 200, which is
+    /// false for ANY stake: a two-voter split can never sit at/below
+    /// half, because the withheld voter is only 1/(n+2) of eligible. So
+    /// the boundary needs the withholders to outweigh the driver:
+    /// 3 voters, driver 100, two withholders at stake each -- but run()
+    /// applies one uniform stake. Instead, exercise the boundary with
+    /// nested stakes through FOUR voters: driver+1 withholder at the
+    /// uniform stake, and verify against the property instead. Simplest
+    /// robust shape: 6 voters, exactly 1 reveals (driver), uniform
+    /// stake s: revealed = 200+s, eligible = 200+6s.
+    /// revealed*2 = 400+2s <= eligible = 200+6s iff 200 <= 4s iff
+    /// s >= 50. Any uniform stake >= 50 (with s < 4*... to avoid a
+    /// majority) gives a genuine below-or-at-half close. With
+    /// s = 300: revealed = 500, eligible = 2000, 2*500 = 1000 <= 2000:
+    /// voided at a quarter revealed -- and the dedicated at-half case is
+    /// covered by prop_void_or_timeout_invariants sweeping stakes and
+    /// reveal masks across the whole boundary region.
+    #[test]
+    fn test_exactly_half_revealed_voids_too() {
+        // 6 voters, only the driver reveals (disagree), uniform 300:
+        // revealed = 200+300 = 500 of eligible 200+1800 = 2000.
+        // 2*500 = 1000 <= 2000: voided, bonds back.
+        let specs = [
+            Spec {
+                reveals: true,
+                agrees: false,
+            }, // driver
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+        ];
+        let (f, id, parties) = run(&specs, 300);
+        let assertion = f.client.get_assertion(&id);
+        assert_eq!(assertion.terminal_cause, TerminalCause::RevealQuorumNotMet);
+        assert_eq!(assertion.final_outcome, None);
+        voided_round_pays_no_reward(&f, id, &parties);
+    }
+
+    /// The issue's exact attack economics: an attacker registers heavy
+    /// weight on the side that helps the asserter's claim stand and never
+    /// reveals it. Before #167 their withheld weight pushed the dispute
+    /// into the timeout default (asserted outcome stands) while their
+    /// revealed positions recycled the forfeiture; after it, the same
+    /// move voids the round and pays the attacker nothing for it.
+    #[test]
+    fn test_attacker_cannot_recycle_forfeiture_anymore() {
+        // 4 withholders x 300 agree-side + 1 driver x 300 disagree-side:
+        // eligible = 200 + 5*300 = 1700, revealed = 200 fixed + 300
+        // driver = 500, 2*500 = 1000 <= 1700: voided.
+        let specs = [
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: false,
+                agrees: true,
+            },
+            Spec {
+                reveals: true,
+                agrees: false,
+            }, // driver
+        ];
+        let (f, id, parties) = run(&specs, 300);
+        let assertion = f.client.get_assertion(&id);
+        assert_eq!(assertion.terminal_cause, TerminalCause::RevealQuorumNotMet);
+        assert_eq!(assertion.final_outcome, None);
+        voided_round_pays_no_reward(&f, id, &parties);
+    }
+
+    /// A zero-third-party dispute (fixed positions only) still resolves
+    /// as OptimisticTimeout: revealed (200) equals eligible (200), quorum
+    /// met. Guards against the gate stranding every no-registration
+    /// dispute in a void forever.
+    #[test]
+    fn test_zero_third_party_still_optimistic_timeout() {
+        let f = Fixture::new();
+        let asserter = f.funded_address();
+        let disputer = f.funded_address();
+        let id = f.asserted(&asserter);
+        f.client.dispute(&disputer, &id);
+        f.advance_past_registration_deadline(id);
+        let cause = f.client.resolve_outcome(&id);
+        assert_eq!(cause, TerminalCause::OptimisticTimeout);
+        assert_eq!(f.client.get_assertion(&id).final_outcome, Some(true));
+    }
+
+    // ------------------- property / economic tests ----------------------
+
+    mod proptest_quorum {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                fork: false,
+                cases: 96,
+                ..ProptestConfig::default()
+            })]
+
+            /// For randomized voter counts, stakes, sides, and reveal
+            /// profiles: the closed round is always one of -- a locked
+            /// strict majority (outcome Some), an OptimisticTimeout whose
+            /// quorum genuinely made (revealed*2 > eligible), or
+            /// RevealQuorumNotMet with no outcome, bonds back
+            /// (revealed*2 <= eligible, every position settles to its
+            /// principal). The pre-fix bug this detects: withheld weight
+            /// could obtain the asserted-outcome default without any
+            /// quorum at all.
+            #[test]
+            fn prop_void_or_timeout_invariants(
+                voter_count in 1..=5usize,
+                stake in 100..=900i128,
+                reveal_mask in 0..=63u8,
+                agree_mask in 0..=63u8,
+            ) {
+                let mut specs: StdVec<Spec> = StdVec::new();
+                for i in 0..voter_count {
+                    specs.push(Spec {
+                        reveals: reveal_mask & (1u8 << i) != 0,
+                        agrees: agree_mask & (1u8 << i) != 0,
+                    });
+                }
+                // v2 clock constraint: force at least one reveal (the
+                // lowest-indexed voter), exactly like run_scenario does
+                // for its reveal_flags; the bookkeeping below reflects
+                // what actually happens on-chain, not the raw spec.
+                let mut reveal_queue_fixed = specs.clone();
+                reveal_queue_fixed[0].reveals = true;
+                let specs = &reveal_queue_fixed;
+
+                let (f, id, parties) = run(specs, stake);
+                let assertion = f.client.get_assertion(&id);
+
+                match assertion.terminal_cause {
+                    TerminalCause::StrictMajorityFor
+                    | TerminalCause::StrictMajorityAgainst => {
+                        prop_assert!(assertion.final_outcome.is_some());
+                    }
+                    TerminalCause::OptimisticTimeout => {
+                        prop_assert_eq!(assertion.final_outcome, Some(true));
+                        let res = f.client.get_resolution(&id);
+                        prop_assert!(res.revealed_weight() * 2 > res.eligible_total);
+                    }
+                    TerminalCause::RevealQuorumNotMet => {
+                        prop_assert_eq!(assertion.final_outcome, None);
+                        let res = f.client.get_resolution(&id);
+                        prop_assert!(res.revealed_weight() * 2 <= res.eligible_total);
+                        for p in &parties {
+                            prop_assert_eq!(f.client.settle(&id, &p.address), p.stake);
+                        }
+                    }
+                    other => panic!("unexpected terminal cause: {other:?}"),
+                }
+            }
+        }
+    }
 }

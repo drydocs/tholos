@@ -1,0 +1,15 @@
+[package]
+name = "tholos-client"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+soroban-sdk = "26.1.0"

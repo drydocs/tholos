@@ -39,6 +39,11 @@ contracts/
       lib.rs             Contract logic, built up issue by issue per V2_RESOLUTION.md's
                          "Future implementation work" list
       test.rs            Unit tests, same conventions as contracts/tholos
+  tholos-client/        Shared Tholos client import and error mapping used by both
+                         consumer examples below, so neither carries its own copy
+    src/
+      lib.rs             The contractimport!, plus the shared Error type and
+                         from_tholos_call mapping documented in INTEGRATION.md
   demo-consumer/        Minimal example contract that calls into Tholos
     src/
       lib.rs             Cross-contract call pattern from docs/src/INTEGRATION.md

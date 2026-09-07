@@ -4,12 +4,8 @@
 //! own dispute resolution logic. Exists to validate the pattern documented in
 //! INTEGRATION.md actually compiles and works, not as a production contract.
 
-use soroban_sdk::{contract, contractimpl, contractimport, Address, Env};
-
-mod tholos {
-    use super::*;
-    contractimport!(file = "../../target/wasm32v1-none/release/tholos.wasm");
-}
+use soroban_sdk::{contract, contractimpl, Address, Env};
+use tholos_client::{tholos, Error};
 
 #[contract]
 pub struct DemoConsumer;
@@ -21,17 +17,31 @@ impl DemoConsumer {
     /// `asserter`, not this contract. This is the simple integration pattern:
     /// see INTEGRATION.md for what changes if this contract's own address
     /// should be the asserter instead.
-    pub fn create_assertion(env: Env, tholos_id: Address, asserter: Address, outcome: bool) -> u64 {
+    ///
+    /// Returns `Error::TholosNotInitialized` or `Error::TholosPaused` if the
+    /// Tholos instance at `tholos_id` can't currently accept an assertion, or
+    /// `Error::InvalidTholosId` if `tholos_id` doesn't resolve to an
+    /// invokable Tholos instance at all.
+    pub fn create_assertion(
+        env: Env,
+        tholos_id: Address,
+        asserter: Address,
+        outcome: bool,
+    ) -> Result<u64, Error> {
         let client = tholos::Client::new(&env, &tholos_id);
-        client.assert_outcome(&asserter, &outcome)
+        Error::from_tholos_call(client.try_assert_outcome(&asserter, &outcome))
     }
 
     /// Forwards a read of an assertion's current state. See INTEGRATION.md for
     /// why `Assertion.outcome` is the *claimed* outcome, not necessarily the
     /// final one if the assertion was disputed and overturned.
-    pub fn get_status(env: Env, tholos_id: Address, id: u64) -> tholos::Assertion {
+    ///
+    /// Returns `Error::AssertionNotFound` if no assertion exists under `id`
+    /// on the Tholos instance at `tholos_id`, or `Error::InvalidTholosId` if
+    /// `tholos_id` doesn't resolve to an invokable Tholos instance at all.
+    pub fn get_status(env: Env, tholos_id: Address, id: u64) -> Result<tholos::Assertion, Error> {
         let client = tholos::Client::new(&env, &tholos_id);
-        client.get_assertion_state(&id)
+        Error::from_tholos_call(client.try_get_assertion_state(&id))
     }
 }
 

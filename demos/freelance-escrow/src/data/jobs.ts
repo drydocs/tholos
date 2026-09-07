@@ -19,6 +19,15 @@ export interface Milestone {
    * kept client-side per the pattern in docs/src/INTEGRATION.md.
    */
   assertionId?: string;
+  /**
+   * `Assertion.opened_at` (ledger timestamp, seconds) from the most recent
+   * `get_assertion_state` read. Used only to derive a "review window has
+   * likely closed" hint client-side (see VITE_CHALLENGE_WINDOW_SECS in
+   * lib/config.ts) since the contract exposes no getter for the configured
+   * challenge window itself. Never authoritative for whether `finalize`
+   * will actually succeed — the contract is.
+   */
+  assertionOpenedAt?: string;
 }
 
 export interface Job {

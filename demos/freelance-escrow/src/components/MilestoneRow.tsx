@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Milestone } from "../data/jobs";
 import { useJobs } from "../state/useJobs";
 import { useRole } from "../state/useRole";
 import { useWallet } from "../hooks/useWallet";
+import { CHALLENGE_WINDOW_SECS } from "../lib/config";
 
 const STATUS_LABEL: Record<Milestone["status"], string> = {
   in_progress: "In progress",
@@ -12,10 +13,17 @@ const STATUS_LABEL: Record<Milestone["status"], string> = {
   returned: "Returned to client",
 };
 
+/** How often to re-read on-chain state for a milestone that isn't settled yet. */
+const POLL_INTERVAL_MS = 30_000;
+
+function isSettled(status: Milestone["status"]): boolean {
+  return status === "released" || status === "returned";
+}
+
 export function MilestoneRow({ jobId, milestone }: { jobId: string; milestone: Milestone }) {
   const { wallet } = useWallet();
   const [role] = useRole();
-  const { submitMilestone, disputeMilestone, voteOnMilestone, finalizeMilestone } = useJobs();
+  const { submitMilestone, disputeMilestone, voteOnMilestone, finalizeMilestone, refreshMilestone } = useJobs();
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -37,6 +45,35 @@ export function MilestoneRow({ jobId, milestone }: { jobId: string; milestone: M
     }
   }
 
+  const assertionId = milestone.assertionId;
+  const settled = isSettled(milestone.status);
+
+  /**
+   * Reconcile against real on-chain state on an interval for any milestone
+   * that has an assertion and isn't settled yet, so status advances even
+   * when nothing happened in this tab: someone else's dispute, vote, or
+   * finalize call landing, or a challenge window quietly expiring.
+   */
+  useEffect(() => {
+    if (!address || !assertionId || settled) {
+      return;
+    }
+    const id = setInterval(() => {
+      refreshMilestone(jobId, milestone.id, address);
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [address, assertionId, settled, jobId, milestone.id, refreshMilestone]);
+
+  // The contract has no getter for its own configured challenge window (see
+  // lib/config.ts), so this is a client-side estimate off a real
+  // Assertion.opened_at read — a hint, not a gate. The "Finalize and
+  // release" call below is always the real gate; the contract rejects it
+  // outright if called early.
+  const readyToFinalize =
+    milestone.status === "submitted" &&
+    milestone.assertionOpenedAt !== undefined &&
+    Date.now() >= Number(milestone.assertionOpenedAt) * 1000 + CHALLENGE_WINDOW_SECS * 1000;
+
   return (
     <li className={`milestone milestone--${milestone.status}`}>
       <div className="milestone-main">
@@ -54,6 +91,16 @@ export function MilestoneRow({ jobId, milestone }: { jobId: string; milestone: M
         )}
         {milestone.assertionId && (
           <span className="milestone-assertion">assertion #{milestone.assertionId}</span>
+        )}
+        {readyToFinalize && <span className="milestone-ready">ready to finalize</span>}
+        {assertionId && !settled && (
+          <button
+            className="button--refresh"
+            disabled={busy}
+            onClick={() => run(() => refreshMilestone(jobId, milestone.id, address!))}
+          >
+            Refresh
+          </button>
         )}
       </div>
 

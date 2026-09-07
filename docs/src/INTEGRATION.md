@@ -36,29 +36,32 @@ and its test deploys Tholos's actual compiled wasm and calls through it. If
 anything here goes stale, that crate's `cargo test -p demo-consumer` is what
 would catch it.
 
-Import the client from the deployed contract's WASM and call it like any other
+Import the client and error type from the shared `tholos-client` crate (which
+does the actual `contractimport!` once, so `demo-consumer` and
+`asserter-consumer` don't each carry their own copy of it or of the
+Tholos-error-to-your-error mapping below) and call it like any other
 cross-contract invocation:
 
 ```rust
-use soroban_sdk::{contractimport, Address, Env};
+use soroban_sdk::{Address, Env};
+use tholos_client::{tholos, Error};
 
-mod tholos {
-    soroban_sdk::contractimport!(
-        file = "../../target/wasm32v1-none/release/tholos.wasm"
-    );
-}
-
-fn create_assertion(env: Env, tholos_id: Address, asserter: Address, outcome: bool) -> u64 {
+fn create_assertion(env: Env, tholos_id: Address, asserter: Address, outcome: bool) -> Result<u64, Error> {
     let client = tholos::Client::new(&env, &tholos_id);
-    client.assert_outcome(&asserter, &outcome)
+    Error::from_tholos_call(client.try_assert_outcome(&asserter, &outcome))
 }
 ```
 
-`contractimport!` reads the wasm file **at your crate's compile time**, so it has
-to already exist on disk before you build. In this repo that means running
+`contractimport!`, inside `tholos-client`, reads the wasm file **at compile
+time**, so it has to already exist on disk before anything depending on
+`tholos-client` builds. In this repo that means running
 `cargo build -p tholos --target wasm32v1-none --release` before touching
-`demo-consumer` (see [CONTRIBUTING.md](CONTRIBUTING.md)); if Tholos is a separate
-repo for you, the same constraint applies to wherever its wasm gets built.
+`demo-consumer` or `asserter-consumer` (see [CONTRIBUTING.md](CONTRIBUTING.md));
+if Tholos is a separate repo for you, the same constraint applies to
+wherever its wasm gets built. Using the panicking client methods directly
+instead of `try_` ones, or writing your own error type from scratch, works
+too if you don't want the `tholos-client` dependency: it exists for
+convenience, not because Soroban requires it.
 
 ### Who should be the `asserter`: your contract, or the end user?
 
