@@ -101,8 +101,8 @@ Before an address is proposed for `initialize`, `update_resolvers`, or
   counterpart to the reachability criterion above, made auditable.
 - **Conflict-of-interest disclosure, both at onboarding and ongoing.** `resolve`
   rejects a vote where the resolver is also the assertion's `asserter` or
-  `disputer` (`SelfVote`, added in #165) — but that check is necessarily
-  narrow: it only catches the resolver being a direct party to the specific
+  `disputer` (`SelfVote`, added in PR #203, closing #165). That check is necessarily
+  narrow. It only catches the resolver being a direct party to the specific
   dispute in front of them. It cannot catch a resolver with an undisclosed
   financial or personal relationship to one of the parties, since the
   contract has no way to know about relationships that don't show up as an
