@@ -68,12 +68,29 @@ export const Errors = {
    * of the resolver vote), nullifying the bond-forfeiture deterrent.
    */
   22: {message:"SelfDispute"},
-  23: {message:"NoAdminRotationProposal"}
+  23: {message:"NoAdminRotationProposal"},
+  /**
+   * `reclaim_stalled_dispute` was called on an assertion whose dispute
+   * opened without a stall timeout configured (0 = fallback disabled), or
+   * whose disputed_at predates this upgrade and cannot be timed out.
+   */
+  24: {message:"StallTimeoutNotConfigured"},
+  /**
+   * `reclaim_stalled_dispute` was called before the stall timeout elapsed
+   * since the dispute opened. The assertion still requires normal
+   * resolution by the snapshotted committee.
+   */
+  25: {message:"DisputeNotStalled"},
+  /**
+   * `set_stall_timeout` was called with a value greater than
+   * `MAX_STALL_TIMEOUT_SECS`.
+   */
+  26: {message:"InvalidStallTimeout"}
 }
 
 export type Status = {tag: "Pending", values: void} | {tag: "Disputed", values: void} | {tag: "Resolved", values: void};
 
-export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void};
+export type DataKey = {tag: "Admin", values: void} | {tag: "Token", values: void} | {tag: "BondAmount", values: void} | {tag: "ChallengeWindow", values: void} | {tag: "Resolvers", values: void} | {tag: "Assertion", values: readonly [u64]} | {tag: "NextId", values: void} | {tag: "Paused", values: void} | {tag: "FinalizeRewardBps", values: void} | {tag: "RotationProposal", values: void} | {tag: "AdminRotationProposal", values: void} | {tag: "StallTimeoutSecs", values: void} | {tag: "DisputedAt", values: readonly [u64]};
 
 
 
@@ -157,6 +174,7 @@ yes: Array<string>;
 
 
 
+
 /**
  * A pending deployment-admin rotation. The current admin proposes a target,
  * then that target must authorize `accept_admin` before authority changes.
@@ -164,6 +182,7 @@ yes: Array<string>;
 export interface AdminRotationProposal {
   new_admin: string;
 }
+
 
 
 export interface Client {
@@ -317,9 +336,56 @@ export interface Client {
   update_resolvers: ({new_resolvers}: {new_resolvers: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a set_stall_timeout transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Configures the stalled-dispute timeout (#166). After a `dispute`
+   * has been open for `stall_timeout_secs` without `resolve` reaching a
+   * strict majority, `reclaim_stalled_dispute` becomes callable by anyone
+   * and returns both bonds to their original owners with no winner.
+   * 
+   * `0` disables the fallback (the pre-#166 behavior): bonds of a
+   * stalled dispute can then remain frozen indefinitely. Pause-exempt,
+   * like `set_bond_amount`: a stall timeout that lapses across a pause
+   * costs nothing — the fallback pays no one and no reward applies —
+   * but `reclaim_stalled_dispute` itself is blocked while paused so a
+   * paused deployment cannot be drained by the fallback racing a normal
+   * `resolve` that never got a chance to act.
+   * 
+   * The timeout only applies to assertions disputed after this upgrade:
+   * their `disputed_at` is pinned by `dispute`. Assertions disputed
+   * before the upgrade (or while no timeout was configured) have
+   * `disputed_at == None` and are never reclaimable, since a timeout
+   * configured after the fact would retroactively apply to d
+   */
+  set_stall_timeout: ({stall_timeout_secs}: {stall_timeout_secs: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a get_assertion_state transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   get_assertion_state: ({id}: {id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Assertion>>>
+
+  /**
+   * Construct and simulate a reclaim_stalled_dispute transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Permissionless liveness fallback for a stalled dispute (#166).
+   * Callable by anyone once the deployment's stall timeout has elapsed
+   * since the dispute opened without `resolve` reaching a strict
+   * majority. Returns both bonds to their original owners — the
+   * asserter gets their bond back, the disputer gets their bond back —
+   * with no winner and no forfeiture.
+   * 
+   * Outcome rule (confirmed with the maintainer): no-winner, not
+   * default-to-asserted. The disputer did contest the claim; the process
+   * broke down because the committee failed, not because the challenge
+   * was weak. Defaulting to the asserted outcome would forfeit the
+   * disputer's bond over a dispute never adjudicated, and would hand the
+   * asserter an incentive to stall the committee (bribe, DoS, wait out
+   * unresponsive resolvers) since stalling would win the case for free.
+   * No-winner removes that incentive: stalling benefits nobody.
+   * 
+   * The assertion ends in `Status::Resolved` with `final_outcome: None`,
+   * which no existing reader can confuse with a majority outcome: every
+   * pre-#
+   */
+  reclaim_stalled_dispute: ({caller, id}: {caller: string, id: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
 }
 export class Client extends ContractClient {
@@ -339,9 +405,9 @@ export class Client extends ContractClient {
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAFwAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFw==",
+      new ContractSpec([ "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAAGgAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAAUSW52YWxpZFJlc29sdmVyQ291bnQAAAADAAAAAAAAABFBc3NlcnRpb25Ob3RGb3VuZAAAAAAAAAQAAAAAAAAACk5vdFBlbmRpbmcAAAAAAAUAAAAAAAAAC05vdERpc3B1dGVkAAAAAAYAAAAAAAAAFUNoYWxsZW5nZVdpbmRvd0Nsb3NlZAAAAAAAAAcAAAAAAAAAE0NoYWxsZW5nZVdpbmRvd09wZW4AAAAACAAAAAAAAAAMTm90QVJlc29sdmVyAAAACQAAAAAAAAAMQWxyZWFkeVZvdGVkAAAACgAAAAAAAAAGUGF1c2VkAAAAAAALAAAAPmBib25kX2Ftb3VudGAgd2FzIG5vdCBwb3NpdGl2ZSwgb3IgZXhjZWVkZWQgYE1BWF9CT05EX0FNT1VOVGAuAAAAAAARSW52YWxpZEJvbmRBbW91bnQAAAAAAAAMAAAAAAAAABZJbnZhbGlkQ2hhbGxlbmdlV2luZG93AAAAAAANAAAAAAAAABBUb29NYW55UmVzb2x2ZXJzAAAADgAAAEhgZmluYWxpemVfcmV3YXJkX2Jwc2Agd2FzIGdyZWF0ZXIgdGhhbiBgTUFYX0ZJTkFMSVpFX1JFV0FSRF9CUFNgICgxMDAwKS4AAAAVSW52YWxpZEZpbmFsaXplUmV3YXJkAAAAAAAADwAAAAAAAAASRHVwbGljYXRlUmVzb2x2ZXJzAAAAAAAQAAAAAAAAABJSb3RhdGlvbkluUHJvZ3Jlc3MAAAAAABEAAAAAAAAAEk5vUm90YXRpb25Qcm9wb3NhbAAAAAAAEgAAAAAAAAAWUmVzb2x2ZXJOb3RJbkNvbW1pdHRlZQAAAAAAEwAAAAAAAAAdUm90YXRpb25UYXJnZXRBbHJlYWR5UmVzb2x2ZXIAAAAAAAAUAAAAAAAAAAtOb3RQcm9wb3NlcgAAAAAVAAABGFRoZSBjYWxsZXIgaXMgdGhlIGFzc2VydGVyIG9mIHRoZSBhc3NlcnRpb24gdGhleSBhcmUgdHJ5aW5nIHRvIGRpc3B1dGUuCkFuIGFzc2VydGVyIGRpc3B1dGluZyB0aGVpciBvd24gYXNzZXJ0aW9uIHdvdWxkIGNvbnN1bWUgdGhlIG9uZSBkaXNwdXRlCnNsb3Qgd2l0aG91dCBhbnkgZWNvbm9taWMgcmlzayAodGhleSByZWNlaXZlIGJvdGggYm9uZHMgYmFjayByZWdhcmRsZXNzCm9mIHRoZSByZXNvbHZlciB2b3RlKSwgbnVsbGlmeWluZyB0aGUgYm9uZC1mb3JmZWl0dXJlIGRldGVycmVudC4AAAALU2VsZkRpc3B1dGUAAAAAFgAAAAAAAAAXTm9BZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAFwAAAMlgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIHdhcyBjYWxsZWQgb24gYW4gYXNzZXJ0aW9uIHdob3NlIGRpc3B1dGUKb3BlbmVkIHdpdGhvdXQgYSBzdGFsbCB0aW1lb3V0IGNvbmZpZ3VyZWQgKDAgPSBmYWxsYmFjayBkaXNhYmxlZCksIG9yCndob3NlIGRpc3B1dGVkX2F0IHByZWRhdGVzIHRoaXMgdXBncmFkZSBhbmQgY2Fubm90IGJlIHRpbWVkIG91dC4AAAAAAAAZU3RhbGxUaW1lb3V0Tm90Q29uZmlndXJlZAAAAAAAABgAAACsYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYCB3YXMgY2FsbGVkIGJlZm9yZSB0aGUgc3RhbGwgdGltZW91dCBlbGFwc2VkCnNpbmNlIHRoZSBkaXNwdXRlIG9wZW5lZC4gVGhlIGFzc2VydGlvbiBzdGlsbCByZXF1aXJlcyBub3JtYWwKcmVzb2x1dGlvbiBieSB0aGUgc25hcHNob3R0ZWQgY29tbWl0dGVlLgAAABFEaXNwdXRlTm90U3RhbGxlZAAAAAAAABkAAABSYHNldF9zdGFsbF90aW1lb3V0YCB3YXMgY2FsbGVkIHdpdGggYSB2YWx1ZSBncmVhdGVyIHRoYW4KYE1BWF9TVEFMTF9USU1FT1VUX1NFQ1NgLgAAAAAAE0ludmFsaWRTdGFsbFRpbWVvdXQAAAAAGg==",
         "AAAAAgAAAAAAAAAAAAAABlN0YXR1cwAAAAAAAwAAAAAAAAAAAAAAB1BlbmRpbmcAAAAAAAAAAAAAAAAIRGlzcHV0ZWQAAAAAAAAAAAAAAAhSZXNvbHZlZA==",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACwAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAFVG9rZW4AAAAAAAAAAAAAAAAAAApCb25kQW1vdW50AAAAAAAAAAAAAAAAAA9DaGFsbGVuZ2VXaW5kb3cAAAAAAAAAAAAAAAAJUmVzb2x2ZXJzAAAAAAAAAQAAAAAAAAAJQXNzZXJ0aW9uAAAAAAAAAQAAAAYAAAAAAAAAAAAAAAZOZXh0SWQAAAAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAAAAAMhCYXNpcyBwb2ludHMgKDDigJMxMDAwKSBvZiB0aGUgYm9uZCBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcwphbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb24uIDAgbWVhbnMgbm8gcmV3YXJkIGlzIHRha2VuOyB0aGUKZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlciAob3JpZ2luYWwgYmVoYXZpb3IpLgAAABFGaW5hbGl6ZVJld2FyZEJwcwAAAAAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAA=",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAADQAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAFVG9rZW4AAAAAAAAAAAAAAAAAAApCb25kQW1vdW50AAAAAAAAAAAAAAAAAA9DaGFsbGVuZ2VXaW5kb3cAAAAAAAAAAAAAAAAJUmVzb2x2ZXJzAAAAAAAAAQAAAAAAAAAJQXNzZXJ0aW9uAAAAAAAAAQAAAAYAAAAAAAAAAAAAAAZOZXh0SWQAAAAAAAAAAAAAAAAABlBhdXNlZAAAAAAAAAAAAMhCYXNpcyBwb2ludHMgKDDigJMxMDAwKSBvZiB0aGUgYm9uZCBwYWlkIHRvIHdob2V2ZXIgY2FsbHMgYGZpbmFsaXplYCBhcwphbiBpbmNlbnRpdmUgZm9yIHByb21wdCBmaW5hbGl6YXRpb24uIDAgbWVhbnMgbm8gcmV3YXJkIGlzIHRha2VuOyB0aGUKZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlciAob3JpZ2luYWwgYmVoYXZpb3IpLgAAABFGaW5hbGl6ZVJld2FyZEJwcwAAAAAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAAAAAAAABR1NlY29uZHMgYWZ0ZXIgYGRpc3B1dGVgIG9wZW5zIGR1cmluZyB3aGljaCBgcmVzb2x2ZWAgbXVzdCByZWFjaCBhCnN0cmljdCBtYWpvcml0eSBiZWZvcmUgYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYCBiZWNvbWVzIGNhbGxhYmxlLgpVbnNldCBtZWFucyAwOiB0aGUgc3RhbGxlZC1kaXNwdXRlIGZhbGxiYWNrIGlzIGRpc2FibGVkIGVudGlyZWx5LCBubwpwZXJtaXNzaW9ubGVzcyByZWNvdmVyeSBwYXRoIGV4aXN0cyBhbmQgYm9uZHMgY2FuIHJlbWFpbiBmcm96ZW4KaW5kZWZpbml0ZWx5LCB0aGUgcHJlLSMxNjYgYmVoYXZpb3IuIFNlZSBgc2V0X3N0YWxsX3RpbWVvdXRgLgAAAAAQU3RhbGxUaW1lb3V0U2VjcwAAAAEAAAFRV2hlbiBgZGlzcHV0ZWAgd2FzIGNhbGxlZCBmb3IgYXNzZXJ0aW9uIGB1NjRgLiBLZXB0IGFzIGEgc2VwYXJhdGUKc3RvcmFnZSBrZXkgcmF0aGVyIHRoYW4gYSBmaWVsZCBvbiBgQXNzZXJ0aW9uYCBzbyBhZGRpbmcgaXQgZG9lcyBub3QKYnJlYWsgZGVjb2Rpbmcgb2YgYXNzZXJ0aW9ucyBhbHJlYWR5IHBlcnNpc3RlZCBiZWZvcmUgdGhpcyB1cGdyYWRlCigjMTg0KS4gYE5vbmVgIG1lYW5zIHRoZSBhc3NlcnRpb24gd2FzIGRpc3B1dGVkIGJlZm9yZSB0aGlzIHVwZ3JhZGUKb3IgaXMgc3RpbGwgcGVuZGluZzsgYFNvbWUodHMpYCBpcyB0aGUgbGVkZ2VyIHRpbWVzdGFtcCBhdCBkaXNwdXRlLgAAAAAAAApEaXNwdXRlZEF0AAAAAAABAAAABg==",
         "AAAAAAAAAE5EaXNwdXRlcyBhIHBlbmRpbmcgYXNzZXJ0aW9uIHdpdGhpbiB0aGUgY2hhbGxlbmdlIHdpbmRvdyBieSBtYXRjaGluZyBpdHMgYm9uZC4AAAAAAAdkaXNwdXRlAAAAAAIAAAAAAAAACGRpc3B1dGVyAAAAEwAAAAAAAAACaWQAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAN9BIHJlc29sdmVyIHZvdGVzIG9uIGEgZGlzcHV0ZWQgYXNzZXJ0aW9uLiBPbmNlIGEgc3RyaWN0IG1ham9yaXR5IG9mCnRoZSByZXNvbHZlciBjb21taXR0ZWUgYWdyZWVzLCB0aGUgYXNzZXJ0aW9uIGZpbmFsaXplczogdGhlIHdpbm5pbmcKc2lkZSAoYXNzZXJ0ZXIgaWYgdGhlIG9yaWdpbmFsIG91dGNvbWUgc3RhbmRzLCBkaXNwdXRlciBvdGhlcndpc2UpCnJlY2VpdmVzIGJvdGggYm9uZHMuAAAAAAdyZXNvbHZlAAAAAAMAAAAAAAAACHJlc29sdmVyAAAAEwAAAAAAAAACaWQAAAAAAAYAAAAAAAAAFGFncmVlc193aXRoX2Fzc2VydGVyAAAAAQAAAAEAAAPpAAAD6AAAAAEAAAAD",
         "AAAAAAAAA1hGaW5hbGl6ZXMgYSBwZW5kaW5nIGFzc2VydGlvbiBvbmNlIGl0cyBjaGFsbGVuZ2Ugd2luZG93IGhhcyBlbGFwc2VkCndpdGggbm8gZGlzcHV0ZS4gRmFpbHMgd2l0aCBgUGF1c2VkYCBpZiBwYXVzZWQ6IGEgcGF1c2VkIGFzc2VydGlvbiBtYXkKaGF2ZSBoYWQgbm8gcmVhbCBvcHBvcnR1bml0eSB0byBiZSBkaXNwdXRlZCBkdXJpbmcgaXRzIGNoYWxsZW5nZQp3aW5kb3cgKHNpbmNlIGBkaXNwdXRlYCBpcyBhbHNvIGJsb2NrZWQgd2hpbGUgcGF1c2VkKSwgc28gaXQgbXVzdCBub3QKYmUgYWJsZSB0byBmaW5hbGl6ZSB1bmNvbnRlc3RlZCB1bnRpbCB1bnBhdXNlZC4gYGNhbGxlcmAgbXVzdAphdXRob3JpemUgdGhlIGNhbGwgdW5jb25kaXRpb25hbGx5IOKAlCByZWdhcmRsZXNzIG9mIHdoZXRoZXIKYGZpbmFsaXplX3Jld2FyZF9icHNgIGlzIHplcm8g4oCUIHNvIHRoZSBhZGRyZXNzIHJlY29yZGVkIGluCmBBc3NlcnRpb24uZmluYWxpemVyYCBhbmQgdGhlIGBGaW5hbGl6ZWRgIGV2ZW50IGlzIGFsd2F5cyBhIHZlcmlmaWVkCmNhbGxlciBhbmQgY2Fubm90IGJlIHNwb29mZWQuIFdoZW4gYGZpbmFsaXplX3Jld2FyZF9icHNgIGlzIG5vbi16ZXJvLApgY2FsbGVyYCBhbHNvIHJlY2VpdmVzIGBib25kICogZmluYWxpemVfcmV3YXJkX2JwcyAvIDEwXzAwMGAgdG9rZW5zIGFzCmFuIGluY2VudGl2ZSBmb3IgcHJvbXB0IGZpbmFsaXphdGlvbiBhbmQgdGhlIGFzc2VydGVyIHJlY2VpdmVzIHRoZQpyZW1haW5kZXI7IHdoZW4gaXQgaXMgemVybyB0aGUgZnVsbCBib25kIGlzIHJldHVybmVkIHRvIHRoZSBhc3NlcnRlcgphbmQgbm8gcmV3YXJkIGlzIHBhaWQuIFJldHVybnMgdGhlIGFzc2VydGVkIG91dGNvbWUuAAAACGZpbmFsaXplAAAAAgAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAAAAAAJpZAAAAAAABgAAAAEAAAPpAAAAAQAAAAM=",
@@ -366,11 +432,15 @@ export class Client extends ContractClient {
         "AAAABQAAAAAAAAAAAAAAEFJlc29sdmVyc1VwZGF0ZWQAAAABAAAAEXJlc29sdmVyc191cGRhdGVkAAAAAAAAAQAAAAAAAAAJcmVzb2x2ZXJzAAAAAAAD6gAAABMAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEFJvdGF0aW9uRXhlY3V0ZWQAAAABAAAAEXJvdGF0aW9uX2V4ZWN1dGVkAAAAAAAAAgAAAAAAAAAMb2xkX3Jlc29sdmVyAAAAEwAAAAAAAAAAAAAADG5ld19yZXNvbHZlcgAAABMAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEFJvdGF0aW9uUHJvcG9zZWQAAAABAAAAEXJvdGF0aW9uX3Byb3Bvc2VkAAAAAAAAAwAAAAAAAAAMb2xkX3Jlc29sdmVyAAAAEwAAAAAAAAAAAAAADG5ld19yZXNvbHZlcgAAABMAAAAAAAAAAAAAAAtwcm9wb3NlZF9ieQAAAAATAAAAAAAAAAI=",
+        "AAAAAAAABABDb25maWd1cmVzIHRoZSBzdGFsbGVkLWRpc3B1dGUgdGltZW91dCAoIzE2NikuIEFmdGVyIGEgYGRpc3B1dGVgCmhhcyBiZWVuIG9wZW4gZm9yIGBzdGFsbF90aW1lb3V0X3NlY3NgIHdpdGhvdXQgYHJlc29sdmVgIHJlYWNoaW5nIGEKc3RyaWN0IG1ham9yaXR5LCBgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIGJlY29tZXMgY2FsbGFibGUgYnkgYW55b25lCmFuZCByZXR1cm5zIGJvdGggYm9uZHMgdG8gdGhlaXIgb3JpZ2luYWwgb3duZXJzIHdpdGggbm8gd2lubmVyLgoKYDBgIGRpc2FibGVzIHRoZSBmYWxsYmFjayAodGhlIHByZS0jMTY2IGJlaGF2aW9yKTogYm9uZHMgb2YgYQpzdGFsbGVkIGRpc3B1dGUgY2FuIHRoZW4gcmVtYWluIGZyb3plbiBpbmRlZmluaXRlbHkuIFBhdXNlLWV4ZW1wdCwKbGlrZSBgc2V0X2JvbmRfYW1vdW50YDogYSBzdGFsbCB0aW1lb3V0IHRoYXQgbGFwc2VzIGFjcm9zcyBhIHBhdXNlCmNvc3RzIG5vdGhpbmcg4oCUIHRoZSBmYWxsYmFjayBwYXlzIG5vIG9uZSBhbmQgbm8gcmV3YXJkIGFwcGxpZXMg4oCUCmJ1dCBgcmVjbGFpbV9zdGFsbGVkX2Rpc3B1dGVgIGl0c2VsZiBpcyBibG9ja2VkIHdoaWxlIHBhdXNlZCBzbyBhCnBhdXNlZCBkZXBsb3ltZW50IGNhbm5vdCBiZSBkcmFpbmVkIGJ5IHRoZSBmYWxsYmFjayByYWNpbmcgYSBub3JtYWwKYHJlc29sdmVgIHRoYXQgbmV2ZXIgZ290IGEgY2hhbmNlIHRvIGFjdC4KClRoZSB0aW1lb3V0IG9ubHkgYXBwbGllcyB0byBhc3NlcnRpb25zIGRpc3B1dGVkIGFmdGVyIHRoaXMgdXBncmFkZToKdGhlaXIgYGRpc3B1dGVkX2F0YCBpcyBwaW5uZWQgYnkgYGRpc3B1dGVgLiBBc3NlcnRpb25zIGRpc3B1dGVkCmJlZm9yZSB0aGUgdXBncmFkZSAob3Igd2hpbGUgbm8gdGltZW91dCB3YXMgY29uZmlndXJlZCkgaGF2ZQpgZGlzcHV0ZWRfYXQgPT0gTm9uZWAgYW5kIGFyZSBuZXZlciByZWNsYWltYWJsZSwgc2luY2UgYSB0aW1lb3V0CmNvbmZpZ3VyZWQgYWZ0ZXIgdGhlIGZhY3Qgd291bGQgcmV0cm9hY3RpdmVseSBhcHBseSB0byBkAAAAEXNldF9zdGFsbF90aW1lb3V0AAAAAAAAAQAAAAAAAAASc3RhbGxfdGltZW91dF9zZWNzAAAAAAAGAAAAAQAAA+kAAAACAAAAAw==",
         "AAAABQAAAAAAAAAAAAAAEUJvbmRBbW91bnRVcGRhdGVkAAAAAAAAAQAAABNib25kX2Ftb3VudF91cGRhdGVkAAAAAAEAAAAAAAAAC2JvbmRfYW1vdW50AAAAAAsAAAAAAAAAAg==",
         "AAAABQAAAAAAAAAAAAAAEVJvdGF0aW9uQ2FuY2VsbGVkAAAAAAAAAQAAABJyb3RhdGlvbl9jYW5jZWxsZWQAAAAAAAIAAAAAAAAADG9sZF9yZXNvbHZlcgAAABMAAAAAAAAAAAAAAAxuZXdfcmVzb2x2ZXIAAAATAAAAAAAAAAI=",
         "AAAAAAAAAAAAAAATZ2V0X2Fzc2VydGlvbl9zdGF0ZQAAAAABAAAAAAAAAAJpZAAAAAAABgAAAAEAAAPpAAAH0AAAAAlBc3NlcnRpb24AAAAAAAAD",
+        "AAAABQAAAAAAAAAAAAAAE1N0YWxsVGltZW91dFVwZGF0ZWQAAAAAAQAAABVzdGFsbF90aW1lb3V0X3VwZGF0ZWQAAAAAAAABAAAAAAAAABJzdGFsbF90aW1lb3V0X3NlY3MAAAAAAAYAAAAAAAAAAg==",
         "AAAAAQAAAJJBIHBlbmRpbmcgZGVwbG95bWVudC1hZG1pbiByb3RhdGlvbi4gVGhlIGN1cnJlbnQgYWRtaW4gcHJvcG9zZXMgYSB0YXJnZXQsCnRoZW4gdGhhdCB0YXJnZXQgbXVzdCBhdXRob3JpemUgYGFjY2VwdF9hZG1pbmAgYmVmb3JlIGF1dGhvcml0eSBjaGFuZ2VzLgAAAAAAAAAAABVBZG1pblJvdGF0aW9uUHJvcG9zYWwAAAAAAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAAT",
-        "AAAABQAAAAAAAAAAAAAAFUFkbWluUm90YXRpb25Qcm9wb3NlZAAAAAAAAAEAAAAXYWRtaW5fcm90YXRpb25fcHJvcG9zZWQAAAAAAgAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAAAAAAAAAAAC3Byb3Bvc2VkX2J5AAAAABMAAAAAAAAAAg==" ]),
+        "AAAABQAAAAAAAAAAAAAAFUFkbWluUm90YXRpb25Qcm9wb3NlZAAAAAAAAAEAAAAXYWRtaW5fcm90YXRpb25fcHJvcG9zZWQAAAAAAgAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAAAAAAAAAAAC3Byb3Bvc2VkX2J5AAAAABMAAAAAAAAAAg==",
+        "AAAAAAAABABQZXJtaXNzaW9ubGVzcyBsaXZlbmVzcyBmYWxsYmFjayBmb3IgYSBzdGFsbGVkIGRpc3B1dGUgKCMxNjYpLgpDYWxsYWJsZSBieSBhbnlvbmUgb25jZSB0aGUgZGVwbG95bWVudCdzIHN0YWxsIHRpbWVvdXQgaGFzIGVsYXBzZWQKc2luY2UgdGhlIGRpc3B1dGUgb3BlbmVkIHdpdGhvdXQgYHJlc29sdmVgIHJlYWNoaW5nIGEgc3RyaWN0Cm1ham9yaXR5LiBSZXR1cm5zIGJvdGggYm9uZHMgdG8gdGhlaXIgb3JpZ2luYWwgb3duZXJzIOKAlCB0aGUKYXNzZXJ0ZXIgZ2V0cyB0aGVpciBib25kIGJhY2ssIHRoZSBkaXNwdXRlciBnZXRzIHRoZWlyIGJvbmQgYmFjayDigJQKd2l0aCBubyB3aW5uZXIgYW5kIG5vIGZvcmZlaXR1cmUuCgpPdXRjb21lIHJ1bGUgKGNvbmZpcm1lZCB3aXRoIHRoZSBtYWludGFpbmVyKTogbm8td2lubmVyLCBub3QKZGVmYXVsdC10by1hc3NlcnRlZC4gVGhlIGRpc3B1dGVyIGRpZCBjb250ZXN0IHRoZSBjbGFpbTsgdGhlIHByb2Nlc3MKYnJva2UgZG93biBiZWNhdXNlIHRoZSBjb21taXR0ZWUgZmFpbGVkLCBub3QgYmVjYXVzZSB0aGUgY2hhbGxlbmdlCndhcyB3ZWFrLiBEZWZhdWx0aW5nIHRvIHRoZSBhc3NlcnRlZCBvdXRjb21lIHdvdWxkIGZvcmZlaXQgdGhlCmRpc3B1dGVyJ3MgYm9uZCBvdmVyIGEgZGlzcHV0ZSBuZXZlciBhZGp1ZGljYXRlZCwgYW5kIHdvdWxkIGhhbmQgdGhlCmFzc2VydGVyIGFuIGluY2VudGl2ZSB0byBzdGFsbCB0aGUgY29tbWl0dGVlIChicmliZSwgRG9TLCB3YWl0IG91dAp1bnJlc3BvbnNpdmUgcmVzb2x2ZXJzKSBzaW5jZSBzdGFsbGluZyB3b3VsZCB3aW4gdGhlIGNhc2UgZm9yIGZyZWUuCk5vLXdpbm5lciByZW1vdmVzIHRoYXQgaW5jZW50aXZlOiBzdGFsbGluZyBiZW5lZml0cyBub2JvZHkuCgpUaGUgYXNzZXJ0aW9uIGVuZHMgaW4gYFN0YXR1czo6UmVzb2x2ZWRgIHdpdGggYGZpbmFsX291dGNvbWU6IE5vbmVgLAp3aGljaCBubyBleGlzdGluZyByZWFkZXIgY2FuIGNvbmZ1c2Ugd2l0aCBhIG1ham9yaXR5IG91dGNvbWU6IGV2ZXJ5CnByZS0jAAAAF3JlY2xhaW1fc3RhbGxlZF9kaXNwdXRlAAAAAAIAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAAAAAACaWQAAAAAAAYAAAABAAAD6QAAAAIAAAAD",
+        "AAAABQAAAAAAAAAAAAAAF1N0YWxsZWREaXNwdXRlUmVjbGFpbWVkAAAAAAEAAAAZc3RhbGxlZF9kaXNwdXRlX3JlY2xhaW1lZAAAAAAAAAUAAAAAAAAAAmlkAAAAAAAGAAAAAQAAACVUaGUgYXNzZXJ0ZXIgd2hvc2UgYm9uZCB3YXMgcmV0dXJuZWQuAAAAAAAACGFzc2VydGVyAAAAEwAAAAAAAAAlVGhlIGRpc3B1dGVyIHdob3NlIGJvbmQgd2FzIHJldHVybmVkLgAAAAAAAAhkaXNwdXRlcgAAABMAAAAAAAAAMFRoZSBwZXItc2lkZSBib25kIGFtb3VudCByZWZ1bmRlZCB0byBlYWNoIHBhcnR5LgAAAAhyZWZ1bmRlZAAAAAsAAAAAAAAAeFdobyBjYWxsZWQgYHJlY2xhaW1fc3RhbGxlZF9kaXNwdXRlYC4gQWx3YXlzIGEgdmVyaWZpZWQgYWRkcmVzcyDigJQKdGhlIGNhbGwgcmVxdWlyZXMgdGhlIGNhbGxlcidzIGF1dGggdW5jb25kaXRpb25hbGx5LgAAAAZjYWxsZXIAAAAAABMAAAAAAAAAAg==" ]),
       options
     )
   }
@@ -388,6 +458,8 @@ export class Client extends ContractClient {
         set_bond_amount: this.txFromJSON<Result<void>>,
         propose_rotation: this.txFromJSON<Result<void>>,
         update_resolvers: this.txFromJSON<Result<void>>,
-        get_assertion_state: this.txFromJSON<Result<Assertion>>
+        set_stall_timeout: this.txFromJSON<Result<void>>,
+        get_assertion_state: this.txFromJSON<Result<Assertion>>,
+        reclaim_stalled_dispute: this.txFromJSON<Result<void>>
   }
 }

@@ -185,6 +185,7 @@ name = "asserter-consumer"
 version = "0.3.0"
 dependencies = [
  "soroban-sdk",
+ "tholos-client",
 ]
 
 [[package]]
@@ -498,6 +499,7 @@ name = "demo-consumer"
 version = "0.3.0"
 dependencies = [
  "soroban-sdk",
+ "tholos-client",
 ]
 
 [[package]]
@@ -1843,6 +1845,13 @@ name = "tholos"
 version = "0.3.0"
 dependencies = [
  "proptest",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "tholos-client"
+version = "0.3.0"
+dependencies = [
  "soroban-sdk",
 ]
 

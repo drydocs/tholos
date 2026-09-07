@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 soroban-sdk = "26.1.0"
+tholos-client = { path = "../tholos-client" }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.1.0", features = ["testutils"] }

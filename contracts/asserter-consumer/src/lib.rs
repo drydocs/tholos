@@ -7,13 +7,9 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, contractimport, Address, Env, IntoVal, Symbol, Vec,
+    contract, contractimpl, Address, Env, IntoVal, Symbol, Vec,
 };
-
-mod tholos {
-    use super::*;
-    contractimport!(file = "../../target/wasm32v1-none/release/tholos.wasm");
-}
+use tholos_client::{tholos, Error};
 
 #[contract]
 pub struct AsserterConsumer;
@@ -33,13 +29,18 @@ impl AsserterConsumer {
     /// pre-authorized with `authorize_as_current_contract` before invoking
     /// Tholos, specifying the exact token contract, `transfer` args, and
     /// amount Tholos will end up calling.
+    ///
+    /// Returns `Error::TholosNotInitialized` or `Error::TholosPaused` if the
+    /// Tholos instance at `tholos_id` can't currently accept an assertion, or
+    /// `Error::InvalidTholosId` if `tholos_id` doesn't resolve to an
+    /// invokable Tholos instance at all.
     pub fn create_assertion_as_self(
         env: Env,
         tholos_id: Address,
         token_id: Address,
         bond_amount: i128,
         outcome: bool,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
         let curr_contract = env.current_contract_address();
 
         env.authorize_as_current_contract(Vec::from_array(
@@ -62,15 +63,19 @@ impl AsserterConsumer {
         ));
 
         let client = tholos::Client::new(&env, &tholos_id);
-        client.assert_outcome(&curr_contract, &outcome)
+        Error::from_tholos_call(client.try_assert_outcome(&curr_contract, &outcome))
     }
 
     /// Forwards a read of an assertion's current state. See INTEGRATION.md for
     /// why `Assertion.outcome` is the *claimed* outcome, not necessarily the
     /// final one if the assertion was disputed and overturned.
-    pub fn get_status(env: Env, tholos_id: Address, id: u64) -> tholos::Assertion {
+    ///
+    /// Returns `Error::AssertionNotFound` if no assertion exists under `id`
+    /// on the Tholos instance at `tholos_id`, or `Error::InvalidTholosId` if
+    /// `tholos_id` doesn't resolve to an invokable Tholos instance at all.
+    pub fn get_status(env: Env, tholos_id: Address, id: u64) -> Result<tholos::Assertion, Error> {
         let client = tholos::Client::new(&env, &tholos_id);
-        client.get_assertion_state(&id)
+        Error::from_tholos_call(client.try_get_assertion_state(&id))
     }
 }
 

@@ -2291,3 +2291,175 @@ mod proptest_initialize_bounds {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #166: stalled-dispute liveness fallback.
+// -----------------------------------------------------------------------
+
+mod stalled_dispute {
+    use super::*;
+
+    /// Standalone helper that creates a full fixture with a known admin,
+    /// configurable bond/window, and a stall timeout.
+    fn stalled_fixture(
+        stall_timeout: u64,
+    ) -> (
+        Env,
+        TholosClient<'static>,
+        token::Client<'static>,
+        Address,
+        Address,
+        Vec<Address>,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token_id, resolvers) = setup(&env);
+        let token = token::Client::new(&env, &token_id);
+        let contract_id = env.register(Tholos, ());
+        let client = TholosClient::new(&env, &contract_id);
+        // Nonzero base timestamp so the stall-timeout comparison is
+        // meaningful. Env::default()'s timestamp is 0, which is a valid
+        // ledger value now that disputed_at uses Option<u64> (None is the
+        // sentinel, not 0), but a nonzero base keeps the test realistic.
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_WINDOW,
+            &resolvers,
+            &0u32,
+        );
+        client.set_stall_timeout(&stall_timeout);
+        token::StellarAssetClient::new(&env, &token_id).mint(&admin, &DEFAULT_MINT);
+        (env, client, token, admin, token_id, resolvers)
+    }
+
+    /// Disputed assertion with both bonds locked in.
+    fn disputed(
+        env: &Env,
+        client: &TholosClient,
+        token: &token::Client,
+        token_id: &Address,
+    ) -> (Address, Address, u64) {
+        let asserter = Address::generate(env);
+        let disputer = Address::generate(env);
+        token::StellarAssetClient::new(env, token_id).mint(&asserter, &DEFAULT_MINT);
+        token::StellarAssetClient::new(env, token_id).mint(&disputer, &DEFAULT_MINT);
+        let id = client.assert_outcome(&asserter, &true);
+        client.dispute(&disputer, &id);
+        let _ = token;
+        (asserter, disputer, id)
+    }
+
+    #[test]
+    fn test_set_stall_timeout_validates_bounds() {
+        let (env, client, _token, _admin, _tid, _) = stalled_fixture(0);
+        let _ = &env;
+        // within bounds (max is now 7 days, not 30, to leave TTL headroom)
+        assert!(client.try_set_stall_timeout(&3600).is_ok());
+        assert!(client.try_set_stall_timeout(&(7 * 24 * 3600)).is_ok());
+        // out of bounds
+        let too_big = 7 * 24 * 3600 + 1;
+        let result = client.try_set_stall_timeout(&too_big);
+        assert_eq!(result, Err(Ok(Error::InvalidStallTimeout)));
+    }
+
+    #[test]
+    fn test_reclaim_before_timeout_requires_normal_resolution() {
+        // After the dispute opens but before the stall timeout elapses, the
+        // fallback is not callable and normal resolution is still required.
+        let (env, client, token, admin, token_id, resolvers) = stalled_fixture(3600);
+        let _ = admin;
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = disputer;
+
+        // Not yet stalled: ledger timestamp is ~0 (Env::default), dispute
+        // opened at the same timestamp, timeout 3600 not elapsed.
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::DisputeNotStalled)));
+
+        // The committee can still resolve normally in the meantime.
+        let r1 = resolvers.get(0).unwrap().clone();
+        let r2 = resolvers.get(1).unwrap().clone();
+        client.resolve(&r1, &id, &true);
+        client.resolve(&r2, &id, &true);
+        assert_eq!(client.get_assertion_state(&id).final_outcome, Some(true));
+        // Winner (asserter) got both bonds; resolution closed the dispute.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT + DEFAULT_BOND);
+
+        // Post-resolution reclaim fails with NotDisputed.
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::NotDisputed)));
+    }
+
+    #[test]
+    fn test_reclaim_after_timeout_returns_both_bonds_no_winner() {
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(3600);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+
+        // Each side posted one bond of DEFAULT_BOND.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT - DEFAULT_BOND);
+        assert_eq!(token.balance(&disputer), DEFAULT_MINT - DEFAULT_BOND);
+        assert_eq!(token.balance(&client.address), 2 * DEFAULT_BOND);
+
+        // Elapse the stall timeout.
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+
+        let trigger = Address::generate(&env);
+        client.reclaim_stalled_dispute(&trigger, &id);
+
+        // Both bonds returned in full; no winner, no forfeiture.
+        assert_eq!(token.balance(&asserter), DEFAULT_MINT);
+        assert_eq!(token.balance(&disputer), DEFAULT_MINT);
+        assert_eq!(token.balance(&client.address), 0);
+        // Trigger got nothing: no reward on this path.
+        assert_eq!(token.balance(&trigger), 0);
+
+        // Terminal state: Resolved with final_outcome None (voided).
+        let state = client.get_assertion_state(&id);
+        assert_eq!(state.status, Status::Resolved);
+        assert_eq!(state.final_outcome, None);
+
+        // Idempotence: a second reclaim now fails NotDisputed.
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::NotDisputed)));
+    }
+
+    #[test]
+    fn test_reclaim_disabled_with_zero_timeout() {
+        // stall timeout 0 = fallback disabled (pre-#166 behavior).
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(0);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = (asserter, disputer);
+
+        // Even far past any plausible timeout, reclaim is disabled.
+        env.ledger().with_mut(|l| l.timestamp += 30 * 24 * 3600);
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::StallTimeoutNotConfigured)));
+    }
+
+    #[test]
+    fn test_reclaim_blocked_while_paused() {
+        let (env, client, token, _admin, token_id, _resolvers) = stalled_fixture(3600);
+        let (asserter, disputer, id) = disputed(&env, &client, &token, &token_id);
+        let _ = (asserter, disputer);
+
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+
+        // Freeze the deployment. The fallback races a normal resolve that
+        // never got a chance to act — it must be blocked until unpaused.
+        client.set_paused(&true);
+        let trigger = Address::generate(&env);
+        let result = client.try_reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(result, Err(Ok(Error::Paused)));
+
+        // Unpause: now the fallback fires.
+        client.set_paused(&false);
+        client.reclaim_stalled_dispute(&trigger, &id);
+        assert_eq!(token.balance(&client.address), 0);
+    }
+}
