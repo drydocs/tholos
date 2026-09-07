@@ -18,7 +18,7 @@ can be changed after `initialize`:
 | `token` | Any SEP-41 token your users already hold. No swap step exists, so picking a token nobody has is a dead deployment. |
 | `bond_amount` | Size from the spam/griefing model in [BOND_SIZING.md](BOND_SIZING.md): start with the larger of the assertion-spam and bad-faith-dispute floors (`R_case / tolerated spam per challenge window`), add any target attacker-loss margin, check finalize reward economics, then keep the result within the affordability cap for the smallest assertion value you want to support. Also capped at `MAX_BOND_AMOUNT`, a contract-enforced ceiling well above any realistic bond size. It exists so the bond can never overflow `finalize`'s reward-multiply arithmetic (the binding constraint) or the token balance held across a dispute. |
 | `challenge_window_secs` | Long enough that people who'd actually catch a bad assertion have a realistic chance to see it and act. Short windows finalize faster but catch less. See [V1_MAINNET_PARAMETERS.md](V1_MAINNET_PARAMETERS.md) for sizing guidance by monitoring tier. |
-| `resolvers` | Odd-length, non-zero, distinct, and at most 21 addresses. `initialize` rejects duplicates with `DuplicateResolvers`. Pick people who'll actually be reachable to vote within a reasonable time of a dispute; a slow resolver committee stalls every disputed assertion until it acts. See [V1_MAINNET_PARAMETERS.md](V1_MAINNET_PARAMETERS.md) for size and composition trade-offs. |
+| `resolvers` | Odd-length, non-zero, distinct, and at most 21 addresses. `initialize` rejects duplicates with `DuplicateResolvers`. Pick people who'll actually be reachable to vote within a reasonable time of a dispute; a slow resolver committee stalls every disputed assertion until it acts. See [V1_MAINNET_PARAMETERS.md](V1_MAINNET_PARAMETERS.md) for size and composition trade-offs, and [RESOLVER_GOVERNANCE.md](RESOLVER_GOVERNANCE.md) for the onboarding process behind picking these addresses in the first place. |
 | `finalize_reward_bps` | Basis points (0–1000) of the bond paid to whoever calls `finalize`. `caller` must authorize the call unconditionally, even at 0. 0 means no reward: the full bond returns to the asserter. A non-zero value creates an economic incentive for prompt finalization at the cost of a small bond haircut the asserter accepts when posting. 100 bps (1 %) is a reasonable starting point; 1000 bps (10 %) is the maximum enforced by the contract. |
 
 ## Canonical testnet deployment
@@ -100,6 +100,13 @@ as incident handling permits. Do not use pause as a safe migration or retirement
 switch.
 
 ### Rotating the resolver committee
+
+This section covers the on-chain mechanics only: who is authorized to call what,
+and what each call does. For the off-chain side, who actually becomes a resolver,
+how their key is generated and secured, what they commit to, and which of the two
+paths below to use for a given real-world reason (resignation, inactivity, a
+compromised key, a conflict of interest), see
+[RESOLVER_GOVERNANCE.md](RESOLVER_GOVERNANCE.md).
 
 There are two paths. `update_resolvers` is the admin emergency override; it works
 whether paused or not, so a compromised committee can be replaced without waiting to
