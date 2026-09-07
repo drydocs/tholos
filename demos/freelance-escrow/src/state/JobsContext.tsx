@@ -1,7 +1,85 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { jobs as seedJobs, type Job, type Milestone, type MilestoneStatus } from "../data/jobs";
 import { JobsContext, type JobsContextValue, type NewJobInput } from "./jobs-context";
 import type { Assertion } from "../lib/tholos";
+import { detectWallet } from "../lib/wallet";
+
+const JOBS_STORAGE_KEY = "tholos.freelance-escrow.jobs.v1";
+
+const MILESTONE_STATUSES: ReadonlySet<MilestoneStatus> = new Set([
+  "in_progress",
+  "submitted",
+  "disputed",
+  "released",
+  "returned",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: Record<string, unknown>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "string";
+}
+
+function isMilestone(value: unknown): value is Milestone {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.title === "string" &&
+    typeof value.amount === "string" &&
+    typeof value.status === "string" &&
+    MILESTONE_STATUSES.has(value.status as MilestoneStatus) &&
+    isOptionalString(value, "submittedAt") &&
+    isOptionalString(value, "assertionId") &&
+    isOptionalString(value, "assertionOpenedAt")
+  );
+}
+
+function isJob(value: unknown): value is Job {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.title === "string" &&
+    typeof value.description === "string" &&
+    typeof value.client === "string" &&
+    typeof value.freelancer === "string" &&
+    typeof value.token === "string" &&
+    Array.isArray(value.milestones) &&
+    value.milestones.every(isMilestone)
+  );
+}
+
+function loadJobsFromStorage(): Job[] {
+  try {
+    const stored = window.localStorage.getItem(JOBS_STORAGE_KEY);
+    if (stored === null) {
+      return seedJobs;
+    }
+
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed) && parsed.every(isJob) ? parsed : seedJobs;
+  } catch {
+    return seedJobs;
+  }
+}
+
+function persistJobs(jobs: Job[]): void {
+  try {
+    window.localStorage.setItem(JOBS_STORAGE_KEY, JSON.stringify(jobs));
+  } catch {
+    // localStorage may be unavailable or full. State remains usable in memory.
+  }
+}
 
 /**
  * lib/tholos.ts pulls in the full Stellar SDK. Importing it dynamically, only
@@ -131,8 +209,68 @@ async function reconcileFromChain(
 }
 
 export function JobsProvider({ children }: { children: ReactNode }) {
-  const [jobs, setJobs] = useState<Job[]>(seedJobs);
+  const [jobs, setJobs] = useState<Job[]>(loadJobsFromStorage);
   const reconcileTrackerRef = useRef<ReconcileTracker>({ counter: 0, applied: new Map() });
+  const needsInitialReconciliation = jobs.some((job) =>
+    job.milestones.some((milestone) => milestone.assertionId !== undefined),
+  );
+  const [initialReconciliationComplete, setInitialReconciliationComplete] = useState(
+    () => !needsInitialReconciliation,
+  );
+  const initialReconciliationRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    persistJobs(jobs);
+  }, [jobs]);
+
+  useEffect(() => {
+    if (initialReconciliationComplete) {
+      return;
+    }
+
+    let active = true;
+    if (initialReconciliationRef.current === null) {
+      initialReconciliationRef.current = (async () => {
+        try {
+          const wallet = await detectWallet();
+          if (wallet.status !== "connected") {
+            return;
+          }
+
+          await Promise.all(
+            jobs.flatMap((job) =>
+              job.milestones.flatMap((milestone) =>
+                milestone.assertionId === undefined
+                  ? []
+                  : [
+                      reconcileFromChain(
+                        setJobs,
+                        reconcileTrackerRef,
+                        job.id,
+                        milestone.id,
+                        milestone.assertionId,
+                        wallet.address,
+                      ),
+                    ],
+              ),
+            ),
+          );
+        } catch (err) {
+          console.warn("Could not reconcile restored milestones before rendering; refresh will retry.", err);
+        }
+      })();
+    }
+
+    void initialReconciliationRef.current.finally(() => {
+      if (active) {
+        setInitialReconciliationComplete(true);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [initialReconciliationComplete, jobs]);
 
   const createJob = useCallback((input: NewJobInput) => {
     const jobId = `job-${crypto.randomUUID()}`;
@@ -263,6 +401,10 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     }),
     [jobs, createJob, submitMilestone, disputeMilestone, voteOnMilestone, finalizeMilestone, refreshMilestone],
   );
+
+  if (!initialReconciliationComplete) {
+    return null;
+  }
 
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>;
 }
