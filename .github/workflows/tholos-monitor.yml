@@ -32,7 +32,17 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  STATE_FILE_PATH: packages/tholos-monitor/monitor-state.json
+  # Absolute, so it means the same file to the cache step (which resolves a
+  # relative path against $GITHUB_WORKSPACE regardless of any step's
+  # working-directory) and to the "Run monitor" step (which runs with
+  # working-directory: packages/tholos-monitor, per the job default below —
+  # a relative value here would resolve against THAT directory instead and
+  # silently point somewhere else). Previously these only agreed by
+  # coincidence (the cache path happened to match the app's own
+  # DEFAULT_STATE_FILE_PATH default) rather than by being tied to the same
+  # value; STATE_FILE_PATH is now passed into the "Run monitor" step
+  # explicitly below so that's no longer left to chance.
+  STATE_FILE_PATH: ${{ github.workspace }}/packages/tholos-monitor/monitor-state.json
 
 jobs:
   poll:
@@ -83,6 +93,7 @@ jobs:
           THOLOS_V2_CONTRACT_ID: ${{ vars.THOLOS_V2_CONTRACT_ID }}
           SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          STATE_FILE_PATH: ${{ env.STATE_FILE_PATH }}
         run: node dist/main.js
 
       # Runs even if the poll above exited non-zero (a poll failure still

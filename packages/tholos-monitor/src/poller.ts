@@ -119,16 +119,30 @@ async function pollOneDeployment(
     if (startLedger !== undefined) fetchOptions.startLedger = startLedger;
     const result = await fetchNewEvents(server, fetchOptions);
 
+    // Classifying and logging is synchronous and cheap; the slow part is
+    // sendAlert (up to 3 attempts, capped exponential backoff, up to ~10s
+    // per attempt against a struggling webhook). Awaiting each alert before
+    // starting the next serializes all of that — on a first run against the
+    // full INITIAL_LEDGER_LOOKBACK, or right after downtime, dozens of
+    // events could take many minutes to alert on one at a time, risking
+    // overlap with the next 5-minute cron tick and delaying whichever
+    // events land later in the batch. sendAlert never throws (see
+    // alerts.ts), so firing them concurrently and awaiting them together is
+    // safe — a slow or failing webhook no longer blocks the rest.
+    const alertsInFlight: Promise<void>[] = [];
     for (const decoded of result.events) {
       const classified = classifyEvent(decoded);
       logEvent(classified);
       if (meetsThreshold(classified.severity, config.alertMinSeverity)) {
-        await sendAlert(buildEventAlertPayload(classified), {
-          webhookUrl: config.alertWebhookUrl,
-          timeoutMs: config.requestTimeoutMs,
-        });
+        alertsInFlight.push(
+          sendAlert(buildEventAlertPayload(classified), {
+            webhookUrl: config.alertWebhookUrl,
+            timeoutMs: config.requestTimeoutMs,
+          }),
+        );
       }
     }
+    await Promise.all(alertsInFlight);
 
     if (result.hitPageCap) {
       console.warn(

@@ -157,10 +157,37 @@ export async function fetchNewEvents(
       }
       response = await server.getEvents(request);
     } catch (err) {
-      if (isLikelyRetentionGap(err)) {
-        throw new RetentionGapError(err);
+      if (page === 0) {
+        // Nothing decoded yet this call — safe to surface immediately, same
+        // as before.
+        if (isLikelyRetentionGap(err)) {
+          throw new RetentionGapError(err);
+        }
+        throw err;
       }
-      throw err;
+      // Earlier pages in this same call already succeeded: `events` holds
+      // real, RPC-served data and `nextCursor` already advanced past it.
+      // Throwing here (as before) would discard both — and for a retention
+      // gap specifically, poller.ts responds to that error by dropping the
+      // cursor entirely and re-anchoring from the chain tip on the next
+      // run, permanently skipping this exact window even though the RPC
+      // had already served it. Return what's been decoded instead. The
+      // failure isn't lost: the very next call resumes from this same
+      // `nextCursor` and, if the underlying problem persists, hits it again
+      // on page 0 — at which point there's nothing pending to lose and the
+      // normal throw path above applies.
+      console.warn(
+        `[monitor] ${opts.deployment}: page ${page} failed after ${events.length} event(s) already decoded this run (cursor advanced to ${nextCursor}); returning them now, the failure will surface again on the next run: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      if (nextCursor === undefined) {
+        // Can't happen (page > 0 implies an earlier page set this), but
+        // don't silently fall through to the "no cursor advanced" guard
+        // below with a misleading message if it somehow did.
+        throw err;
+      }
+      return { events, nextCursor, hitPageCap: false };
     }
 
     for (const raw of response.events) {
