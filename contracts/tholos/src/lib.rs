@@ -142,6 +142,13 @@ pub struct AdminRotationProposal {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssertionEscrow {
+    pub asserter_escrow: i128,
+    pub disputer_escrow: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Status {
     Pending,
     Disputed,
@@ -210,6 +217,8 @@ pub enum DataKey {
     /// (#184). `None` means the assertion was disputed before this upgrade
     /// or is still pending; `Some(ts)` is the ledger timestamp at dispute.
     DisputedAt(u64),
+    /// Balance deltas recorded for assertion `u64` when bonds were transferred in.
+    AssertionEscrow(u64),
 }
 
 #[contracterror]
@@ -880,6 +889,8 @@ impl Tholos {
             .clone()
             .expect("a Disputed assertion always has a disputer set by dispute()");
 
+        let escrow = Self::get_assertion_escrow(&env, id, assertion.bond, assertion.bond);
+
         // State is written before the external token transfers below so a
         // reentrant call from a non-standard token sees this assertion as
         // already resolved, rather than still Disputed and reclaimable twice.
@@ -889,22 +900,27 @@ impl Tholos {
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         let token_client = token::Client::new(&env, &token_id);
-        // Each side receives exactly the bond they posted, in the same
-        // transfer shape every other path uses. Two separate transfers,
-        // not one combined: the two recipients are unrelated parties and
-        // neither is owed the other's half.
-        token_client.transfer(
-            &env.current_contract_address(),
-            &assertion.asserter,
-            &assertion.bond,
-        );
-        token_client.transfer(&env.current_contract_address(), &disputer, &assertion.bond);
+        // Each side receives exactly the escrowed bond amount actually deposited.
+        if escrow.asserter_escrow > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &assertion.asserter,
+                &escrow.asserter_escrow,
+            );
+        }
+        if escrow.disputer_escrow > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &disputer,
+                &escrow.disputer_escrow,
+            );
+        }
 
         StalledDisputeReclaimed {
             id,
             asserter: assertion.asserter.clone(),
             disputer,
-            refunded: assertion.bond,
+            refunded: escrow.asserter_escrow,
             caller,
         }
         .publish(&env);
@@ -955,10 +971,23 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
+        let token_client = token::Client::new(&env, &token_id);
+        let balance_before = token_client.balance(&env.current_contract_address());
+        token_client.transfer(
             &asserter,
             env.current_contract_address(),
             &bond_amount,
+        );
+        let balance_after = token_client.balance(&env.current_contract_address());
+        let asserter_escrow = balance_after.saturating_sub(balance_before).max(0);
+
+        Self::set_assertion_escrow(
+            &env,
+            id,
+            &AssertionEscrow {
+                asserter_escrow,
+                disputer_escrow: 0,
+            },
         );
 
         Asserted {
@@ -1024,11 +1053,19 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
+        let token_client = token::Client::new(&env, &token_id);
+        let balance_before = token_client.balance(&env.current_contract_address());
+        token_client.transfer(
             &disputer,
             env.current_contract_address(),
             &assertion.bond,
         );
+        let balance_after = token_client.balance(&env.current_contract_address());
+        let disputer_escrow = balance_after.saturating_sub(balance_before).max(0);
+
+        let mut escrow = Self::get_assertion_escrow(&env, id, assertion.bond, assertion.bond);
+        escrow.disputer_escrow = disputer_escrow;
+        Self::set_assertion_escrow(&env, id, &escrow);
 
         Disputed { id, disputer }.publish(&env);
 
@@ -1069,9 +1106,12 @@ impl Tholos {
             return Err(Error::ChallengeWindowOpen);
         }
 
+        let escrow = Self::get_assertion_escrow(&env, id, assertion.bond, 0);
+        let asserter_escrow = escrow.asserter_escrow;
+
         let reward_bps: u32 = Self::get(&env, &DataKey::FinalizeRewardBps)?;
         let reward = if reward_bps > 0 {
-            assertion.bond * (reward_bps as i128) / 10_000
+            asserter_escrow * (reward_bps as i128) / 10_000
         } else {
             0
         };
@@ -1094,12 +1134,14 @@ impl Tholos {
             token_client.transfer(&env.current_contract_address(), &caller, &reward);
         }
 
-        let asserter_payout = assertion.bond - reward;
-        token_client.transfer(
-            &env.current_contract_address(),
-            &assertion.asserter,
-            &asserter_payout,
-        );
+        let asserter_payout = asserter_escrow - reward;
+        if asserter_payout > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &assertion.asserter,
+                &asserter_payout,
+            );
+        }
 
         Finalized {
             id,
@@ -1174,7 +1216,8 @@ impl Tholos {
             return Ok(None);
         };
 
-        let payout = assertion.bond * 2;
+        let escrow = Self::get_assertion_escrow(&env, id, assertion.bond, assertion.bond);
+        let payout = escrow.asserter_escrow + escrow.disputer_escrow;
         let winner = if winner_is_asserter {
             assertion.asserter.clone()
         } else {
@@ -1198,11 +1241,13 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &env.current_contract_address(),
-            &winner,
-            &payout,
-        );
+        if payout > 0 {
+            token::Client::new(&env, &token_id).transfer(
+                &env.current_contract_address(),
+                &winner,
+                &payout,
+            );
+        }
         Resolved {
             id,
             outcome: final_outcome,
@@ -1230,6 +1275,31 @@ impl Tholos {
     fn set_assertion(env: &Env, id: u64, assertion: &Assertion) {
         let key = DataKey::Assertion(id);
         env.storage().persistent().set(&key, assertion);
+        env.storage().persistent().extend_ttl(
+            &key,
+            ASSERTION_LIFETIME_THRESHOLD,
+            ASSERTION_BUMP_AMOUNT,
+        );
+    }
+
+    fn get_assertion_escrow(
+        env: &Env,
+        id: u64,
+        default_asserter: i128,
+        default_disputer: i128,
+    ) -> AssertionEscrow {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AssertionEscrow(id))
+            .unwrap_or(AssertionEscrow {
+                asserter_escrow: default_asserter,
+                disputer_escrow: default_disputer,
+            })
+    }
+
+    fn set_assertion_escrow(env: &Env, id: u64, escrow: &AssertionEscrow) {
+        let key = DataKey::AssertionEscrow(id);
+        env.storage().persistent().set(&key, escrow);
         env.storage().persistent().extend_ttl(
             &key,
             ASSERTION_LIFETIME_THRESHOLD,

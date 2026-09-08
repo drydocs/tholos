@@ -2652,4 +2652,117 @@ mod stalled_dispute {
         client.reclaim_stalled_dispute(&trigger, &id);
         assert_eq!(token.balance(&client.address), 0);
     }
+
+    #[contract]
+    pub struct FeeToken;
+
+    #[contractimpl]
+    impl FeeToken {
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let key = soroban_sdk::Symbol::new(&env, "balances");
+            let mut balances: soroban_sdk::Map<Address, i128> = env
+                .storage()
+                .instance()
+                .get(&key)
+                .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+            let current = balances.get(to.clone()).unwrap_or(0);
+            balances.set(to, current + amount);
+            env.storage().instance().set(&key, &balances);
+        }
+
+        pub fn balance(env: Env, addr: Address) -> i128 {
+            let key = soroban_sdk::Symbol::new(&env, "balances");
+            let balances: soroban_sdk::Map<Address, i128> = env
+                .storage()
+                .instance()
+                .get(&key)
+                .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+            balances.get(addr).unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            let key = soroban_sdk::Symbol::new(&env, "balances");
+            let mut balances: soroban_sdk::Map<Address, i128> = env
+                .storage()
+                .instance()
+                .get(&key)
+                .unwrap_or_else(|| soroban_sdk::Map::new(&env));
+
+            let fee = amount / 10;
+            let net = amount - fee;
+
+            let from_bal = balances.get(from.clone()).unwrap_or(0);
+            assert!(from_bal >= amount, "insufficient balance");
+            balances.set(from, from_bal - amount);
+
+            let to_bal = balances.get(to.clone()).unwrap_or(0);
+            balances.set(to, to_bal + net);
+
+            env.storage().instance().set(&key, &balances);
+        }
+    }
+
+    #[test]
+    fn test_reclaim_stalled_dispute_fee_on_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let fee_token_id = env.register(FeeToken, ());
+        let fee_token_client = FeeTokenClient::new(&env, &fee_token_id);
+
+        let resolvers = Vec::from_array(
+            &env,
+            [
+                Address::generate(&env),
+                Address::generate(&env),
+                Address::generate(&env),
+            ],
+        );
+
+        let contract_id = env.register(Tholos, ());
+        let client = TholosClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        client.initialize(
+            &admin,
+            &fee_token_id,
+            &DEFAULT_BOND,
+            &DEFAULT_WINDOW,
+            &resolvers,
+            &0u32,
+        );
+        client.set_stall_timeout(&3600);
+
+        let asserter = Address::generate(&env);
+        let disputer = Address::generate(&env);
+        fee_token_client.mint(&asserter, &DEFAULT_MINT);
+        fee_token_client.mint(&disputer, &DEFAULT_MINT);
+
+        // Asserter posts 100 bond. FeeToken takes 10% fee (10), contract receives 90.
+        let id = client.assert_outcome(&asserter, &true);
+        assert_eq!(fee_token_client.balance(&client.address), 90);
+
+        // Disputer disputes with 100 bond. FeeToken takes 10% fee (10), contract receives 90.
+        client.dispute(&disputer, &id);
+        assert_eq!(fee_token_client.balance(&client.address), 180);
+
+        // Elapse stall timeout.
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+
+        let trigger = Address::generate(&env);
+        client.reclaim_stalled_dispute(&trigger, &id);
+
+        // Contract transferred 90 to asserter and 90 to disputer.
+        // Contract balance is now 0 (did not attempt to transfer 100 which would fail).
+        assert_eq!(fee_token_client.balance(&client.address), 0);
+
+        // With 10% transfer fee on the outgoing refund, asserter and disputer each get 81 net refund.
+        assert_eq!(fee_token_client.balance(&asserter), DEFAULT_MINT - 100 + 81);
+        assert_eq!(fee_token_client.balance(&disputer), DEFAULT_MINT - 100 + 81);
+
+        let state = client.get_assertion_state(&id);
+        assert_eq!(state.status, Status::Resolved);
+        assert_eq!(state.final_outcome, None);
+    }
 }
