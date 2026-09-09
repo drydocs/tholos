@@ -145,8 +145,8 @@ the scheme rests on:
   compromised or deadlocked committee (the one case self-rotation can't solve: a
   committee can't vote to heal itself when it's the problem). Both paths emit
   `ResolversUpdated`, so the "committee changed" signal stays unified; rotation adds
-  `RotationProposed` / `RotationExecuted` / `RotationCancelled` for the governance
-  trail.
+  `RotationProposed` / `RotationVoted` / `RotationExecuted` / `RotationCancelled`
+  for the governance trail.
 
 Liveness: only one rotation may be open at a time, and it's resolved by execution
 (majority reached), proposer cancel, or a deterministic deadlock guard (if yes-votes

@@ -106,6 +106,14 @@ pub struct StalledDisputeReclaimed {
     pub caller: Address,
 }
 
+#[contractevent]
+pub struct RotationVoted {
+    pub resolver: Address,
+    pub approve: bool,
+    pub yes_count: u32,
+    pub no_count: u32,
+}
+
 /// An in-flight single-slot committee rotation proposed by a current resolver.
 /// Decided by a strict majority of the live committee via `vote_rotation`. Only
 /// one may be open at a time. See `docs/src/ROTATION_DESIGN.md`.
@@ -247,6 +255,10 @@ pub enum Error {
     /// `set_stall_timeout` was called with a value greater than
     /// `MAX_STALL_TIMEOUT_SECS`.
     InvalidStallTimeout = 26,
+    /// The caller is on the snapshotted resolver committee and is also the
+    /// assertion's asserter or disputer. A party voting on their own case
+    /// biases (and, on a size-1 committee, determines) the outcome.
+    SelfVote = 27,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -323,11 +335,15 @@ pub struct Tholos;
 #[contractimpl]
 impl Tholos {
     /// Initializes the contract. `resolvers` must have an odd length so a
-    /// simple majority vote can never tie. `finalize_reward_bps` sets the
-    /// fraction of the bond (in basis points, 0–1000) paid to whoever calls
-    /// `finalize` as an incentive for prompt finalization; 0 disables the
-    /// reward entirely and preserves the original behavior where the full
-    /// bond is returned to the asserter.
+    /// simple majority vote can never tie. Size-1 is legal. Combined with
+    /// `SelfVote` and the default stall timeout of 0, a dispute whose sole
+    /// resolver is also a party cannot reach a majority and cannot be
+    /// reclaimed — a documented liveness trade-off, not a hidden hole.
+    /// `finalize_reward_bps` sets the fraction of the bond (in basis
+    /// points, 0–1000) paid to whoever calls `finalize` as an incentive
+    /// for prompt finalization; 0 disables the reward entirely and
+    /// preserves the original behavior where the full bond is returned to
+    /// the asserter.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -585,9 +601,9 @@ impl Tholos {
         }
 
         if approve {
-            proposal.yes.push_back(resolver);
+            proposal.yes.push_back(resolver.clone());
         } else {
-            proposal.no.push_back(resolver);
+            proposal.no.push_back(resolver.clone());
         }
 
         let n = committee.len();
@@ -640,6 +656,13 @@ impl Tholos {
         env.storage()
             .instance()
             .set(&DataKey::RotationProposal, &proposal);
+        RotationVoted {
+            resolver,
+            approve,
+            yes_count: proposal.yes.len(),
+            no_count: proposal.no.len(),
+        }
+        .publish(&env);
         Ok(None)
     }
 
@@ -1114,6 +1137,20 @@ impl Tholos {
         }
         if assertion.voted.contains(&resolver) {
             return Err(Error::AlreadyVoted);
+        }
+        // Same idea as `SelfDispute` on `dispute`: a party to the case must
+        // not sit on the committee vote that decides it.
+        //
+        // Deliberate liveness trade-off: initialize / update_resolvers still
+        // accept any odd committee size, including 1. If the snapshot has
+        // fewer disinterested members than majority_threshold (size-1 with
+        // that member as a party; size-3 with both parties on the snapshot),
+        // SelfVote makes a strict majority unreachable. reclaim_stalled_dispute
+        // does not save this by default — stall timeout 0 is disabled — so
+        // those disputes stay Disputed with both bonds frozen. See
+        // test_size_one_conflicted_committee_cannot_resolve_when_stall_timeout_is_unset.
+        if resolver == assertion.asserter || assertion.disputer.as_ref() == Some(&resolver) {
+            return Err(Error::SelfVote);
         }
 
         assertion.voted.push_back(resolver);
