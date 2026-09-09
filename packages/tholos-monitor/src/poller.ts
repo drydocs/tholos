@@ -50,6 +50,46 @@ function logEvent(event: ClassifiedEvent): void {
   );
 }
 
+export interface ClassifyLogAndAlertOptions {
+  alertMinSeverity: Severity;
+  alertWebhookUrl: string;
+  requestTimeoutMs: number;
+}
+
+/**
+ * Classifies and logs every decoded event, then alerts on whichever of them
+ * meet `alertMinSeverity` — concurrently, not one at a time. sendAlert never
+ * throws (see alerts.ts), so firing every alert for this batch and awaiting
+ * them together is safe: a slow or failing webhook no longer serializes the
+ * rest. On a first run against the full INITIAL_LEDGER_LOOKBACK, or right
+ * after downtime, dozens of events could otherwise take many minutes to
+ * alert on one at a time, risking overlap with the next 5-minute cron tick.
+ *
+ * Pulled out of `pollOneDeployment` (which still calls this) so the
+ * concurrency behavior itself is independently testable against plain
+ * `DecodedEvent` fixtures and a local test HTTP server, without needing a
+ * real or fake `rpc.Server` — see poller.test.ts.
+ */
+export async function classifyLogAndAlert(
+  events: DecodedEvent[],
+  options: ClassifyLogAndAlertOptions,
+): Promise<void> {
+  const alertsInFlight: Promise<void>[] = [];
+  for (const decoded of events) {
+    const classified = classifyEvent(decoded);
+    logEvent(classified);
+    if (meetsThreshold(classified.severity, options.alertMinSeverity)) {
+      alertsInFlight.push(
+        sendAlert(buildEventAlertPayload(classified), {
+          webhookUrl: options.alertWebhookUrl,
+          timeoutMs: options.requestTimeoutMs,
+        }),
+      );
+    }
+  }
+  await Promise.all(alertsInFlight);
+}
+
 /** Builds a `DeploymentState`, omitting `cursor` entirely rather than
  * setting it to `undefined` when there isn't one — required under
  * `exactOptionalPropertyTypes` (an optional property may be absent, but not
@@ -119,30 +159,13 @@ async function pollOneDeployment(
     if (startLedger !== undefined) fetchOptions.startLedger = startLedger;
     const result = await fetchNewEvents(server, fetchOptions);
 
-    // Classifying and logging is synchronous and cheap; the slow part is
-    // sendAlert (up to 3 attempts, capped exponential backoff, up to ~10s
-    // per attempt against a struggling webhook). Awaiting each alert before
-    // starting the next serializes all of that — on a first run against the
-    // full INITIAL_LEDGER_LOOKBACK, or right after downtime, dozens of
-    // events could take many minutes to alert on one at a time, risking
-    // overlap with the next 5-minute cron tick and delaying whichever
-    // events land later in the batch. sendAlert never throws (see
-    // alerts.ts), so firing them concurrently and awaiting them together is
-    // safe — a slow or failing webhook no longer blocks the rest.
-    const alertsInFlight: Promise<void>[] = [];
-    for (const decoded of result.events) {
-      const classified = classifyEvent(decoded);
-      logEvent(classified);
-      if (meetsThreshold(classified.severity, config.alertMinSeverity)) {
-        alertsInFlight.push(
-          sendAlert(buildEventAlertPayload(classified), {
-            webhookUrl: config.alertWebhookUrl,
-            timeoutMs: config.requestTimeoutMs,
-          }),
-        );
-      }
-    }
-    await Promise.all(alertsInFlight);
+    // See classifyLogAndAlert's own doc comment for why this dispatches
+    // alerts concurrently rather than one at a time.
+    await classifyLogAndAlert(result.events, {
+      alertMinSeverity: config.alertMinSeverity,
+      alertWebhookUrl: config.alertWebhookUrl,
+      requestTimeoutMs: config.requestTimeoutMs,
+    });
 
     if (result.hitPageCap) {
       console.warn(
