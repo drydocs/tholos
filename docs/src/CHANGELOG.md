@@ -237,6 +237,14 @@ All notable changes to this project are documented here. Format follows
   who knows the `(id, address)` key can now renew it directly, no
   signature required, no funds moved. Closes #72.
 
+- `contracts/tholos`: `vote_rotation` now emits a `RotationVoted` event
+  (resolver, their vote, and the running yes/no tally) on a vote that
+  neither reaches majority nor triggers the deadlock guard. Previously only
+  the two terminal outcomes (`RotationExecuted`, `RotationCancelled`)
+  produced an event, so an indexer watching only events had no way to see
+  individual votes accumulate on an open rotation proposal until it
+  resolved one way or the other. Closes #130.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

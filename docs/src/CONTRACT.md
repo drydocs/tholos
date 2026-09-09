@@ -66,6 +66,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | `RotationTargetAlreadyResolver` | The `new_resolver` named for addition is already on the committee (or equals `old_resolver`) |
 | `NotProposer` | Caller isn't the proposer and the proposal can still reach a majority, so can't cancel it |
 | `NoAdminRotationProposal` | `accept_admin` called without a pending admin proposal |
+| `SelfVote` | Resolver is also the assertion's asserter or disputer |
 
 ## Functions
 
@@ -74,7 +75,10 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 One-time setup. `resolvers` must have an odd, non-zero length, and at most
 `MAX_RESOLVERS` (21), with no duplicate addresses, so a majority vote can never
 tie and no single dispute
-snapshot grows unbounded. `bond_amount` must be positive and no greater than
+snapshot grows unbounded. A size-1 committee is legal. If that sole resolver
+later asserts or disputes, `SelfVote` plus the default stall timeout of 0
+(fallback disabled) leaves the dispute unresolvable — a documented trade-off,
+not a committee-size change. See `resolve` and `reclaim_stalled_dispute`. `bond_amount` must be positive and no greater than
 `MAX_BOND_AMOUNT` — the largest bond that can't overflow the token balance or
 `finalize`'s reward-multiply arithmetic — and `challenge_window_secs`
 must be non-zero and at most 7 days (see "Persistent storage TTL" below for why).
@@ -147,9 +151,10 @@ live committee, the proposal is cleared, `RotationExecuted` and `ResolversUpdate
 are emitted, and the function returns `Some(true)`. If the remaining unvoted
 resolvers can no longer supply enough yes-votes to reach a majority, the proposal is
 cancelled automatically (deadlock guard), `RotationCancelled` is emitted, and the
-function returns `Some(false)`. Otherwise the vote is recorded and the proposal stays
-open, returning `None`. Fails with `NoRotationProposal`, `NotAResolver`, or
-`AlreadyVoted` as appropriate. Pause-exempt.
+function returns `Some(false)`. Otherwise the vote is recorded, `RotationVoted` is emitted (the resolver, their
+vote, and the current yes/no tally), and the proposal stays open, returning
+`None`. Fails with `NoRotationProposal`, `NotAResolver`, or `AlreadyVoted` as
+appropriate. Pause-exempt.
 
 ### `cancel_rotation(resolver)`
 
@@ -212,7 +217,12 @@ Returns the asserted outcome. Fails with `ChallengeWindowOpen` if called too ear
 Casts one resolver's vote on a `Disputed` assertion. Requires `resolver`'s signature
 and that they're in the committee snapshotted when this assertion was disputed
 (`Assertion.resolvers`), not necessarily the live committee. Fails with `Paused` if
-paused, `NotAResolver`, `NotDisputed`, or `AlreadyVoted` as appropriate.
+paused, `NotAResolver`, `NotDisputed`, `AlreadyVoted`, or `SelfVote` (the
+resolver is also the assertion's `asserter` or `disputer`) as appropriate.
+On a size-1 committee, or any snapshot where excluding the asserter and
+disputer leaves fewer voters than a strict majority, this means the dispute
+cannot reach a majority. With the default stall timeout of 0,
+`reclaim_stalled_dispute` is also disabled, so both bonds stay frozen.
 
 Returns `None` if no side has reached a strict majority yet. Once a majority agrees,
 the winning side (asserter if the majority agreed with them, disputer otherwise)
@@ -277,6 +287,7 @@ history without polling `get_assertion_state`:
 | `AdminUpdated` | `accept_admin` | `old_admin`, `new_admin` |
 | `RotationProposed` | `propose_rotation` | `old_resolver`, `new_resolver`, `proposed_by` |
 | `RotationExecuted` | `vote_rotation`, once a majority is reached | `old_resolver`, `new_resolver` |
+| `RotationVoted` | `vote_rotation`, on a vote that neither passes nor deadlocks the proposal | `resolver`, `approve`, `yes_count`, `no_count` |
 | `RotationCancelled` | `vote_rotation` (deadlock auto-cancel), `cancel_rotation`, `update_resolvers` (admin override) | `old_resolver`, `new_resolver` |
 
 `Finalized.finalizer` is always the address that called `finalize` — auth is required unconditionally, so this value is always verified regardless of whether `finalize_reward_bps` is non-zero. `Finalized.reward` is the number of tokens paid to that address (0 when `finalize_reward_bps` is 0).
