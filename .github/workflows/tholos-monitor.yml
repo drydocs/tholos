@@ -1,0 +1,108 @@
+name: tholos-monitor
+
+# Scheduled event-monitoring/alerting run for contracts/tholos and
+# contracts/tholos-v2 (drydocs/tholos#189). Process lifecycle is a scheduled
+# script re-invoked by this cron trigger, not a long-running daemon — the
+# maintainer's explicit call on the issue; see
+# packages/tholos-monitor/README.md's "Process lifecycle" section.
+#
+# Every run is independent: it restores the last saved poll state (RPC
+# pagination cursor + consecutive-failure counters per deployment) from the
+# GitHub Actions cache, runs one poll pass, and saves the updated state back
+# to the cache for the next run to pick up. See
+# packages/tholos-monitor/README.md's "State and restarts" section for what
+# that state is and why it has to be persisted across runs at all.
+#
+# Note: scheduled workflows only run from the repository's default branch —
+# this will not fire on a feature/PR branch until merged. GitHub also does
+# not guarantee the exact schedule time under load, and disables a scheduled
+# workflow automatically after 60 days of repository inactivity (any commit
+# to the default branch resets that clock).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tholos-monitor
+  cancel-in-progress: false
+
+env:
+  # Absolute, so it means the same file to the cache step (which resolves a
+  # relative path against $GITHUB_WORKSPACE regardless of any step's
+  # working-directory) and to the "Run monitor" step (which runs with
+  # working-directory: packages/tholos-monitor, per the job default below —
+  # a relative value here would resolve against THAT directory instead and
+  # silently point somewhere else). Previously these only agreed by
+  # coincidence (the cache path happened to match the app's own
+  # DEFAULT_STATE_FILE_PATH default) rather than by being tied to the same
+  # value; STATE_FILE_PATH is now passed into the "Run monitor" step
+  # explicitly below so that's no longer left to chance.
+  STATE_FILE_PATH: ${{ github.workspace }}/packages/tholos-monitor/monitor-state.json
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tholos-monitor
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore monitor state
+        id: restore-state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.STATE_FILE_PATH }}
+          # The cache action treats a key as immutable once it has been
+          # written, so a fixed key would only ever be written once and then
+          # never updated. Keying on the run id makes every run's save a new
+          # cache entry; restore-keys falls back to the most recent entry
+          # from any earlier run (order: newest first) so state still
+          # carries forward.
+          key: tholos-monitor-state-${{ github.run_id }}
+          restore-keys: |
+            tholos-monitor-state-
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/tholos-monitor/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run monitor
+        env:
+          THOLOS_V1_CONTRACT_ID: ${{ vars.THOLOS_V1_CONTRACT_ID }}
+          THOLOS_V2_CONTRACT_ID: ${{ vars.THOLOS_V2_CONTRACT_ID }}
+          SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          STATE_FILE_PATH: ${{ env.STATE_FILE_PATH }}
+        run: node dist/main.js
+
+      # Runs even if the poll above exited non-zero (a poll failure still
+      # updates the state file — e.g. a bumped consecutive-failure count, or
+      # a dropped cursor after a retention gap — and that update must not be
+      # lost, or the next run re-alerts from stale counters).
+      - name: Save monitor state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.STATE_FILE_PATH }}
+          key: tholos-monitor-state-${{ github.run_id }}
