@@ -54,16 +54,52 @@ export interface ClassifyLogAndAlertOptions {
   alertMinSeverity: Severity;
   alertWebhookUrl: string;
   requestTimeoutMs: number;
+  /** Caps how many `sendAlert` calls run at once (see `runWithConcurrencyLimit`
+   * below for why this needs a real cap, not just "fire them all"). */
+  maxConcurrentAlerts: number;
+}
+
+/**
+ * Runs `fn` over `items`, at most `limit` calls in flight at once, and
+ * resolves once every item has been processed. A small fixed-size worker
+ * pool: each of up to `limit` workers pulls the next not-yet-started item
+ * off the shared list and awaits `fn` on it before pulling another, so
+ * concurrency never exceeds `limit` regardless of how many items there are
+ * or how long any one call takes (unlike chunking `items` into groups of
+ * `limit` and awaiting each group in turn, which would let a single slow
+ * item in a group hold up starting the next group's items even though
+ * there's spare capacity).
+ */
+async function runWithConcurrencyLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++] as T;
+      await fn(item);
+    }
+  }
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }
 
 /**
  * Classifies and logs every decoded event, then alerts on whichever of them
- * meet `alertMinSeverity` — concurrently, not one at a time. sendAlert never
- * throws (see alerts.ts), so firing every alert for this batch and awaiting
- * them together is safe: a slow or failing webhook no longer serializes the
- * rest. On a first run against the full INITIAL_LEDGER_LOOKBACK, or right
- * after downtime, dozens of events could otherwise take many minutes to
- * alert on one at a time, risking overlap with the next 5-minute cron tick.
+ * meet `alertMinSeverity` — concurrently, not one at a time, but bounded at
+ * `maxConcurrentAlerts` in flight together rather than all of them at once.
+ * sendAlert never throws (see alerts.ts), so running this many at a time
+ * concurrently and awaiting them together is safe with respect to unhandled
+ * rejections — but that's a different concern from how many simultaneous
+ * requests land on `alertWebhookUrl` at once: on a first run against the
+ * full INITIAL_LEDGER_LOOKBACK, or a run after downtime, dozens to hundreds
+ * of events can meet threshold in one tick, and firing all of their alerts
+ * at once risks overwhelming or getting rate-limited by whatever's actually
+ * receiving the webhook. Bounding concurrency avoids that burst while still
+ * being far faster than dispatching one at a time (see poller.test.ts for
+ * why both — bounded, but still concurrent — are asserted).
  *
  * Pulled out of `pollOneDeployment` (which still calls this) so the
  * concurrency behavior itself is independently testable against plain
@@ -74,20 +110,20 @@ export async function classifyLogAndAlert(
   events: DecodedEvent[],
   options: ClassifyLogAndAlertOptions,
 ): Promise<void> {
-  const alertsInFlight: Promise<void>[] = [];
+  const toAlert: ClassifiedEvent[] = [];
   for (const decoded of events) {
     const classified = classifyEvent(decoded);
     logEvent(classified);
     if (meetsThreshold(classified.severity, options.alertMinSeverity)) {
-      alertsInFlight.push(
-        sendAlert(buildEventAlertPayload(classified), {
-          webhookUrl: options.alertWebhookUrl,
-          timeoutMs: options.requestTimeoutMs,
-        }),
-      );
+      toAlert.push(classified);
     }
   }
-  await Promise.all(alertsInFlight);
+  await runWithConcurrencyLimit(toAlert, options.maxConcurrentAlerts, (classified) =>
+    sendAlert(buildEventAlertPayload(classified), {
+      webhookUrl: options.alertWebhookUrl,
+      timeoutMs: options.requestTimeoutMs,
+    }),
+  );
 }
 
 /** Builds a `DeploymentState`, omitting `cursor` entirely rather than
@@ -165,6 +201,7 @@ async function pollOneDeployment(
       alertMinSeverity: config.alertMinSeverity,
       alertWebhookUrl: config.alertWebhookUrl,
       requestTimeoutMs: config.requestTimeoutMs,
+      maxConcurrentAlerts: config.alertMaxConcurrency,
     });
 
     if (result.hitPageCap) {

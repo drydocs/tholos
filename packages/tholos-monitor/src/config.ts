@@ -11,6 +11,7 @@ const DEFAULT_ALERT_MIN_SEVERITY: Severity = "warning";
 const DEFAULT_CONSECUTIVE_FAILURES_BEFORE_ALERT = 3;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_INITIAL_LEDGER_LOOKBACK = 17_280; // ~1 day at ~5s/ledger
+const DEFAULT_ALERT_MAX_CONCURRENCY = 5;
 
 export interface Config {
   rpcUrl: string;
@@ -34,6 +35,14 @@ export interface Config {
    * run against a fresh state file, or the run right after a retention-gap
    * reset. */
   initialLedgerLookback: number;
+  /** Caps how many alert webhook POSTs are in flight at once (see
+   * poller.ts's `classifyLogAndAlert`). A poll tick that decodes many
+   * threshold-meeting events at once — a first run against the full
+   * `initialLedgerLookback`, or a run after downtime — dispatches them
+   * concurrently rather than one at a time, but still bounded: an
+   * unbounded burst risks overwhelming or getting rate-limited by
+   * whatever's on the other end of `alertWebhookUrl`. */
+  alertMaxConcurrency: number;
 }
 
 export class ConfigError extends Error {}
@@ -126,6 +135,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "INITIAL_LEDGER_LOOKBACK",
       optionalEnv(env, "INITIAL_LEDGER_LOOKBACK"),
       DEFAULT_INITIAL_LEDGER_LOOKBACK,
+    ),
+    alertMaxConcurrency: parsePositiveInt(
+      "ALERT_MAX_CONCURRENCY",
+      optionalEnv(env, "ALERT_MAX_CONCURRENCY"),
+      DEFAULT_ALERT_MAX_CONCURRENCY,
     ),
   };
 }

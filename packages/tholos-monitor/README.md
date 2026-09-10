@@ -101,6 +101,7 @@ since this is a plain Node service rather than a Vite app.
 | `CONSECUTIVE_FAILURES_BEFORE_ALERT` | No | `3` | Consecutive poll failures (for one deployment) before this service alerts on its own health, not just logs. |
 | `REQUEST_TIMEOUT_MS` | No | `10000` | Timeout for the webhook POST. |
 | `INITIAL_LEDGER_LOOKBACK` | No | `17280` (~1 day at ~5s/ledger) | Only used the very first time this runs against a fresh state file (no saved cursor yet): how far back from the chain tip to start. |
+| `ALERT_MAX_CONCURRENCY` | No | `5` | Caps how many alert webhook `POST`s run at once. A poll tick with many threshold-meeting events (e.g. a first run against the full lookback, or a run after downtime) dispatches them concurrently rather than one at a time, but bounded — an unbounded burst can overwhelm or get rate-limited by whatever's receiving the webhook. |
 
 Invalid or missing required configuration fails fast at startup with a
 message naming the problem (`src/config.ts`), rather than surfacing later as

@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConfigError, loadConfig } from "./config.js";
 
@@ -42,6 +42,7 @@ test("loadConfig: applies documented defaults", () => {
   assert.equal(config.rpcUrl, "https://soroban-testnet.stellar.org");
   assert.equal(config.networkPassphrase, "Test SDF Network ; September 2015");
   assert.equal(config.alertMinSeverity, "warning");
+  assert.equal(config.alertMaxConcurrency, 5);
   assert.deepEqual(config.contracts, { tholos: BASE_ENV.THOLOS_V1_CONTRACT_ID });
 });
 
@@ -59,6 +60,13 @@ test("loadConfig: both contract ids can be set together", () => {
 test("loadConfig: rejects a non-integer CONSECUTIVE_FAILURES_BEFORE_ALERT", () => {
   assert.throws(
     () => loadConfig({ ...BASE_ENV, CONSECUTIVE_FAILURES_BEFORE_ALERT: "not-a-number" }),
+    ConfigError,
+  );
+});
+
+test("loadConfig: rejects a non-integer ALERT_MAX_CONCURRENCY", () => {
+  assert.throws(
+    () => loadConfig({ ...BASE_ENV, ALERT_MAX_CONCURRENCY: "not-a-number" }),
     ConfigError,
   );
 });

@@ -124,3 +124,35 @@ test("fetchNewEvents: the next call resumes from that same cursor, and surfaces 
     /socket hang up/,
   );
 });
+
+test("fetchNewEvents: sets hitPageCap when every page up to maxPages comes back full (regression guard for the cap-hit signal itself)", async () => {
+  // Every prior test either stops on a non-full page or errors out well
+  // before maxPages, so none of them actually drive the loop through a full
+  // maxPages of full pages — the one case that exercises the
+  // `page === maxPages - 1` branch in rpc.ts. Three full (== limit) pages
+  // with no error, maxPages: 3: fetchNewEvents must report hitPageCap: true
+  // (there may be more events already on chain this call didn't reach),
+  // not just decode everything and call it done.
+  const maxPages = 3;
+  const limit = 2;
+  const server = makeFakeServer([
+    {
+      events: [makeRawEvent("Asserted", { round: "0a" }), makeRawEvent("Asserted", { round: "0b" })],
+      cursor: "cursor-page-0",
+    },
+    {
+      events: [makeRawEvent("Asserted", { round: "1a" }), makeRawEvent("Asserted", { round: "1b" })],
+      cursor: "cursor-page-1",
+    },
+    {
+      events: [makeRawEvent("Asserted", { round: "2a" }), makeRawEvent("Asserted", { round: "2b" })],
+      cursor: "cursor-page-2",
+    },
+  ]);
+
+  const result = await fetchNewEvents(server, { ...BASE_OPTS, startLedger: 1, limit, maxPages });
+
+  assert.equal(result.events.length, maxPages * limit);
+  assert.equal(result.nextCursor, "cursor-page-2");
+  assert.equal(result.hitPageCap, true);
+});

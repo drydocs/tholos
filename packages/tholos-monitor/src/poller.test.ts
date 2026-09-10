@@ -72,6 +72,8 @@ test("classifyLogAndAlert: dispatches alerts concurrently, not one at a time (re
     // alert — with alertMinSeverity: "info" every one of them would too,
     // but using the real threshold here also doubles as a sanity check that
     // classification still runs correctly through the extracted function.
+    // maxConcurrentAlerts >= events.length so the cap itself doesn't limit
+    // this run — that's covered separately below.
     const events = [makeEvent(), makeEvent(), makeEvent(), makeEvent()];
 
     const start = Date.now();
@@ -79,6 +81,7 @@ test("classifyLogAndAlert: dispatches alerts concurrently, not one at a time (re
       alertMinSeverity: "warning",
       alertWebhookUrl: webhookUrl,
       requestTimeoutMs: 5000,
+      maxConcurrentAlerts: events.length,
     });
     const elapsedMs = Date.now() - start;
 
@@ -102,6 +105,50 @@ test("classifyLogAndAlert: dispatches alerts concurrently, not one at a time (re
   }
 });
 
+test("classifyLogAndAlert: never exceeds maxConcurrentAlerts in flight at once (regression guard for the unbounded-burst finding)", async () => {
+  const DELAY_MS = 150;
+  const MAX_CONCURRENT_ALERTS = 2;
+  const webhook = startDelayedWebhook(DELAY_MS);
+  const webhookUrl = await webhook.listen();
+
+  try {
+    // More events than the cap, so this only passes if dispatch is both
+    // concurrent (not sequential — same bound as the test above) AND capped
+    // (not "all 6 at once" — what the maintainer flagged: an unbounded
+    // burst can overwhelm or get rate-limited by whatever's receiving the
+    // webhook).
+    const events = Array.from({ length: 6 }, () => makeEvent());
+
+    const start = Date.now();
+    await classifyLogAndAlert(events, {
+      alertMinSeverity: "warning",
+      alertWebhookUrl: webhookUrl,
+      requestTimeoutMs: 5000,
+      maxConcurrentAlerts: MAX_CONCURRENT_ALERTS,
+    });
+    const elapsedMs = Date.now() - start;
+
+    assert.equal(webhook.requestCount, 6);
+    assert.ok(
+      webhook.maxInFlight <= MAX_CONCURRENT_ALERTS,
+      `expected at most ${MAX_CONCURRENT_ALERTS} alerts in flight at once, observed max ${webhook.maxInFlight}`,
+    );
+    assert.ok(
+      webhook.maxInFlight > 1,
+      `expected more than one alert in flight at once (bounded concurrency, not sequential), observed max ${webhook.maxInFlight}`,
+    );
+    // 6 events at a cap of 2 takes 3 "rounds" of DELAY_MS (~450ms) — well
+    // above one round (rules out "cap ignored, ran all 6 at once") and well
+    // below 6 rounds (~900ms, rules out "fell back to fully sequential").
+    assert.ok(
+      elapsedMs > DELAY_MS * 2 && elapsedMs < DELAY_MS * 5,
+      `expected ~${DELAY_MS * 3}ms (3 rounds at a cap of ${MAX_CONCURRENT_ALERTS}), took ${elapsedMs}ms`,
+    );
+  } finally {
+    await webhook.close();
+  }
+});
+
 test("classifyLogAndAlert: only alerts on events meeting alertMinSeverity (still true after the concurrency extraction)", async () => {
   const webhook = startDelayedWebhook(0);
   const webhookUrl = await webhook.listen();
@@ -117,6 +164,7 @@ test("classifyLogAndAlert: only alerts on events meeting alertMinSeverity (still
       alertMinSeverity: "warning",
       alertWebhookUrl: webhookUrl,
       requestTimeoutMs: 5000,
+      maxConcurrentAlerts: 5,
     });
 
     // The "info" event is below threshold and must not alert; the other two
