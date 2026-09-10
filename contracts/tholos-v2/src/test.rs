@@ -1252,15 +1252,15 @@ fn test_register_top_up_aggregates() {
 
     let c = commitment(&f.env, 1);
     f.client.register(&voter, &id, &DEFAULT_BOND, &c);
-    f.client.register(&voter, &id, &50, &c);
+    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
 
     let position = f.client.get_position(&id, &voter);
-    assert_eq!(position.amount, DEFAULT_BOND + 50);
+    assert_eq!(position.amount, DEFAULT_BOND * 2);
 
     let resolution = f.client.get_resolution(&id);
     assert_eq!(
         resolution.eligible_total,
-        DEFAULT_BOND * 2 + DEFAULT_BOND + 50
+        DEFAULT_BOND * 2 + DEFAULT_BOND * 2
     );
 }
 
@@ -1278,10 +1278,62 @@ fn test_register_top_up_with_different_commitment_fails() {
     f.client
         .register(&voter, &id, &DEFAULT_BOND, &commitment(&f.env, 1));
 
+    // A below-minimum amount alongside a mismatched commitment: the
+    // commitment is checked first, so this must still report
+    // CommitmentMismatch rather than BelowMinimumResolutionBond.
     let result = f
         .client
-        .try_register(&voter, &id, &50, &commitment(&f.env, 2));
+        .try_register(&voter, &id, &1, &commitment(&f.env, 2));
     assert_eq!(result, Err(Ok(Error::CommitmentMismatch)));
+}
+
+#[test]
+fn test_register_after_deadline_reports_registration_closed_even_if_amount_is_too_small() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+    f.advance_past_registration_deadline(id);
+
+    // Deadline is checked before the minimum-deposit floor: a caller past
+    // the deadline should learn the window is shut, not that their amount
+    // was too small.
+    let result = f
+        .client
+        .try_register(&voter, &id, &1, &commitment(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::RegistrationClosed)));
+}
+
+#[test]
+fn test_register_can_top_off_remaining_headroom_below_minimum_bond() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    let max_position = f.client.get_assertion(&id).policy.max_position;
+    f.mint(&voter, max_position);
+    let c = commitment(&f.env, 1);
+    let remaining = 50;
+    assert!(remaining < DEFAULT_BOND, "test assumes 50 is sub-minimum");
+
+    // A single large first deposit, well clear of the minimum, leaves
+    // exactly `remaining` (below min_resolution_bond) of headroom under
+    // max_position.
+    f.client
+        .register(&voter, &id, &(max_position - remaining), &c);
+
+    // The last bit of headroom is below min_resolution_bond, but topping it
+    // off exactly should succeed rather than being stranded.
+    f.client.register(&voter, &id, &remaining, &c);
+    let position = f.client.get_position(&id, &voter);
+    assert_eq!(position.amount, max_position);
 }
 
 #[test]
@@ -1315,8 +1367,8 @@ fn test_register_position_amount_overflow_fails() {
     let voter = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_id).mint(&asserter, &DEFAULT_MINT);
     token::StellarAssetClient::new(&env, &token_id).mint(&disputer, &DEFAULT_MINT);
-    // Only need the small top-up amount on hand.
-    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &10);
+    // Only need the top-up amount on hand.
+    token::StellarAssetClient::new(&env, &token_id).mint(&voter, &DEFAULT_BOND);
 
     let id = client.assert_outcome(&asserter, &true);
     client.dispute(&disputer, &id);
@@ -1335,7 +1387,7 @@ fn test_register_position_amount_overflow_fails() {
         );
     });
 
-    let result = client.try_register(&voter, &id, &2, &voter_commitment);
+    let result = client.try_register(&voter, &id, &DEFAULT_BOND, &voter_commitment);
     assert_eq!(result, Err(Ok(Error::SettlementArithmeticOverflow)));
 }
 
@@ -1513,6 +1565,37 @@ fn test_register_extends_deadline_on_late_qualifying_deposit() {
 
     let after = f.client.get_resolution(&id);
     assert!(after.registration_deadline > before.registration_deadline);
+}
+
+#[test]
+fn test_register_dust_top_up_cannot_extend_deadline() {
+    let f = Fixture::new();
+    let asserter = f.funded_address();
+    let disputer = f.funded_address();
+    let voter = f.funded_address();
+
+    let id = f.asserted(&asserter);
+    f.client.dispute(&disputer, &id);
+
+    // A real, qualifying position first.
+    f.client
+        .register(&voter, &id, &DEFAULT_BOND, &commitment(&f.env, 1));
+
+    let before = f.client.get_resolution(&id);
+
+    // Land within the anti-snipe extension window, then attempt a
+    // dust-sized top-up (#155): before the fix this would still qualify
+    // for the extension despite being far below min_resolution_bond.
+    f.env
+        .ledger()
+        .with_mut(|l| l.timestamp = before.registration_deadline - DEFAULT_ANTI_SNIPE_EXT_SECS + 1);
+    let result = f
+        .client
+        .try_register(&voter, &id, &1, &commitment(&f.env, 1));
+    assert_eq!(result, Err(Ok(Error::BelowMinimumResolutionBond)));
+
+    let after = f.client.get_resolution(&id);
+    assert_eq!(after.registration_deadline, before.registration_deadline);
 }
 
 #[test]
@@ -1997,11 +2080,10 @@ fn test_strict_majority_boundary_requires_more_than_half() {
     f.client.dispute(&disputer, &id);
     let policy_hash = f.client.get_assertion(&id).policy_hash;
 
-    // A top-up (not a first-time deposit) isn't held to min_resolution_bond,
-    // so this voter can land on an odd eligible_total: 100 (first deposit)
-    // + 1 (top-up) = 101, for eligible_total = 100 + 100 + 101 = 301.
-    // agree_weight ends up 100 (asserter) + 101 (voter) = 201, which is
-    // checked against `301 - 201 = 100`, exercising the subtraction form
+    // A single deposit one unit over min_resolution_bond gives this voter
+    // an odd eligible_total: 100 (asserter) + 100 (disputer) + 101 (voter)
+    // = 301. agree_weight ends up 100 (asserter) + 101 (voter) = 201, which
+    // is checked against `301 - 201 = 100`, exercising the subtraction form
     // against an odd total rather than an even one like every other test
     // here uses.
     let s = salt(&f.env, 1);
@@ -2014,8 +2096,7 @@ fn test_strict_majority_boundary_requires_more_than_half() {
         true,
         &s,
     );
-    f.client.register(&voter, &id, &DEFAULT_BOND, &c);
-    f.client.register(&voter, &id, &1, &c);
+    f.client.register(&voter, &id, &(DEFAULT_BOND + 1), &c);
 
     f.advance_past_registration_deadline(id);
     f.client.reveal(&voter, &id, &true, &s);
