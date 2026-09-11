@@ -368,6 +368,15 @@ impl Tholos {
     /// fixed at deploy time (this call takes no `admin` parameter of its
     /// own; see `__constructor`'s doc comment for why). Fails with
     /// `AlreadyInitialized` if called twice.
+    ///
+    /// `set_paused`, `set_bond_amount`, and `update_resolvers` are all
+    /// gated only on the admin `__constructor` already fixed, so they're
+    /// technically callable before this runs. Any such pre-`initialize`
+    /// call is pointless, not harmful: this unconditionally overwrites
+    /// `Paused`, `BondAmount`, and `Resolvers` with its own parameters, so
+    /// nothing set before it survives, and nothing meaningful could have
+    /// happened on the earlier value anyway, since every real entrypoint
+    /// needs `Token` (only set here) to do anything.
     pub fn initialize(
         env: Env,
         token: Address,
@@ -496,6 +505,12 @@ impl Tholos {
     /// `RotationCancelled` when one was present), so a proposal can never
     /// execute against a committee it wasn't built for. Day-to-day committee
     /// changes go through `propose_rotation` / `vote_rotation` instead.
+    ///
+    /// `admin` is fixed by `__constructor`, not `initialize`, so this
+    /// succeeds as soon as the contract has been deployed, even before
+    /// `initialize` is ever called; a committee set this early is discarded
+    /// the moment `initialize` runs, since it unconditionally sets
+    /// `DataKey::Resolvers` to its own parameter.
     pub fn update_resolvers(env: Env, new_resolvers: Vec<Address>) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -746,7 +761,10 @@ impl Tholos {
     /// be disputed during its challenge window if that window overlapped a
     /// pause, so `finalize` is blocked too rather than letting it finalize
     /// uncontested; it becomes callable again once unpaused. Only callable by
-    /// the admin fixed at `__constructor`.
+    /// the admin fixed at `__constructor`, so this succeeds as soon as the
+    /// contract has been deployed, even before `initialize` is ever called;
+    /// a pause set this early is discarded the moment `initialize` runs,
+    /// since it unconditionally sets `DataKey::Paused` to `false`.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -775,7 +793,11 @@ impl Tholos {
     /// already-open assertion's payout is therefore unaffected by a later
     /// `set_bond_amount` call.
     ///
-    /// Fails with `NotInitialized` if called before `initialize`, or
+    /// `admin` is fixed by `__constructor`, not `initialize`, so this
+    /// succeeds as soon as the contract has been deployed, even before
+    /// `initialize` is ever called; a value set this early is discarded the
+    /// moment `initialize` runs, since it unconditionally sets
+    /// `DataKey::BondAmount` to its own parameter. Fails with
     /// `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
     /// than `MAX_BOND_AMOUNT`.
     pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
