@@ -438,15 +438,16 @@ Set `m` large enough to accommodate the expected number of participants at full
 `max_position` each, plus the two fixed parties. The contract arithmetic is
 safe as long as `max_total_weight <= MAX_SETTLEMENT_TOTAL_WEIGHT`; the practical
 guidance is to give yourself at least 5-10x headroom over the expected populated
-`W` so legitimate counter-stake is never blocked.
+`W` so legitimate counter-stake is never blocked, subject to the contract-enforced
+anti-Sybil ratio bound: `max_total_weight <= 10 * max_position`.
 
 ### Profile table
 
 | Profile | `base_bond` | `T_reg` | `T_ext` | `T_hard` | `T_rev` | `max_position` | `max_total_weight` | Use when |
 | ------- | ----------- | ------- | ------- | -------- | ------- | -------------- | ------------------ | -------- |
 | Private beta | 1x-2x spam floor | 1-4 h | 5 min | 2x `T_reg` | 4-12 h | 10x `base_bond` | 50x `base_bond` | Known users, coordinated reveals, low bot pressure. |
-| Public testnet / low value | 2x-5x larger spam floor | 4-12 h | 10 min | 3x `T_reg` | 12-24 h | 5x `base_bond` | 100x `base_bond` | Open participation, moderate value, expect uncoordinated voters. |
-| Higher-value mainnet candidate | 5x+ spam floor, within 5%-20% of `V_min` | 12-24 h | 15-30 min | 2x-4x `T_reg` | 24-48 h | 3x `base_bond` | 200x `base_bond` | Meaningful value, monitored reveals, audited deployment. |
+| Public testnet / low value | 2x-5x larger spam floor | 4-12 h | 10 min | 3x `T_reg` | 12-24 h | 5x `base_bond` | 50x `base_bond` | Open participation, moderate value, expect uncoordinated voters. |
+| Higher-value mainnet candidate | 5x+ spam floor, within 5%-20% of `V_min` | 12-24 h | 15-30 min | 2x-4x `T_reg` | 24-48 h | 3x `base_bond` | 30x `base_bond` | Meaningful value, monitored reveals, audited deployment. |
 
 ### Narrative guidance per profile
 
