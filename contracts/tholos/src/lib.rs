@@ -369,14 +369,8 @@ impl Tholos {
     /// own; see `__constructor`'s doc comment for why). Fails with
     /// `AlreadyInitialized` if called twice.
     ///
-    /// `set_paused`, `set_bond_amount`, and `update_resolvers` are all
-    /// gated only on the admin `__constructor` already fixed, so they're
-    /// technically callable before this runs. Any such pre-`initialize`
-    /// call is pointless, not harmful: this unconditionally overwrites
-    /// `Paused`, `BondAmount`, and `Resolvers` with its own parameters, so
-    /// nothing set before it survives, and nothing meaningful could have
-    /// happened on the earlier value anyway, since every real entrypoint
-    /// needs `Token` (only set here) to do anything.
+    /// `set_paused`/`set_bond_amount`/`update_resolvers` are callable
+    /// before this too, harmlessly: this overwrites their state anyway.
     pub fn initialize(
         env: Env,
         token: Address,
@@ -793,13 +787,12 @@ impl Tholos {
     /// already-open assertion's payout is therefore unaffected by a later
     /// `set_bond_amount` call.
     ///
-    /// `admin` is fixed by `__constructor`, not `initialize`, so this
-    /// succeeds as soon as the contract has been deployed, even before
-    /// `initialize` is ever called; a value set this early is discarded the
-    /// moment `initialize` runs, since it unconditionally sets
-    /// `DataKey::BondAmount` to its own parameter. Fails with
-    /// `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
-    /// than `MAX_BOND_AMOUNT`.
+    /// Callable before `initialize` too (`admin` is fixed by
+    /// `__constructor`), but a value set that early is discarded once
+    /// `initialize` runs, since it unconditionally overwrites
+    /// `DataKey::BondAmount`. Fails with `InvalidBondAmount` if
+    /// `new_bond_amount` is zero, negative, or greater than
+    /// `MAX_BOND_AMOUNT`.
     pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
         let admin: Address = env
             .storage()
