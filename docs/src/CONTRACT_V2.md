@@ -227,8 +227,10 @@ role to a new address, via `set_admin` (see below).
 
 One-time setup, pinning the deployment-wide defaults every future
 assertion's `PolicySnapshotV2` is built from. Requires the signature of the
-admin `__constructor` fixed at deploy time; unlike v1, this call takes no
-`admin` parameter of its own. `base_bond` must be positive and no greater
+admin `__constructor` fixed at deploy time; this call takes no `admin`
+parameter of its own (v1's `initialize` uses the same `__constructor`
+pattern; see [CONTRACT.md](CONTRACT.md#initializetoken-bond_amount-challenge_window_secs-resolvers-finalize_reward_bps)).
+`base_bond` must be positive and no greater
 than `MAX_BOND_AMOUNT` (so `finalize`'s reward-multiply can't overflow).
 `challenge_window_secs` and `reveal_duration_secs`/`registration_duration_secs`
 must each be non-zero and at most 7 days. `finalize_reward_bps` must be at

@@ -45,7 +45,7 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 | Variant | Meaning |
 | --- | --- |
 | `AlreadyInitialized` | `initialize` called on a contract that's already set up |
-| `NotInitialized` | Called before `initialize` (e.g. `update_resolvers`) |
+| `NotInitialized` | Called before `initialize` (e.g. `assert_outcome`). Admin-only calls like `update_resolvers` don't return this: `admin` is pinned by `__constructor`, not `initialize`, so they succeed as soon as the contract is deployed |
 | `InvalidResolverCount` | Resolver list is empty or has an even length |
 | `AssertionNotFound` | No assertion exists with the given id |
 | `NotPending` | Action requires `Status::Pending` but the assertion isn't |
@@ -70,9 +70,26 @@ State of an assertion: `Pending`, `Disputed`, or `Resolved`.
 
 ## Functions
 
-### `initialize(admin, token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
+### `__constructor(admin)`
 
-One-time setup. `resolvers` must have an odd, non-zero length, and at most
+The contract's constructor: Soroban invokes it atomically as part of the
+same operation that creates the contract instance, not as a separate,
+later call. Requires `admin`'s signature and pins it as the admin for
+this instance. This closes a front-running gap the
+deploy-then-initialize(admin) shape used to have: since deploy and any
+follow-up call are otherwise separate transactions, nothing used to stop a
+third party from submitting their own `initialize` with their own `admin`
+first and claiming the role on an instance someone else paid to deploy.
+Because the host runs the constructor only during contract creation, no
+later call, including `initialize` below, can invoke it again or hijack
+the role at deploy time. From then on, only the current admin can hand the
+role to a new address, via `propose_admin`/`accept_admin` (see below).
+
+### `initialize(token, bond_amount, challenge_window_secs, resolvers, finalize_reward_bps)`
+
+One-time setup. Requires the signature of the admin `__constructor` fixed
+at deploy time; this call takes no `admin` parameter of its own. `resolvers`
+must have an odd, non-zero length, and at most
 `MAX_RESOLVERS` (21), with no duplicate addresses, so a majority vote can never
 tie and no single dispute
 snapshot grows unbounded. A size-1 committee is legal. If that sole resolver
@@ -85,7 +102,7 @@ must be non-zero and at most 7 days (see "Persistent storage TTL" below for why)
 `finalize_reward_bps` sets the fraction of the bond (in basis points, 0–1000) paid
 to whoever calls `finalize` as an incentive for prompt finalization; 0 disables the
 reward entirely and the full bond is returned to the asserter.
-Requires `admin`'s signature. Fails with `AlreadyInitialized` if called twice.
+Fails with `AlreadyInitialized` if called twice.
 
 ### `propose_admin(new_admin)`
 
@@ -298,11 +315,13 @@ Deploy, initialize with a 3-member resolver committee and a 1 % finalize reward,
 and post an assertion (the same flow `scripts/testnet-smoke.sh` automates):
 
 ```sh
+# Deploy, pinning admin as a constructor argument
 CONTRACT=$(stellar contract deploy --wasm target/wasm32v1-none/release/tholos.wasm \
-  --source deployer --network testnet)
+  --source deployer --network testnet -- --admin "$DEPLOYER_ADDRESS")
 
+# Initialize the rest of the deployment-wide policy; requires that same
+# admin's signature
 stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- initialize \
-  --admin "$DEPLOYER_ADDRESS" \
   --token "$TOKEN_CONTRACT_ID" \
   --bond_amount 1000000 \
   --challenge_window_secs 3600 \

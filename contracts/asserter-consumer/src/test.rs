@@ -8,13 +8,20 @@ use soroban_sdk::{token, IntoVal};
 fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     let env = Env::default();
 
-    // Deliberately not using mock_all_auths(): this test exists specifically to
-    // prove authorize_as_current_contract grants the real nested auth Tholos's
-    // assert_outcome needs for its token transfer, without blanket auth mocking
-    // papering over a bug in that mechanism. Only the admin's initialize call
-    // (a genuine top-level signature this test can't otherwise provide) is
-    // mocked, and only for that one call.
-    let tholos_id = env.register(tholos::WASM, ());
+    // Deliberately not using blanket auth mocking past construction: this
+    // test exists specifically to prove authorize_as_current_contract
+    // grants the real nested auth Tholos's assert_outcome needs for its
+    // token transfer, without blanket auth mocking papering over a bug in
+    // that mechanism. A brief mock_all_auths_allowing_non_root_auth()
+    // covers only __constructor's admin.require_auth() (admin is now
+    // pinned atomically at deploy, #158, so there's no way to narrow-mock
+    // it before a contract id exists to address a MockAuthInvoke at; the
+    // non-root variant is needed because registering from imported WASM
+    // records the constructor's auth as non-root). Every call after that,
+    // including initialize, mocks only the one specific signature it needs.
+    let admin = Address::generate(&env);
+    env.mock_all_auths_allowing_non_root_auth();
+    let tholos_id = env.register(tholos::WASM, (admin.clone(),));
     let tholos_client = tholos::Client::new(&env, &tholos_id);
 
     let token_admin = Address::generate(&env);
@@ -22,7 +29,6 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     let token_id = token_contract.address();
     let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
 
-    let admin = Address::generate(&env);
     let resolvers = Vec::from_array(
         &env,
         [
@@ -39,7 +45,6 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
             contract: &tholos_id,
             fn_name: "initialize",
             args: (
-                admin.clone(),
                 token_id.clone(),
                 bond_amount,
                 3600u64,
@@ -50,7 +55,7 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
             sub_invokes: &[],
         },
     }]);
-    tholos_client.initialize(&admin, &token_id, &bond_amount, &3600, &resolvers, &0u32);
+    tholos_client.initialize(&token_id, &bond_amount, &3600, &resolvers, &0u32);
 
     let consumer_id = env.register(AsserterConsumer, ());
     let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
@@ -88,7 +93,6 @@ struct Fixture {
     tholos_client: tholos::Client<'static>,
     token_id: Address,
     consumer_client: AsserterConsumerClient<'static>,
-    admin: Address,
     resolvers: Vec<Address>,
     bond_amount: i128,
 }
@@ -97,7 +101,15 @@ impl Fixture {
     fn new() -> Self {
         let env = Env::default();
 
-        let tholos_id = env.register(tholos::WASM, ());
+        // Covers __constructor's admin.require_auth(): admin is pinned
+        // atomically at deploy now (#158), so it applies to registration
+        // itself, before initialize_tholos()'s own mock_all_auths() runs.
+        // Registering from imported WASM (rather than the native Rust
+        // type) records the constructor's require_auth as non-root, so
+        // the non-root variant is required here specifically.
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let tholos_id = env.register(tholos::WASM, (admin.clone(),));
         let tholos_client = tholos::Client::new(&env, &tholos_id);
 
         let token_admin = Address::generate(&env);
@@ -105,7 +117,6 @@ impl Fixture {
             .register_stellar_asset_contract_v2(token_admin)
             .address();
 
-        let admin = Address::generate(&env);
         let resolvers = Vec::from_array(
             &env,
             [
@@ -124,7 +135,6 @@ impl Fixture {
             tholos_client,
             token_id,
             consumer_client,
-            admin,
             resolvers,
             bond_amount: 100,
         }
@@ -133,7 +143,6 @@ impl Fixture {
     fn initialize_tholos(&self) {
         self.env.mock_all_auths();
         self.tholos_client.initialize(
-            &self.admin,
             &self.token_id,
             &self.bond_amount,
             &3600,
