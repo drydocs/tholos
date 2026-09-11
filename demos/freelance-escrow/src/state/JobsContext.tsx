@@ -67,7 +67,7 @@ function loadJobsFromStorage(): Job[] {
     }
 
     const parsed: unknown = JSON.parse(stored);
-    return Array.isArray(parsed) && parsed.every(isJob) ? parsed : seedJobs;
+    return Array.isArray(parsed) ? parsed.filter(isJob) : seedJobs;
   } catch {
     return seedJobs;
   }
@@ -211,12 +211,13 @@ async function reconcileFromChain(
 export function JobsProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<Job[]>(loadJobsFromStorage);
   const reconcileTrackerRef = useRef<ReconcileTracker>({ counter: 0, applied: new Map() });
-  const needsInitialReconciliation = jobs.some((job) =>
-    job.milestones.some((milestone) => milestone.assertionId !== undefined),
-  );
   const [initialReconciliationComplete, setInitialReconciliationComplete] = useState(
-    () => !needsInitialReconciliation,
+    () =>
+      !jobs.some((job) =>
+        job.milestones.some((milestone) => milestone.assertionId !== undefined),
+      ),
   );
+  const initialJobsRef = useRef(jobs);
   const initialReconciliationRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
@@ -228,7 +229,6 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let active = true;
     if (initialReconciliationRef.current === null) {
       initialReconciliationRef.current = (async () => {
         try {
@@ -238,7 +238,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
           }
 
           await Promise.all(
-            jobs.flatMap((job) =>
+            initialJobsRef.current.flatMap((job) =>
               job.milestones.flatMap((milestone) =>
                 milestone.assertionId === undefined
                   ? []
@@ -256,21 +256,13 @@ export function JobsProvider({ children }: { children: ReactNode }) {
             ),
           );
         } catch (err) {
-          console.warn("Could not reconcile restored milestones before rendering; refresh will retry.", err);
+          console.warn("Could not reconcile restored milestones; refresh will retry.", err);
         }
-      })();
-    }
-
-    void initialReconciliationRef.current.finally(() => {
-      if (active) {
+      })().finally(() => {
         setInitialReconciliationComplete(true);
-      }
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [initialReconciliationComplete, jobs]);
+      });
+    }
+  }, [initialReconciliationComplete]);
 
   const createJob = useCallback((input: NewJobInput) => {
     const jobId = `job-${crypto.randomUUID()}`;
@@ -401,10 +393,6 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     }),
     [jobs, createJob, submitMilestone, disputeMilestone, voteOnMilestone, finalizeMilestone, refreshMilestone],
   );
-
-  if (!initialReconciliationComplete) {
-    return null;
-  }
 
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>;
 }
