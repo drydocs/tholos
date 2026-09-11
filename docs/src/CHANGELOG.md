@@ -245,6 +245,16 @@ All notable changes to this project are documented here. Format follows
   individual votes accumulate on an open rotation proposal until it
   resolved one way or the other. Closes #130.
 
+### Fixed
+
+- `contracts/tholos-v2`: `register` now requires every deposit, first-time
+  or a top-up, to meet `policy.min_resolution_bond`. Previously only a
+  first-time deposit was checked, so an address with an existing position
+  could re-trigger the anti-snipe registration extension repeatedly with
+  dust-sized top-ups, unilaterally prolonging registration up to the hard
+  deadline regardless of whether a real last-moment deposit was happening.
+  Closes #155.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

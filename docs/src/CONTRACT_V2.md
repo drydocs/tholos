@@ -138,7 +138,7 @@ only affect assertions created after the change.
 | `base_bond` | `i128` | Bond every fixed party (asserter, disputer) posts. |
 | `challenge_window_secs` | `u64` | How long a `Pending` assertion can be disputed before it's eligible for uncontested `finalize`. |
 | `finalize_reward_bps` | `u32` | Basis points (0–1000) of the bond paid to whoever calls `finalize` on an uncontested assertion. |
-| `min_resolution_bond` | `i128` | Minimum first-time `register` deposit. Always equal to `base_bond`, so a third party can't break a tie for less than the original parties risked. |
+| `min_resolution_bond` | `i128` | Minimum size of any `register` deposit, first-time or a top-up, unless a position's remaining headroom under `max_position` is smaller. Always equal to `base_bond`, so a third party can't break a tie, or qualify for the anti-snipe extension, for less than the original parties risked. |
 | `registration_duration_secs` | `u64` | Base length of the registration window. |
 | `anti_snipe_extension_secs` | `u64` | How far a qualifying late deposit pushes the soft registration deadline out. |
 | `anti_snipe_hard_max_secs` | `u64` | Absolute cap on the registration window, from `registration_opened_at`. |
@@ -186,7 +186,7 @@ only affect assertions created after the change.
 | `NotRegistration` | Action requires `PhaseV2::Registration` but the assertion isn't. |
 | `CannotRegisterAsFixedParty` | `register` called by the assertion's own asserter or disputer; they already have fixed positions from `dispute`. |
 | `InvalidPositionAmount` | `register`'s `amount` isn't positive. |
-| `BelowMinimumResolutionBond` | A first-time `register` deposit is below `policy.min_resolution_bond`. |
+| `BelowMinimumResolutionBond` | A `register` deposit, first-time or a top-up, is below the effective minimum: `policy.min_resolution_bond`, or the position's remaining headroom under `policy.max_position` if that's smaller. |
 | `PositionExceedsMax` | A position's total after this deposit would exceed `policy.max_position`. |
 | `EligibleTotalExceedsMax` | The eligible total `W` after this deposit would exceed `policy.max_total_weight`. |
 | `CommitmentMismatch` | A top-up's `commitment` doesn't match the one this position was created with. |
@@ -227,8 +227,10 @@ role to a new address, via `set_admin` (see below).
 
 One-time setup, pinning the deployment-wide defaults every future
 assertion's `PolicySnapshotV2` is built from. Requires the signature of the
-admin `__constructor` fixed at deploy time; unlike v1, this call takes no
-`admin` parameter of its own. `base_bond` must be positive and no greater
+admin `__constructor` fixed at deploy time; this call takes no `admin`
+parameter of its own (v1's `initialize` uses the same `__constructor`
+pattern; see [CONTRACT.md](CONTRACT.md#initializetoken-bond_amount-challenge_window_secs-resolvers-finalize_reward_bps)).
+`base_bond` must be positive and no greater
 than `MAX_BOND_AMOUNT` (so `finalize`'s reward-multiply can't overflow).
 `challenge_window_secs` and `reveal_duration_secs`/`registration_duration_secs`
 must each be non-zero and at most 7 days. `finalize_reward_bps` must be at
@@ -348,8 +350,12 @@ assertion, committing to a side without revealing it. Not callable by the
 assertion's own asserter or disputer (`CannotRegisterAsFixedParty`) — they
 already have fixed positions from `dispute`.
 
-A first-time deposit must be at least `policy.min_resolution_bond`
-(`BelowMinimumResolutionBond` otherwise). A top-up (same voter, same
+Every deposit, first-time or a top-up, must be at least
+`policy.min_resolution_bond`, or the position's remaining headroom under
+`policy.max_position` if that's smaller (`BelowMinimumResolutionBond`
+otherwise), so a dust-sized top-up can't qualify for the anti-snipe
+extension below without representing a real change in position, while a
+voter close to the cap can still top off the last of it. A top-up (same voter, same
 assertion) aggregates into the existing position and must reuse its
 original `commitment` (`CommitmentMismatch` otherwise) — a position's
 committed side can never change after funding. Rejects atomically, with no

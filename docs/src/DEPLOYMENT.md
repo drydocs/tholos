@@ -15,6 +15,7 @@ can be changed after `initialize`:
 
 | Parameter | Guidance |
 | --- | --- |
+| `admin` | Passed to `stellar contract deploy` as a constructor argument, not to `initialize`. Pinned atomically with contract creation, so nothing at deploy or `initialize` time can override it; the admin can hand the role to a new address later via `propose_admin`/`accept_admin` (see "Rotating the admin key" below). |
 | `token` | Any SEP-41 token your users already hold. No swap step exists, so picking a token nobody has is a dead deployment. |
 | `bond_amount` | Size from the spam/griefing model in [BOND_SIZING.md](BOND_SIZING.md): start with the larger of the assertion-spam and bad-faith-dispute floors (`R_case / tolerated spam per challenge window`), add any target attacker-loss margin, check finalize reward economics, then keep the result within the affordability cap for the smallest assertion value you want to support. Also capped at `MAX_BOND_AMOUNT`, a contract-enforced ceiling well above any realistic bond size. It exists so the bond can never overflow `finalize`'s reward-multiply arithmetic (the binding constraint) or the token balance held across a dispute. |
 | `challenge_window_secs` | Long enough that people who'd actually catch a bad assertion have a realistic chance to see it and act. Short windows finalize faster but catch less. See [V1_MAINNET_PARAMETERS.md](V1_MAINNET_PARAMETERS.md) for sizing guidance by monitoring tier. |
@@ -46,13 +47,13 @@ example); see [INTEGRATION.md](INTEGRATION.md#should-you-deploy-your-own-instanc
 # Build the optimized wasm
 cd contracts/tholos && stellar contract build
 
-# Deploy
+# Deploy, pinning admin as a constructor argument
 CONTRACT=$(stellar contract deploy --wasm target/wasm32v1-none/release/tholos.wasm \
-  --source deployer --network testnet)
+  --source deployer --network testnet -- --admin "$ADMIN_ADDRESS")
 
-# Initialize
+# Initialize the rest of the deployment-wide policy; requires that same
+# admin's signature
 stellar contract invoke --id "$CONTRACT" --source deployer --network testnet -- initialize \
-  --admin "$ADMIN_ADDRESS" \
   --token "$TOKEN_CONTRACT_ID" \
   --bond_amount 1000000 \
   --challenge_window_secs 3600 \
@@ -68,19 +69,27 @@ handing the contract id to anyone.
 
 ### Rotating the admin key
 
-`set_admin` is authorized by the current admin and takes effect immediately.
-The old signer loses authority as soon as the transaction succeeds, so verify
-the new address before signing and keep the new signer available:
+Rotation is two steps, so a typo'd or unreachable address can never
+permanently lock out admin control: the current admin proposes a target,
+and that target must separately accept before authority actually moves.
 
 ```sh
-# Current admin performs the rotation.
-stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- set_admin \
+# Current admin opens the proposal.
+stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- propose_admin \
   --new_admin "$NEW_ADMIN"
+
+# The proposed address accepts, completing the rotation.
+stellar contract invoke --id "$CONTRACT" --source new_admin --network testnet -- accept_admin
 ```
 
-The successful call emits `AdminUpdated` with both addresses. Afterward, use
-the new signer for `set_paused_v2`, `update_resolvers`, and future admin
-rotations.
+`accept_admin` emits `AdminUpdated` with both addresses. Afterward, use the
+new signer for `set_paused`, `update_resolvers`, and future admin rotations.
+
+Note this only ever protects a *planned* rotation: `propose_admin` itself
+still requires the *current* admin's signature, so if the current admin key
+is genuinely lost or destroyed (not just being proactively rotated), there is
+no on-chain recovery path — see [MAINNET_RUNBOOK.md](MAINNET_RUNBOOK.md) for
+what that means for admin key custody on a real deployment.
 
 ### Pausing during an incident
 
@@ -149,7 +158,10 @@ stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- get
 ## Mainnet readiness checklist
 
 Not a green light to deploy to mainnet on its own: a checklist of what's true
-today, so you can judge what's still missing for your use case:
+today, so you can judge what's still missing for your use case. See
+[MAINNET_RUNBOOK.md](MAINNET_RUNBOOK.md) for the operational layer this
+checklist doesn't cover on its own: admin key custody, a concrete go/no-go
+launch sequence, and incident escalation.
 
 - [x] Core propose/dispute/resolve flow implemented and unit tested
 - [x] Reentrancy hardened, with a regression test proving it

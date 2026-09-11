@@ -43,7 +43,11 @@ ASSERTER=$(gen_key load_asserter)
 DISPUTER=$(gen_key load_disputer)
 
 log "Deploying contract"
-CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" 2>/dev/null | tail -1)
+# admin is pinned by __constructor atomically with contract creation (#158),
+# closing the window a deploy-then-initialize(admin) two-step would
+# otherwise leave open for a third party to front-run and claim the admin
+# role on this instance before we do.
+CONTRACT=$($STELLAR contract deploy --wasm "$WASM_PATH" --source "$DEPLOYER_IDENTITY" --network "$NETWORK" -- --admin "$DEPLOYER" 2>/dev/null | tail -1)
 log "Contract ID: $CONTRACT"
 
 TOKEN=$($STELLAR contract id asset --asset native --network "$NETWORK")
@@ -51,7 +55,6 @@ log "Token (native XLM SAC): $TOKEN"
 
 log "Initializing contract with 3-member resolver committee and challenge_window_secs=$CHALLENGE_WINDOW_SECS"
 invoke_contract "$DEPLOYER_IDENTITY" --id "$CONTRACT" -- initialize \
-  --admin "$DEPLOYER" \
   --token "$TOKEN" \
   --bond_amount "$BOND_AMOUNT" \
   --challenge_window_secs "$CHALLENGE_WINDOW_SECS" \

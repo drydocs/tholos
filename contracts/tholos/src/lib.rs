@@ -334,6 +334,27 @@ pub struct Tholos;
 
 #[contractimpl]
 impl Tholos {
+    /// Pins `admin` atomically with contract creation. Soroban invokes a
+    /// contract's constructor (a function literally named `__constructor`)
+    /// as part of the same `CreateContractV2` host operation that creates
+    /// the instance, and the host will not accept a separate, later
+    /// invocation of it: no other transaction can ever execute in between
+    /// "this contract now exists" and "its admin is recorded", so unlike a
+    /// deploy-then-call-`initialize(admin)` two-step, there is no window
+    /// for a third party watching the mempool to submit their own call
+    /// first and become admin of an instance someone else paid to deploy
+    /// (#158). The rest of the deployment-wide config is still pinned by a
+    /// separate `initialize` call below, but that call no longer accepts an
+    /// `admin` parameter at all: it authenticates against the admin fixed
+    /// here, so nothing a later caller supplies can change who holds the
+    /// role.
+    pub fn __constructor(env: Env, admin: Address) {
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::touch_instance_ttl(&env);
+    }
+
     /// Initializes the contract. `resolvers` must have an odd length so a
     /// simple majority vote can never tie. Size-1 is legal. Combined with
     /// `SelfVote` and the default stall timeout of 0, a dispute whose sole
@@ -343,17 +364,22 @@ impl Tholos {
     /// points, 0–1000) paid to whoever calls `finalize` as an incentive
     /// for prompt finalization; 0 disables the reward entirely and
     /// preserves the original behavior where the full bond is returned to
-    /// the asserter.
+    /// the asserter. Requires the signature of the admin `__constructor`
+    /// fixed at deploy time (this call takes no `admin` parameter of its
+    /// own; see `__constructor`'s doc comment for why). Fails with
+    /// `AlreadyInitialized` if called twice.
+    ///
+    /// `set_paused`/`set_bond_amount`/`update_resolvers` are callable
+    /// before this too, harmlessly: this overwrites their state anyway.
     pub fn initialize(
         env: Env,
-        admin: Address,
         token: Address,
         bond_amount: i128,
         challenge_window_secs: u64,
         resolvers: Vec<Address>,
         finalize_reward_bps: u32,
     ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Token) {
             return Err(Error::AlreadyInitialized);
         }
         if resolvers.is_empty() || resolvers.len().is_multiple_of(2) {
@@ -373,9 +399,17 @@ impl Tholos {
             return Err(Error::InvalidFinalizeReward);
         }
 
+        // Set by `__constructor`, which every live instance has already run
+        // by the time any call reaches here; `NotInitialized` is defensive
+        // (matches every other Admin lookup in this contract) rather than a
+        // reachable path in practice.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage()
             .instance()
@@ -455,8 +489,8 @@ impl Tholos {
         Ok(())
     }
 
-    /// Replaces the resolver committee. Only callable by the admin set at
-    /// initialization. `new_resolvers` must have an odd length so a simple
+    /// Replaces the resolver committee. Only callable by the admin fixed at
+    /// `__constructor`. `new_resolvers` must have an odd length so a simple
     /// majority vote can never tie. Callable even while paused, so a
     /// compromised committee can be replaced without waiting to unpause.
     ///
@@ -465,6 +499,12 @@ impl Tholos {
     /// `RotationCancelled` when one was present), so a proposal can never
     /// execute against a committee it wasn't built for. Day-to-day committee
     /// changes go through `propose_rotation` / `vote_rotation` instead.
+    ///
+    /// `admin` is fixed by `__constructor`, not `initialize`, so this
+    /// succeeds as soon as the contract has been deployed, even before
+    /// `initialize` is ever called; a committee set this early is discarded
+    /// the moment `initialize` runs, since it unconditionally sets
+    /// `DataKey::Resolvers` to its own parameter.
     pub fn update_resolvers(env: Env, new_resolvers: Vec<Address>) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -715,7 +755,10 @@ impl Tholos {
     /// be disputed during its challenge window if that window overlapped a
     /// pause, so `finalize` is blocked too rather than letting it finalize
     /// uncontested; it becomes callable again once unpaused. Only callable by
-    /// the admin set at initialization.
+    /// the admin fixed at `__constructor`, so this succeeds as soon as the
+    /// contract has been deployed, even before `initialize` is ever called;
+    /// a pause set this early is discarded the moment `initialize` runs,
+    /// since it unconditionally sets `DataKey::Paused` to `false`.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -732,7 +775,7 @@ impl Tholos {
     }
 
     /// Updates the bond amount required for assertions created from this
-    /// point on. Only callable by the admin set at initialization, validated
+    /// point on. Only callable by the admin fixed at `__constructor`, validated
     /// against the same bounds `initialize` already enforces
     /// (`new_bond_amount > 0`, `new_bond_amount <= MAX_BOND_AMOUNT`).
     /// Pause-exempt, like `update_resolvers` and `set_paused`.
@@ -744,9 +787,12 @@ impl Tholos {
     /// already-open assertion's payout is therefore unaffected by a later
     /// `set_bond_amount` call.
     ///
-    /// Fails with `NotInitialized` if called before `initialize`, or
-    /// `InvalidBondAmount` if `new_bond_amount` is zero, negative, or greater
-    /// than `MAX_BOND_AMOUNT`.
+    /// Callable before `initialize` too (`admin` is fixed by
+    /// `__constructor`), but a value set that early is discarded once
+    /// `initialize` runs, since it unconditionally overwrites
+    /// `DataKey::BondAmount`. Fails with `InvalidBondAmount` if
+    /// `new_bond_amount` is zero, negative, or greater than
+    /// `MAX_BOND_AMOUNT`.
     pub fn set_bond_amount(env: Env, new_bond_amount: i128) -> Result<(), Error> {
         let admin: Address = env
             .storage()
