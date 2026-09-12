@@ -30,6 +30,18 @@ pub enum Error {
     /// No assertion exists under the given id on the Tholos instance at
     /// `tholos_id`.
     AssertionNotFound = 4,
+    /// The consuming contract's own one-time `initialize` has already run.
+    /// This is the consumer's lifecycle state, not a Tholos-side condition: it
+    /// lives here rather than in a second error type because the consumer
+    /// entry points already return this enum, and a duplicate definition is
+    /// exactly what this crate exists to avoid. Discriminants 1-4 are
+    /// unchanged.
+    AlreadyInitialized = 5,
+    /// The consuming contract has not been initialized yet, so the trusted
+    /// instance and token addresses it would need do not exist. The admin is
+    /// pinned by `__constructor`, so in practice only the
+    /// trusted addresses can be missing.
+    NotInitialized = 6,
 }
 
 impl Error {

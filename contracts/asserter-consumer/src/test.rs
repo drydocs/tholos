@@ -4,94 +4,17 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{token, IntoVal};
 
-#[test]
-fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
-    let env = Env::default();
-
-    // Deliberately not using blanket auth mocking past construction: this
-    // test exists specifically to prove authorize_as_current_contract
-    // grants the real nested auth Tholos's assert_outcome needs for its
-    // token transfer, without blanket auth mocking papering over a bug in
-    // that mechanism. A brief mock_all_auths_allowing_non_root_auth()
-    // covers only __constructor's admin.require_auth() (admin is now
-    // pinned atomically at deploy, #158, so there's no way to narrow-mock
-    // it before a contract id exists to address a MockAuthInvoke at; the
-    // non-root variant is needed because registering from imported WASM
-    // records the constructor's auth as non-root). Every call after that,
-    // including initialize, mocks only the one specific signature it needs.
-    let admin = Address::generate(&env);
-    env.mock_all_auths_allowing_non_root_auth();
-    let tholos_id = env.register(tholos::WASM, (admin.clone(),));
-    let tholos_client = tholos::Client::new(&env, &tholos_id);
-
-    let token_admin = Address::generate(&env);
-    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_id = token_contract.address();
-    let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
-
-    let resolvers = Vec::from_array(
-        &env,
-        [
-            Address::generate(&env),
-            Address::generate(&env),
-            Address::generate(&env),
-        ],
-    );
-    let bond_amount: i128 = 100;
-
-    env.mock_auths(&[MockAuth {
-        address: &admin,
-        invoke: &MockAuthInvoke {
-            contract: &tholos_id,
-            fn_name: "initialize",
-            args: (
-                token_id.clone(),
-                bond_amount,
-                3600u64,
-                resolvers.clone(),
-                0u32,
-            )
-                .into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    tholos_client.initialize(&token_id, &bond_amount, &3600, &resolvers, &0u32);
-
-    let consumer_id = env.register(AsserterConsumer, ());
-    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
-
-    // The bond comes from this contract's own balance, not an end user's.
-    env.mock_auths(&[MockAuth {
-        address: &token_admin,
-        invoke: &MockAuthInvoke {
-            contract: &token_id,
-            fn_name: "mint",
-            args: (consumer_id.clone(), 1_000i128).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    token_asset_client.mint(&consumer_id, &1_000);
-
-    let id = consumer_client.create_assertion_as_self(&tholos_id, &token_id, &bond_amount, &true);
-
-    let state = consumer_client.get_status(&tholos_id, &id);
-    assert!(state.outcome);
-    assert_eq!(state.asserter, consumer_id);
-    assert_eq!(
-        token::Client::new(&env, &token_id).balance(&consumer_id),
-        900
-    );
-}
-
-/// A registered but uninitialized token, resolver committee, and Tholos
-/// instance, plus an AsserterConsumer pointed at it. Shared setup for the
-/// error-path tests below, which don't need the full funded/authorized flow
-/// the happy-path test above exercises.
+/// A Tholos instance, a token, and an AsserterConsumer whose admin is pinned
+/// at deploy, all sharing one ledger.
 struct Fixture {
     env: Env,
+    consumer_admin: Address,
+    token_admin: Address,
     tholos_id: Address,
     tholos_client: tholos::Client<'static>,
     token_id: Address,
+    token_asset_client: token::StellarAssetClient<'static>,
+    consumer_id: Address,
     consumer_client: AsserterConsumerClient<'static>,
     resolvers: Vec<Address>,
     bond_amount: i128,
@@ -101,21 +24,22 @@ impl Fixture {
     fn new() -> Self {
         let env = Env::default();
 
-        // Covers __constructor's admin.require_auth(): admin is pinned
-        // atomically at deploy now (#158), so it applies to registration
-        // itself, before initialize_tholos()'s own mock_all_auths() runs.
-        // Registering from imported WASM (rather than the native Rust
-        // type) records the constructor's require_auth as non-root, so
-        // the non-root variant is required here specifically.
+        // Covers both constructors' admin.require_auth(): each admin is now
+        // pinned atomically at deploy, so it applies to registration itself,
+        // before anything else runs. Registering Tholos from imported WASM
+        // records its constructor's auth as non-root, so the non-root variant
+        // is needed here specifically.
         env.mock_all_auths_allowing_non_root_auth();
-        let admin = Address::generate(&env);
-        let tholos_id = env.register(tholos::WASM, (admin.clone(),));
+
+        let tholos_admin = Address::generate(&env);
+        let tholos_id = env.register(tholos::WASM, (tholos_admin,));
         let tholos_client = tholos::Client::new(&env, &tholos_id);
 
         let token_admin = Address::generate(&env);
         let token_id = env
-            .register_stellar_asset_contract_v2(token_admin)
+            .register_stellar_asset_contract_v2(token_admin.clone())
             .address();
+        let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
 
         let resolvers = Vec::from_array(
             &env,
@@ -126,14 +50,19 @@ impl Fixture {
             ],
         );
 
-        let consumer_id = env.register(AsserterConsumer, ());
+        let consumer_admin = Address::generate(&env);
+        let consumer_id = env.register(AsserterConsumer, (consumer_admin.clone(),));
         let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
 
         Fixture {
             env,
+            consumer_admin,
+            token_admin,
             tholos_id,
             tholos_client,
             token_id,
+            token_asset_client,
+            consumer_id,
             consumer_client,
             resolvers,
             bond_amount: 100,
@@ -150,21 +79,143 @@ impl Fixture {
             &0u32,
         );
     }
+
+    /// Points the consumer at a specific instance and token. Used by the
+    /// error-path tests, which need the consumer ready against something other
+    /// than a healthy Tholos instance.
+    fn initialize_consumer_at(&self, tholos_id: &Address, token_id: &Address) {
+        self.env.mock_all_auths();
+        self.consumer_client.initialize(tholos_id, token_id);
+    }
+
+    fn initialize_consumer(&self) {
+        self.initialize_consumer_at(&self.tholos_id, &self.token_id);
+    }
+
+    fn fund_consumer(&self, amount: i128) {
+        self.env.mock_all_auths();
+        self.token_asset_client.mint(&self.consumer_id, &amount);
+    }
+}
+
+/// End-to-end happy path, deliberately narrow-mocking auth past construction.
+///
+/// This test exists specifically to prove that `authorize_as_current_contract`
+/// grants the real nested auth Tholos's `assert_outcome` needs for its token
+/// transfer, without a blanket `mock_all_auths()` papering over a bug in that
+/// mechanism. Only the mint and the consumer admin's own signature are mocked;
+/// the transfer out of this contract is authorized by the pre-authorization.
+#[test]
+fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
+    let f = Fixture::new();
+    f.initialize_tholos();
+    f.initialize_consumer();
+
+    // The bond comes from this contract's own balance, not an end user's.
+    f.env.mock_auths(&[MockAuth {
+        address: &f.token_admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.token_id,
+            fn_name: "mint",
+            args: (f.consumer_id.clone(), 1_000i128).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    f.token_asset_client.mint(&f.consumer_id, &1_000);
+
+    // Only the configured admin signs. Nothing here names a destination.
+    f.env.mock_auths(&[MockAuth {
+        address: &f.consumer_admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.consumer_id,
+            fn_name: "create_assertion_as_self",
+            args: (f.bond_amount, true).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let id = f
+        .consumer_client
+        .create_assertion_as_self(&f.bond_amount, &true);
+
+    let state = f.consumer_client.get_status(&f.tholos_id, &id);
+    assert!(state.outcome);
+    assert_eq!(state.asserter, f.consumer_id);
+
+    let token = token::Client::new(&f.env, &f.token_id);
+    assert_eq!(token.balance(&f.consumer_id), 900);
+    // The bond landed on the *configured* Tholos instance, and it is the only
+    // destination the pre-authorization can name: there is no argument left
+    // that could redirect it, which is what closes the drain.
+    assert_eq!(token.balance(&f.tholos_id), f.bond_amount);
+}
+
+#[test]
+fn test_create_assertion_as_self_before_initialize_is_rejected() {
+    let f = Fixture::new();
+    f.initialize_tholos();
+
+    // Consumer never initialized: there is no trusted instance or token yet.
+    assert_eq!(
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn test_initialize_cannot_run_twice() {
+    let f = Fixture::new();
+    f.initialize_consumer();
+
+    // The trusted addresses are write-once, so a later caller cannot re-point
+    // the contract at an instance or token of their choosing.
+    let other = Address::generate(&f.env);
+    assert_eq!(
+        f.consumer_client.try_initialize(&other, &other),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+}
+
+/// With no auth mocked at all, the pinned admin's signature is the only thing
+/// that could satisfy `initialize`.
+#[test]
+#[should_panic]
+fn test_initialize_requires_the_configured_admin() {
+    let f = Fixture::new();
+    f.env.set_auths(&[]);
+
+    f.consumer_client.initialize(&f.tholos_id, &f.token_id);
+}
+
+/// The same for the entrypoint that spends the contract's balance: an address
+/// that is not the configured admin cannot trigger the self-authorized
+/// transfer at all.
+#[test]
+#[should_panic]
+fn test_create_assertion_as_self_requires_the_configured_admin() {
+    let f = Fixture::new();
+    f.initialize_tholos();
+    f.initialize_consumer();
+    f.fund_consumer(1_000);
+
+    f.env.set_auths(&[]);
+
+    f.consumer_client
+        .create_assertion_as_self(&f.bond_amount, &true);
 }
 
 #[test]
 fn test_create_assertion_as_self_fails_against_uninitialized_tholos() {
     let f = Fixture::new();
 
-    // No initialize() call: Tholos rejects with NotInitialized before ever
-    // reaching the token transfer, so this doesn't need mocked auths either.
+    // Consumer ready, but its Tholos instance never initialized. Tholos
+    // rejects with NotInitialized before ever reaching the token transfer.
+    f.initialize_consumer();
+
     assert_eq!(
-        f.consumer_client.try_create_assertion_as_self(
-            &f.tholos_id,
-            &f.token_id,
-            &f.bond_amount,
-            &true
-        ),
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
         Err(Ok(Error::TholosNotInitialized))
     );
 }
@@ -173,17 +224,14 @@ fn test_create_assertion_as_self_fails_against_uninitialized_tholos() {
 fn test_create_assertion_as_self_fails_when_tholos_paused() {
     let f = Fixture::new();
     f.initialize_tholos();
+    f.initialize_consumer();
 
     f.env.mock_all_auths();
     f.tholos_client.set_paused(&true);
 
     assert_eq!(
-        f.consumer_client.try_create_assertion_as_self(
-            &f.tholos_id,
-            &f.token_id,
-            &f.bond_amount,
-            &true
-        ),
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
         Err(Ok(Error::TholosPaused))
     );
 }
@@ -192,18 +240,17 @@ fn test_create_assertion_as_self_fails_when_tholos_paused() {
 fn test_create_assertion_as_self_fails_for_invalid_tholos_id() {
     let f = Fixture::new();
 
-    // An address with no contract registered at all: the call can't even
+    // An address with no contract registered at all: the call cannot even
     // reach Tholos's own error handling, so this exercises the
     // Err(Err(InvokeError)) -> InvalidTholosId path, not Err(Ok(_)).
     let not_a_tholos_instance = Address::generate(&f.env);
+    f.initialize_consumer_at(&not_a_tholos_instance, &f.token_id);
 
-    let result = f.consumer_client.try_create_assertion_as_self(
-        &not_a_tholos_instance,
-        &f.token_id,
-        &f.bond_amount,
-        &true,
+    assert_eq!(
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
+        Err(Ok(Error::InvalidTholosId))
     );
-    assert_eq!(result, Err(Ok(Error::InvalidTholosId)));
 }
 
 #[test]
