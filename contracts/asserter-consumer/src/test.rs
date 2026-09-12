@@ -60,6 +60,19 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     let consumer_id = env.register(AsserterConsumer, ());
     let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
 
+    // Initialize the consumer contract, pinning tholos_id and token_id.
+    let consumer_admin = Address::generate(&env);
+    env.mock_auths(&[MockAuth {
+        address: &consumer_admin,
+        invoke: &MockAuthInvoke {
+            contract: &consumer_id,
+            fn_name: "initialize",
+            args: (consumer_admin.clone(), tholos_id.clone(), token_id.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    consumer_client.initialize(&consumer_admin, &tholos_id, &token_id);
+
     // The bond comes from this contract's own balance, not an end user's.
     env.mock_auths(&[MockAuth {
         address: &token_admin,
@@ -72,9 +85,19 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
     }]);
     token_asset_client.mint(&consumer_id, &1_000);
 
-    let id = consumer_client.create_assertion_as_self(&tholos_id, &token_id, &bond_amount, &true);
+    // Only consumer_admin can call create_assertion_as_self.
+    env.mock_auths(&[MockAuth {
+        address: &consumer_admin,
+        invoke: &MockAuthInvoke {
+            contract: &consumer_id,
+            fn_name: "create_assertion_as_self",
+            args: (bond_amount, true).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let id = consumer_client.create_assertion_as_self(&bond_amount, &true);
 
-    let state = consumer_client.get_status(&tholos_id, &id);
+    let state = consumer_client.get_status(&id);
     assert!(state.outcome);
     assert_eq!(state.asserter, consumer_id);
     assert_eq!(
@@ -89,7 +112,6 @@ fn test_asserter_consumer_can_assert_as_itself_through_tholos() {
 /// the happy-path test above exercises.
 struct Fixture {
     env: Env,
-    tholos_id: Address,
     tholos_client: tholos::Client<'static>,
     token_id: Address,
     consumer_client: AsserterConsumerClient<'static>,
@@ -128,10 +150,10 @@ impl Fixture {
 
         let consumer_id = env.register(AsserterConsumer, ());
         let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+        consumer_client.initialize(&admin, &tholos_id, &token_id);
 
         Fixture {
             env,
-            tholos_id,
             tholos_client,
             token_id,
             consumer_client,
@@ -159,12 +181,8 @@ fn test_create_assertion_as_self_fails_against_uninitialized_tholos() {
     // No initialize() call: Tholos rejects with NotInitialized before ever
     // reaching the token transfer, so this doesn't need mocked auths either.
     assert_eq!(
-        f.consumer_client.try_create_assertion_as_self(
-            &f.tholos_id,
-            &f.token_id,
-            &f.bond_amount,
-            &true
-        ),
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
         Err(Ok(Error::TholosNotInitialized))
     );
 }
@@ -178,31 +196,25 @@ fn test_create_assertion_as_self_fails_when_tholos_paused() {
     f.tholos_client.set_paused(&true);
 
     assert_eq!(
-        f.consumer_client.try_create_assertion_as_self(
-            &f.tholos_id,
-            &f.token_id,
-            &f.bond_amount,
-            &true
-        ),
+        f.consumer_client
+            .try_create_assertion_as_self(&f.bond_amount, &true),
         Err(Ok(Error::TholosPaused))
     );
 }
 
 #[test]
 fn test_create_assertion_as_self_fails_for_invalid_tholos_id() {
-    let f = Fixture::new();
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let not_a_tholos_instance = Address::generate(&env);
+    let token_id = Address::generate(&env);
 
-    // An address with no contract registered at all: the call can't even
-    // reach Tholos's own error handling, so this exercises the
-    // Err(Err(InvokeError)) -> InvalidTholosId path, not Err(Ok(_)).
-    let not_a_tholos_instance = Address::generate(&f.env);
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+    consumer_client.initialize(&admin, &not_a_tholos_instance, &token_id);
 
-    let result = f.consumer_client.try_create_assertion_as_self(
-        &not_a_tholos_instance,
-        &f.token_id,
-        &f.bond_amount,
-        &true,
-    );
+    let result = consumer_client.try_create_assertion_as_self(&100, &true);
     assert_eq!(result, Err(Ok(Error::InvalidTholosId)));
 }
 
@@ -212,16 +224,105 @@ fn test_get_status_fails_for_nonexistent_assertion() {
     f.initialize_tholos();
 
     assert_eq!(
-        f.consumer_client.try_get_status(&f.tholos_id, &999),
+        f.consumer_client.try_get_status(&999),
         Err(Ok(Error::AssertionNotFound))
     );
 }
 
 #[test]
 fn test_get_status_fails_for_invalid_tholos_id() {
-    let f = Fixture::new();
-    let not_a_tholos_instance = Address::generate(&f.env);
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let not_a_tholos_instance = Address::generate(&env);
+    let token_id = Address::generate(&env);
 
-    let result = f.consumer_client.try_get_status(&not_a_tholos_instance, &0);
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+    consumer_client.initialize(&admin, &not_a_tholos_instance, &token_id);
+
+    let result = consumer_client.try_get_status(&0);
     assert_eq!(result, Err(Ok(Error::InvalidTholosId)));
+}
+
+#[test]
+fn test_create_assertion_as_self_rejects_before_initialize() {
+    let env = Env::default();
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+
+    let result = consumer_client.try_create_assertion_as_self(&100, &true);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_get_status_rejects_before_initialize() {
+    let env = Env::default();
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+
+    let result = consumer_client.try_get_status(&0);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_initialize_rejects_second_call() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let tholos_id = Address::generate(&env);
+    let token_id = Address::generate(&env);
+
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &consumer_id,
+            fn_name: "initialize",
+            args: (admin.clone(), tholos_id.clone(), token_id.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    consumer_client.initialize(&admin, &tholos_id, &token_id);
+
+    let result = consumer_client.try_initialize(&admin, &tholos_id, &token_id);
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn test_create_assertion_as_self_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let tholos_id = Address::generate(&env);
+    let token_id = Address::generate(&env);
+
+    let consumer_id = env.register(AsserterConsumer, ());
+    let consumer_client = AsserterConsumerClient::new(&env, &consumer_id);
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &consumer_id,
+            fn_name: "initialize",
+            args: (admin.clone(), tholos_id.clone(), token_id.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    consumer_client.initialize(&admin, &tholos_id, &token_id);
+
+    // Attacker tries to call create_assertion_as_self.
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &consumer_id,
+            fn_name: "create_assertion_as_self",
+            args: (100i128, true).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let result = consumer_client.try_create_assertion_as_self(&100, &true);
+    // Should fail because attacker is not the configured admin.
+    assert!(result.is_err());
 }
