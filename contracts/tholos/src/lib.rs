@@ -243,7 +243,6 @@ pub enum Error {
     /// slot without any economic risk (they receive both bonds back regardless
     /// of the resolver vote), nullifying the bond-forfeiture deterrent.
     SelfDispute = 22,
-<<<<<<< HEAD
     NoAdminRotationProposal = 23,
     /// `reclaim_stalled_dispute` was called on an assertion whose dispute
     /// opened without a stall timeout configured (0 = fallback disabled), or
@@ -260,10 +259,8 @@ pub enum Error {
     /// assertion's asserter or disputer. A party voting on their own case
     /// biases (and, on a size-1 committee, determines) the outcome.
     SelfVote = 27,
-=======
     /// The token transfer did not result in the expected balance change.
-    TokenTransferMismatch = 23,
->>>>>>> 2dc2e65 (fix(tholos): account for fee-on-transfer tokens)
+    TokenTransferMismatch = 28,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;

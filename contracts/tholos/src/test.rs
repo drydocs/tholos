@@ -2216,10 +2216,8 @@ mod fee_token {
         let contract_id = env.register(Tholos, ());
         let client = TholosClient::new(env, &contract_id);
 
-        let admin = Address::generate(env);
 
         client.initialize(
-            &admin,
             &fee_token_id,
             &DEFAULT_BOND,
             &DEFAULT_WINDOW,
