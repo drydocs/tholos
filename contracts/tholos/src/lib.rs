@@ -259,6 +259,8 @@ pub enum Error {
     /// assertion's asserter or disputer. A party voting on their own case
     /// biases (and, on a size-1 committee, determines) the outcome.
     SelfVote = 27,
+    /// The token transfer did not result in the expected balance change.
+    TokenTransferMismatch = 28,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -970,6 +972,29 @@ impl Tholos {
         Ok(())
     }
 
+    fn transfer_in(
+        env: &Env,
+        token_client: &token::Client,
+        from: &Address,
+        amount: i128,
+    ) -> Result<i128, Error> {
+        let contract = env.current_contract_address();
+        let balance_before = token_client.balance(&contract);
+
+        token_client.transfer(from, &contract, &amount);
+
+        let balance_after = token_client.balance(&contract);
+        let received = balance_after
+            .checked_sub(balance_before)
+            .ok_or(Error::TokenTransferMismatch)?;
+
+        if received <= 0 {
+            return Err(Error::TokenTransferMismatch);
+        }
+
+        Ok(received)
+    }
+
     /// Posts a bonded claim about an outcome. Returns the new assertion id.
     pub fn assert_outcome(env: Env, asserter: Address, outcome: bool) -> Result<u64, Error> {
         Self::require_not_paused(&env)?;
@@ -983,7 +1008,7 @@ impl Tholos {
         // transfer can't be allocated the same not-yet-incremented id.
         let id: u64 = Self::get(&env, &DataKey::NextId)?;
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
-        let assertion = Assertion {
+        let mut assertion = Assertion {
             asserter: asserter.clone(),
             final_outcome: None,
             outcome,
@@ -1001,11 +1026,13 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &asserter,
-            env.current_contract_address(),
-            &bond_amount,
-        );
+        let token_client = token::Client::new(&env, &token_id);
+        let received = Self::transfer_in(&env, &token_client, &asserter, bond_amount)?;
+
+        if received != bond_amount {
+            assertion.bond = received;
+            Self::set_assertion(&env, id, &assertion);
+        }
 
         Asserted {
             id,
@@ -1070,11 +1097,8 @@ impl Tholos {
         Self::set_assertion(&env, id, &assertion);
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &disputer,
-            env.current_contract_address(),
-            &assertion.bond,
-        );
+        let token_client = token::Client::new(&env, &token_id);
+        Self::transfer_in(&env, &token_client, &disputer, assertion.bond)?;
 
         Disputed { id, disputer }.publish(&env);
 
@@ -1132,6 +1156,11 @@ impl Tholos {
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         let token_client = token::Client::new(&env, &token_id);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+
+        if assertion.bond > contract_balance {
+            return Err(Error::TokenTransferMismatch);
+        }
 
         if reward > 0 {
             // Pay the caller their reward first, then pay the asserter the
@@ -1220,7 +1249,16 @@ impl Tholos {
             return Ok(None);
         };
 
-        let payout = assertion.bond * 2;
+        let token_id: Address = Self::get(&env, &DataKey::Token)?;
+        let token_client = token::Client::new(&env, &token_id);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+
+        let payout = assertion
+            .bond
+            .checked_mul(2)
+            .ok_or(Error::TokenTransferMismatch)?
+            .min(contract_balance);
+
         let winner = if winner_is_asserter {
             assertion.asserter.clone()
         } else {
@@ -1243,12 +1281,7 @@ impl Tholos {
         assertion.final_outcome = Some(final_outcome);
         Self::set_assertion(&env, id, &assertion);
 
-        let token_id: Address = Self::get(&env, &DataKey::Token)?;
-        token::Client::new(&env, &token_id).transfer(
-            &env.current_contract_address(),
-            &winner,
-            &payout,
-        );
+        token_client.transfer(&env.current_contract_address(), &winner, &payout);
         Resolved {
             id,
             outcome: final_outcome,

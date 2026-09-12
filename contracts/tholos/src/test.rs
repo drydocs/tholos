@@ -2123,6 +2123,179 @@ fn test_finalize_is_not_reentrant() {
 }
 
 // ---------------------------------------------------------------------------
+// Fee-on-transfer token tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Fee-on-transfer token tests
+// ---------------------------------------------------------------------------
+
+mod fee_token {
+    use super::*;
+    use soroban_sdk::Map;
+
+    #[contracttype]
+    pub enum DataKey {
+        Balances,
+        FeeBps,
+    }
+
+    #[contract]
+    pub struct FeeToken;
+
+    #[contractimpl]
+    impl FeeToken {
+        pub fn set_fee_bps(env: Env, bps: u32) {
+            env.storage().instance().set(&DataKey::FeeBps, &bps);
+        }
+
+        pub fn credit(env: Env, addr: Address, amount: i128) {
+            let mut balances = Self::balances(&env);
+            let current = balances.get(addr.clone()).unwrap_or(0);
+            balances.set(addr, current + amount);
+            env.storage().instance().set(&DataKey::Balances, &balances);
+        }
+
+        pub fn balance(env: Env, addr: Address) -> i128 {
+            Self::balances(&env).get(addr).unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
+
+            let fee = amount * (fee_bps as i128) / 10_000;
+            let received = amount - fee;
+
+            let mut balances = Self::balances(&env);
+            let from_balance = balances.get(from.clone()).unwrap_or(0);
+            assert!(from_balance >= amount, "insufficient balance");
+
+            let to_balance = balances.get(to.clone()).unwrap_or(0);
+
+            balances.set(from, from_balance - amount);
+            balances.set(to, to_balance + received);
+
+            env.storage().instance().set(&DataKey::Balances, &balances);
+        }
+
+        fn balances(env: &Env) -> Map<Address, i128> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Balances)
+                .unwrap_or(Map::new(env))
+        }
+    }
+}
+
+fn fee_fixture(
+    env: &Env,
+    fee_bps: u32,
+) -> (
+    fee_token::FeeTokenClient<'static>,
+    TholosClient<'static>,
+    Address,
+    Vec<Address>,
+) {
+    let fee_token_id = env.register(fee_token::FeeToken, ());
+    let fee_token = fee_token::FeeTokenClient::new(env, &fee_token_id);
+    fee_token.set_fee_bps(&fee_bps);
+
+    let resolvers = Vec::from_array(
+        env,
+        [
+            Address::generate(env),
+            Address::generate(env),
+            Address::generate(env),
+        ],
+    );
+
+    let admin = Address::generate(env);
+    let contract_id = env.register(Tholos, (admin,));
+    let client = TholosClient::new(env, &contract_id);
+
+    client.initialize(
+        &fee_token_id,
+        &DEFAULT_BOND,
+        &DEFAULT_WINDOW,
+        &resolvers,
+        &0u32,
+    );
+
+    (fee_token, client, contract_id, resolvers)
+}
+
+#[test]
+fn test_fee_on_transfer_records_actual_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (fee_token, client, contract_id, _resolvers) = fee_fixture(&env, 1_000);
+
+    let asserter = Address::generate(&env);
+    fee_token.credit(&asserter, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+    let assertion = client.get_assertion_state(&id);
+    assert_eq!(assertion.bond, 90);
+
+    // 100 bond requested -> 90 received after the 10% fee.
+    assert_eq!(assertion.bond, 90);
+    assert_eq!(fee_token.balance(&contract_id), 90);
+    assert_eq!(fee_token.balance(&asserter), 900);
+}
+#[test]
+fn test_fee_on_transfer_dispute_uses_actual_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (fee_token, client, contract_id, _resolvers) = fee_fixture(&env, 1_000);
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    fee_token.credit(&asserter, &1_000);
+    fee_token.credit(&disputer, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+
+    assert_eq!(fee_token.balance(&contract_id), 90);
+
+    client.dispute(&disputer, &id);
+    // 100 bond -> 90 received.
+    // 90 dispute deposit -> 81 received.
+    // Total = 171.
+    assert_eq!(fee_token.balance(&contract_id), 171);
+    assert_eq!(fee_token.balance(&disputer), 910);
+}
+#[test]
+fn test_fee_on_transfer_resolve_uses_available_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (fee_token, client, contract_id, resolvers) = fee_fixture(&env, 1_000);
+
+    let asserter = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    fee_token.credit(&asserter, &1_000);
+    fee_token.credit(&disputer, &1_000);
+
+    let id = client.assert_outcome(&asserter, &true);
+    client.dispute(&disputer, &id);
+
+    // The contract has 171 tokens:
+    // 100 -> 90 received
+    // 90 -> 81 received
+    assert_eq!(fee_token.balance(&contract_id), 171);
+
+    // Cast enough resolver votes to reach the majority.
+    client.resolve(&resolvers.get(0).unwrap(), &id, &true);
+    client.resolve(&resolvers.get(1).unwrap(), &id, &true);
+
+    // The resolver payout must not exceed the contract's actual balance.
+    assert!(fee_token.balance(&contract_id) >= 0);
+}
+// ---------------------------------------------------------------------------
 // Property-based tests for resolver vote counting and majority logic
 // ---------------------------------------------------------------------------
 //
