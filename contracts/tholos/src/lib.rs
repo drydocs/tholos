@@ -1146,7 +1146,6 @@ impl Tholos {
             0
         };
 
-
         // State is written before the external token transfers below so that
         // a reentrant call from a non-standard token sees this assertion as
         // already resolved, rather than still `Pending`.
@@ -1161,7 +1160,7 @@ impl Tholos {
 
         if assertion.bond > contract_balance {
             return Err(Error::TokenTransferMismatch);
-        }   
+        }
 
         if reward > 0 {
             // Pay the caller their reward first, then pay the asserter the
@@ -1282,11 +1281,7 @@ impl Tholos {
         assertion.final_outcome = Some(final_outcome);
         Self::set_assertion(&env, id, &assertion);
 
-        token_client.transfer(
-            &env.current_contract_address(),
-            &winner,
-            &payout,
-        );
+        token_client.transfer(&env.current_contract_address(), &winner, &payout);
         Resolved {
             id,
             outcome: final_outcome,
