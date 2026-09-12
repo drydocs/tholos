@@ -30,6 +30,10 @@ pub enum Error {
     /// No assertion exists under the given id on the Tholos instance at
     /// `tholos_id`.
     AssertionNotFound = 4,
+    /// The consumer contract has already been initialized.
+    AlreadyInitialized = 5,
+    /// The consumer contract has not been initialized yet.
+    NotInitialized = 6,
 }
 
 impl Error {
