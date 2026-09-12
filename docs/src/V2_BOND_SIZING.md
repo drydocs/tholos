@@ -428,25 +428,31 @@ max_position = k x base_bond,  k in [2, 20]
 - `k = max_total_weight / base_bond`: no per-position constraint.
   Use only in private / trusted deployments.
 
-### `max_total_weight` guidance
+### `max_total_weight` guidance and ratio bound reconciliation
 
 ```text
-max_total_weight = m x base_bond,  m >= max(10, N_voters x k + 2)
+max_total_weight = m x base_bond,  where:
+  max(10, N_voters x k_avg + 2) <= m <= 10 x k
 ```
 
-Set `m` large enough to accommodate the expected number of participants at full
-`max_position` each, plus the two fixed parties. The contract arithmetic is
-safe as long as `max_total_weight <= MAX_SETTLEMENT_TOTAL_WEIGHT`; the practical
-guidance is to give yourself at least 5-10x headroom over the expected populated
-`W` so legitimate counter-stake is never blocked.
+The contract enforces the anti-Sybil ratio bound `m <= 10 x k` (`max_total_weight <= 10 * max_position`) at `initialize`.
+
+**Mathematical Reconciliation with Electorate Size (`N_voters`):**
+If every voter were assumed to deposit the full cap `k = max_position / base_bond`, the capacity formula `m >= N_voters * k + 2` together with the ratio bound `m <= 10 * k` would require `N_voters * k + 2 <= 10 * k`, which mathematically forces `N_voters <= 10 - 2/k` (at most 9 full-cap voters).
+
+In real deployments with larger committees (`N_voters > 10`), this is reconciled through:
+1. **Average vs. Peak Sizing**: When budgeting for larger committees, size `m` against the expected *average* stake `k_avg x base_bond` (where `k_avg < k`), satisfying `N_voters x k_avg + 2 <= m <= 10 x k`.
+2. **Ceiling vs. Whale Trade-Off**:
+   - To raise the aggregate counter-stake ceiling `m`, you must raise `k` proportionally (e.g. setting `k = 10` permits `m = 100`, allowing up to 98x `base_bond` of third-party stake; setting `k = 20` permits `m = 200`). The trade-off is that a larger `k` allows a single well-capitalized address to hold a larger individual fraction of total weight.
+   - To maximize single-address whale resistance (e.g. `k = 3`), `m` must be capped at `30`, which restricts total third-party counter-stake to roughly 28x `base_bond`.
 
 ### Profile table
 
 | Profile | `base_bond` | `T_reg` | `T_ext` | `T_hard` | `T_rev` | `max_position` | `max_total_weight` | Use when |
 | ------- | ----------- | ------- | ------- | -------- | ------- | -------------- | ------------------ | -------- |
 | Private beta | 1x-2x spam floor | 1-4 h | 5 min | 2x `T_reg` | 4-12 h | 10x `base_bond` | 50x `base_bond` | Known users, coordinated reveals, low bot pressure. |
-| Public testnet / low value | 2x-5x larger spam floor | 4-12 h | 10 min | 3x `T_reg` | 12-24 h | 5x `base_bond` | 100x `base_bond` | Open participation, moderate value, expect uncoordinated voters. |
-| Higher-value mainnet candidate | 5x+ spam floor, within 5%-20% of `V_min` | 12-24 h | 15-30 min | 2x-4x `T_reg` | 24-48 h | 3x `base_bond` | 200x `base_bond` | Meaningful value, monitored reveals, audited deployment. |
+| Public testnet / low value | 2x-5x larger spam floor | 4-12 h | 10 min | 3x `T_reg` | 12-24 h | 5x `base_bond` | 50x `base_bond` | Open participation, moderate value, expect uncoordinated voters. |
+| Higher-value mainnet candidate | 5x+ spam floor, within 5%-20% of `V_min` | 12-24 h | 15-30 min | 2x-4x `T_reg` | 24-48 h | 3x `base_bond` | 30x `base_bond` | Meaningful value, monitored reveals, audited deployment. |
 
 ### Narrative guidance per profile
 
@@ -476,9 +482,12 @@ of honest counter-stake before a single whale can threaten majority.
 
 Every parameter is tightened toward security. Registration is 12-24 hours to
 allow global participation across timezones. The reveal window is 24-48 hours
-to give coordinators a full working day to organize reveals. `max_position =
-3 x base_bond` forces a whale to recruit multiple addresses and raises logistics
-cost. The anti-snipe extension is longer (15-30 minutes) to give honest
+to give coordinators a full working day to organize reveals. For the profile in the table,
+`max_position = 3 x base_bond` with `max_total_weight = 30 x base_bond` forces a whale to recruit
+multiple addresses and raises logistics cost, capping single-address weight at 10% of total round
+capacity while bounding aggregate third-party counter-stake to roughly 28x `base_bond`. Deployments
+prioritizing higher counter-stake ceilings (e.g. 100x–200x `base_bond`) can scale `max_position`
+proportionally to 10x–20x `base_bond` to preserve the 10x ratio bound. The anti-snipe extension is longer (15-30 minutes) to give honest
 participants meaningful response time to a late deposit. The hard cap is 2-4x
 the base registration window to allow 4-8 meaningful extensions without
 permitting indefinite delay. The bond floor is computed at 5x+ the v1 spam/dispute

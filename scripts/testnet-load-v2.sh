@@ -30,7 +30,8 @@ ANTI_SNIPE_EXTENSION_SECS=10
 ANTI_SNIPE_HARD_MAX_SECS=240
 REVEAL_DURATION_SECS=180
 MAX_POSITION=10000000
-MAX_TOTAL_WEIGHT=1000000000
+# Sized at 10x MAX_POSITION to satisfy the ratio bound enforced at initialize (#168)
+MAX_TOTAL_WEIGHT=100000000
 # Funded identity this script deploys and reads balances from.
 DEPLOYER_IDENTITY=v2load_deployer
 

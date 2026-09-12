@@ -255,6 +255,15 @@ All notable changes to this project are documented here. Format follows
   deadline regardless of whether a real last-moment deposit was happening.
   Closes #155.
 
+- `contracts/tholos-v2`: `initialize` now validates that `max_total_weight`
+  does not exceed `max_position * MAX_TOTAL_WEIGHT_TO_POSITION_RATIO` (10),
+  rejecting invalid configurations with `Error::InvalidWeightRatio = 37`.
+  Previously, `max_total_weight` could be arbitrarily larger than `max_position`,
+  allowing an attacker to reach the eligible total with multiple dust-partitioned
+  positions at negligible Sybil cost. Requiring at least 10 distinct positions
+  to reach the eligible total raises the capital and coordination cost of
+  address splitting without requiring an external identity system. Closes #168.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
