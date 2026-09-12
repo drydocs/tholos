@@ -12,6 +12,7 @@
     - [Bond Sizing Analysis](BOND_SIZING.md)
     - [V1 Mainnet Parameter Selection](V1_MAINNET_PARAMETERS.md)
     - [Resolver Committee Governance](RESOLVER_GOVERNANCE.md)
+    - [Mainnet Operational Runbook](MAINNET_RUNBOOK.md)
     - [Deployment & Operations: Protocol v2](DEPLOYMENT_V2.md)
         - [V2 Bond Sizing and Window Analysis](V2_BOND_SIZING.md)
 - [Integration Guide](INTEGRATION.md)

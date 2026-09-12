@@ -85,6 +85,12 @@ stellar contract invoke --id "$CONTRACT" --source new_admin --network testnet --
 `accept_admin` emits `AdminUpdated` with both addresses. Afterward, use the
 new signer for `set_paused`, `update_resolvers`, and future admin rotations.
 
+Note this only ever protects a *planned* rotation: `propose_admin` itself
+still requires the *current* admin's signature, so if the current admin key
+is genuinely lost or destroyed (not just being proactively rotated), there is
+no on-chain recovery path — see [MAINNET_RUNBOOK.md](MAINNET_RUNBOOK.md) for
+what that means for admin key custody on a real deployment.
+
 ### Pausing during an incident
 
 If something looks wrong (a bug is found, a resolver key looks compromised, vote
@@ -152,7 +158,10 @@ stellar contract invoke --id "$CONTRACT" --source admin --network testnet -- get
 ## Mainnet readiness checklist
 
 Not a green light to deploy to mainnet on its own: a checklist of what's true
-today, so you can judge what's still missing for your use case:
+today, so you can judge what's still missing for your use case. See
+[MAINNET_RUNBOOK.md](MAINNET_RUNBOOK.md) for the operational layer this
+checklist doesn't cover on its own: admin key custody, a concrete go/no-go
+launch sequence, and incident escalation.
 
 - [x] Core propose/dispute/resolve flow implemented and unit tested
 - [x] Reentrancy hardened, with a regression test proving it
