@@ -2821,4 +2821,47 @@ mod stalled_dispute {
         client.reclaim_stalled_dispute(&trigger, &id);
         assert_eq!(token.balance(&client.address), 0);
     }
+
+    #[test]
+    fn test_reclaim_stalled_dispute_fee_on_transfer() {
+        // #207: with a fee-on-transfer token, reclaim must refund each side
+        // what they actually deposited (the escrow), not the nominal bond,
+        // and must not trap on insufficient balance.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let (fee_token, client, contract_id, _resolvers) = super::fee_fixture(&env, 1_000);
+        client.set_stall_timeout(&3600);
+
+        let asserter = Address::generate(&env);
+        let disputer = Address::generate(&env);
+        fee_token.credit(&asserter, &1_000);
+        fee_token.credit(&disputer, &1_000);
+
+        let id = client.assert_outcome(&asserter, &true);
+        client.dispute(&disputer, &id);
+
+        // 100 bond -> 90 received; dispute transfers the recorded 90 -> 81
+        // received. Escrow = 171, less than the nominal 2 x 100.
+        assert_eq!(fee_token.balance(&contract_id), 171);
+
+        // Let it stall and reclaim.
+        env.ledger().with_mut(|l| l.timestamp += 3600);
+        let trigger = Address::generate(&env);
+        client.reclaim_stalled_dispute(&trigger, &id);
+
+        // Each side gets their actual deposit back, minus the fee on the
+        // outgoing transfer: asserter 90 - 9, disputer 81 - 8. The
+        // contract is drained to exactly zero rather than trapping on the
+        // nominal 200 it never held.
+        assert_eq!(fee_token.balance(&contract_id), 0);
+        assert_eq!(fee_token.balance(&asserter), 1_000 - 100 + 81);
+        assert_eq!(fee_token.balance(&disputer), 1_000 - 90 + 73);
+
+        // Terminal state, same as the standard-token path.
+        let state = client.get_assertion_state(&id);
+        assert_eq!(state.status, Status::Resolved);
+        assert_eq!(state.final_outcome, None);
+    }
 }

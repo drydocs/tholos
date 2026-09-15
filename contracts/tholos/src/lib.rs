@@ -99,7 +99,9 @@ pub struct StalledDisputeReclaimed {
     pub asserter: Address,
     /// The disputer whose bond was returned.
     pub disputer: Address,
-    /// The per-side bond amount refunded to each party.
+    /// The amount refunded to the asserter. With a fee-on-transfer token
+    /// the disputer's refund differs (the remainder of the escrow); with
+    /// standard tokens both sides receive the full bond.
     pub refunded: i128,
     /// Who called `reclaim_stalled_dispute`. Always a verified address —
     /// the call requires the caller's auth unconditionally.
@@ -938,22 +940,39 @@ impl Tholos {
 
         let token_id: Address = Self::get(&env, &DataKey::Token)?;
         let token_client = token::Client::new(&env, &token_id);
-        // Each side receives exactly the bond they posted, in the same
-        // transfer shape every other path uses. Two separate transfers,
-        // not one combined: the two recipients are unrelated parties and
-        // neither is owed the other's half.
+        // Each side receives exactly what they actually deposited, not the
+        // nominal bond. With a fee-on-transfer token the contract received
+        // less than the nominal amount for each deposit, so paying the raw
+        // `assertion.bond` to each side would either trap on insufficient
+        // balance (bricking this liveness fallback for exactly the disputes
+        // most in need of it) or overpay from other assertions' pooled
+        // funds (#207). Post-#164 accounting, `assertion.bond` records the
+        // asserter's actually-received amount and the per-assertion escrow
+        // holds both deposits, so the disputer's deposit is the remainder.
+        // Two separate transfers, not one combined: the two recipients are
+        // unrelated parties and neither is owed the other's half.
+        let escrow = Self::get_assertion_escrow(&env, id, &assertion);
+        let asserter_payout = assertion.bond.min(escrow);
+        let disputer_payout = (escrow - asserter_payout).max(0);
+        // Mirror `resolve` and `finalize`: never pay out more than the
+        // contract's live token balance, so a shortfall fails clean or
+        // pays what is actually available rather than trapping.
+        let mut available = token_client.balance(&env.current_contract_address());
+        let asserter_payout = asserter_payout.min(available);
+        available -= asserter_payout;
+        let disputer_payout = disputer_payout.min(available);
         token_client.transfer(
             &env.current_contract_address(),
             &assertion.asserter,
-            &assertion.bond,
+            &asserter_payout,
         );
-        token_client.transfer(&env.current_contract_address(), &disputer, &assertion.bond);
+        token_client.transfer(&env.current_contract_address(), &disputer, &disputer_payout);
 
         StalledDisputeReclaimed {
             id,
             asserter: assertion.asserter.clone(),
             disputer,
-            refunded: assertion.bond,
+            refunded: asserter_payout,
             caller,
         }
         .publish(&env);

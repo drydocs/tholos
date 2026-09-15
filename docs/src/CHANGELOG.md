@@ -282,6 +282,16 @@ All notable changes to this project are documented here. Format follows
   = 28` for transfers whose received amount is non-positive or overflows
   accounting. Closes #164.
 
+- `contracts/tholos`: `reclaim_stalled_dispute` now refunds each side the
+  amount they actually deposited (derived from the per-assertion escrow) and
+  caps both payouts by the contract's live token balance, mirroring
+  `finalize`/`resolve`. Previously it paid the raw nominal bond to each side,
+  so a stalled dispute funded with a fee-on-transfer token either trapped on
+  insufficient balance (bricking the liveness fallback for the disputes most
+  in need of it) or overpaid from other assertions' pooled funds. The
+  `StalledDisputeReclaimed` event's `refunded` field now reports the
+  asserter's refund specifically. Closes #207.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added
