@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import { jobs as seedJobs, type Job, type Milestone, type MilestoneStatus } from "../data/jobs";
+import type { Job, Milestone, MilestoneStatus } from "../data/jobs";
 import { JobsContext, type JobsContextValue, type NewJobInput } from "./jobs-context";
 import type { Assertion } from "../lib/tholos";
 import { detectWallet } from "../lib/wallet";
@@ -63,13 +63,13 @@ function loadJobsFromStorage(): Job[] {
   try {
     const stored = window.localStorage.getItem(JOBS_STORAGE_KEY);
     if (stored === null) {
-      return seedJobs;
+      return [];
     }
 
     const parsed: unknown = JSON.parse(stored);
-    return Array.isArray(parsed) ? parsed.filter(isJob) : seedJobs;
+    return Array.isArray(parsed) ? parsed.filter(isJob) : [];
   } catch {
-    return seedJobs;
+    return [];
   }
 }
 
