@@ -17,6 +17,9 @@ simulation. You'll need testnet XLM in your Freighter wallet to post the bond;
 get some from [Friendbot](https://friendbot.stellar.org/) if you're testing
 with a fresh address.
 
+The app starts with an empty job list. Every job it shows is one created
+through the "Post a job" form, so there is no seeded or mock content anywhere.
+
 ## What maps to what
 
 | App action | Tholos call |
@@ -82,5 +85,5 @@ src/
   components/
     JobCard.tsx, MilestoneRow.tsx, PostJobForm.tsx, WalletButton.tsx, RoleSwitcher.tsx
   data/
-    jobs.ts      Seed jobs and the Job/Milestone types
+    jobs.ts      Job/Milestone types
 ```

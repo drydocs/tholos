@@ -130,6 +130,14 @@
   gap: var(--space-4);
 }
 
+.job-list-empty {
+  margin: 0;
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+}
+
 .job-card {
   border-radius: var(--radius-lg);
   padding: var(--space-5);

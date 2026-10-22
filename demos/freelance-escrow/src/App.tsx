@@ -34,9 +34,11 @@ function AppShell() {
         {showPostJob && <PostJobForm onDone={() => setShowPostJob(false)} />}
 
         <div className="job-list">
-          {jobs.map((job) => (
-            <JobCard key={job.id} job={job} />
-          ))}
+          {jobs.length === 0 ? (
+            <p className="job-list-empty">No jobs yet. Post the first one to get started.</p>
+          ) : (
+            jobs.map((job) => <JobCard key={job.id} job={job} />)
+          )}
         </div>
       </main>
     </div>
