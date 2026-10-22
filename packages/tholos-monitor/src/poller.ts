@@ -15,6 +15,7 @@ import type {
   Deployment,
   DecodedEvent,
   DeploymentState,
+  LivenessAlert,
   MonitorState,
   Severity,
 } from "./types.js";
@@ -52,7 +53,8 @@ function logEvent(event: ClassifiedEvent): void {
 
 export interface ClassifyLogAndAlertOptions {
   alertMinSeverity: Severity;
-  alertWebhookUrl: string;
+  /** Optional. When unset, threshold events are logged but not sent. */
+  alertWebhookUrl?: string;
   requestTimeoutMs: number;
   /** Caps how many `sendAlert` calls run at once (see `runWithConcurrencyLimit`
    * below for why this needs a real cap, not just "fire them all"). */
@@ -118,12 +120,38 @@ export async function classifyLogAndAlert(
       toAlert.push(classified);
     }
   }
+  const webhookUrl = options.alertWebhookUrl;
+  if (webhookUrl === undefined) {
+    if (toAlert.length > 0) {
+      console.warn(
+        `[alerts] ALERT_WEBHOOK_URL not set; ${toAlert.length} alert(s) logged but not sent.`,
+      );
+    }
+    return;
+  }
   await runWithConcurrencyLimit(toAlert, options.maxConcurrentAlerts, (classified) =>
     sendAlert(buildEventAlertPayload(classified), {
-      webhookUrl: options.alertWebhookUrl,
+      webhookUrl,
       timeoutMs: options.requestTimeoutMs,
     }),
   );
+}
+
+/**
+ * Sends a liveness alert when a webhook is configured; otherwise logs it so
+ * the reason it is not delivered is visible in the run output.
+ */
+async function sendLivenessAlert(config: Config, alert: LivenessAlert): Promise<void> {
+  if (config.alertWebhookUrl === undefined) {
+    console.warn(
+      `[alerts] ALERT_WEBHOOK_URL not set; liveness alert "${alert.kind}" logged but not sent.`,
+    );
+    return;
+  }
+  await sendAlert(buildLivenessAlertPayload(alert), {
+    webhookUrl: config.alertWebhookUrl,
+    timeoutMs: config.requestTimeoutMs,
+  });
 }
 
 /** Builds a `DeploymentState`, omitting `cursor` entirely rather than
@@ -197,12 +225,15 @@ async function pollOneDeployment(
 
     // See classifyLogAndAlert's own doc comment for why this dispatches
     // alerts concurrently rather than one at a time.
-    await classifyLogAndAlert(result.events, {
+    const classifyOptions: ClassifyLogAndAlertOptions = {
       alertMinSeverity: config.alertMinSeverity,
-      alertWebhookUrl: config.alertWebhookUrl,
       requestTimeoutMs: config.requestTimeoutMs,
       maxConcurrentAlerts: config.alertMaxConcurrency,
-    });
+    };
+    if (config.alertWebhookUrl !== undefined) {
+      classifyOptions.alertWebhookUrl = config.alertWebhookUrl;
+    }
+    await classifyLogAndAlert(result.events, classifyOptions);
 
     if (result.hitPageCap) {
       console.warn(
@@ -211,15 +242,12 @@ async function pollOneDeployment(
     }
 
     if (consecutiveFailuresBefore > 0 && alertedForFailureStreak) {
-      await sendAlert(
-        buildLivenessAlertPayload({
-          deployment,
-          kind: "recovered",
-          severity: "info",
-          message: `${deployment}: polling recovered after ${consecutiveFailuresBefore} consecutive failed run(s).`,
-        }),
-        { webhookUrl: config.alertWebhookUrl, timeoutMs: config.requestTimeoutMs },
-      );
+      await sendLivenessAlert(config, {
+        deployment,
+        kind: "recovered",
+        severity: "info",
+        message: `${deployment}: polling recovered after ${consecutiveFailuresBefore} consecutive failed run(s).`,
+      });
     }
 
     state.deployments[deployment] = buildDeploymentState(0, false, result.nextCursor);
@@ -229,16 +257,13 @@ async function pollOneDeployment(
 
     if (err instanceof RetentionGapError) {
       console.error(`[monitor] ${deployment}: ${lastError}`);
-      await sendAlert(
-        buildLivenessAlertPayload({
-          deployment,
-          kind: "retention_gap",
-          severity: "critical",
-          message: `${deployment}: ${lastError} Re-anchoring to the current chain tip minus the configured lookback on the next run; events in the gap are unrecoverable from this RPC.`,
-          lastError,
-        }),
-        { webhookUrl: config.alertWebhookUrl, timeoutMs: config.requestTimeoutMs },
-      );
+      await sendLivenessAlert(config, {
+        deployment,
+        kind: "retention_gap",
+        severity: "critical",
+        message: `${deployment}: ${lastError} Re-anchoring to the current chain tip minus the configured lookback on the next run; events in the gap are unrecoverable from this RPC.`,
+        lastError,
+      });
       // Drop the stale cursor so the next run re-derives a fresh
       // startLedger, instead of repeating the same failing request every
       // run from here on. A retention gap isn't the same kind of failure
@@ -263,17 +288,14 @@ async function pollOneDeployment(
       !alertedForFailureStreak
     ) {
       nowAlerted = true;
-      await sendAlert(
-        buildLivenessAlertPayload({
-          deployment,
-          kind: "rpc_failure",
-          severity: "critical",
-          message: `${deployment}: ${consecutiveFailures} consecutive failed runs against ${config.rpcUrl}.`,
-          consecutiveFailures,
-          lastError,
-        }),
-        { webhookUrl: config.alertWebhookUrl, timeoutMs: config.requestTimeoutMs },
-      );
+      await sendLivenessAlert(config, {
+        deployment,
+        kind: "rpc_failure",
+        severity: "critical",
+        message: `${deployment}: ${consecutiveFailures} consecutive failed runs against ${config.rpcUrl}.`,
+        consecutiveFailures,
+        lastError,
+      });
     }
 
     state.deployments[deployment] = buildDeploymentState(

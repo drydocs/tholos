@@ -174,3 +174,13 @@ test("classifyLogAndAlert: only alerts on events meeting alertMinSeverity (still
     await webhook.close();
   }
 });
+
+test("classifyLogAndAlert: completes without sending when no webhook is configured", async () => {
+  await assert.doesNotReject(
+    classifyLogAndAlert([makeEvent()], {
+      alertMinSeverity: "warning",
+      requestTimeoutMs: 5000,
+      maxConcurrentAlerts: 5,
+    }),
+  );
+});

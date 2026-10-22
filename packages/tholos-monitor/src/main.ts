@@ -24,9 +24,11 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  console.log(
-    `[main] tholos-monitor run starting. Alert webhook: ${redactUrl(config.alertWebhookUrl)}`,
-  );
+  const alertTarget =
+    config.alertWebhookUrl === undefined
+      ? "none configured (poll and log only)"
+      : redactUrl(config.alertWebhookUrl);
+  console.log(`[main] tholos-monitor run starting. Alert webhook: ${alertTarget}`);
 
   const hadFailures = await runOnce(config);
   if (hadFailures) {
