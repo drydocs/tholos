@@ -19,11 +19,9 @@ test("loadConfig: requires at least one contract id", () => {
   );
 });
 
-test("loadConfig: requires ALERT_WEBHOOK_URL", () => {
-  assert.throws(
-    () => loadConfig({ THOLOS_V1_CONTRACT_ID: BASE_ENV.THOLOS_V1_CONTRACT_ID }),
-    ConfigError,
-  );
+test("loadConfig: allows ALERT_WEBHOOK_URL to be omitted", () => {
+  const config = loadConfig({ THOLOS_V1_CONTRACT_ID: BASE_ENV.THOLOS_V1_CONTRACT_ID });
+  assert.equal(config.alertWebhookUrl, undefined);
 });
 
 test("loadConfig: rejects a malformed webhook URL", () => {

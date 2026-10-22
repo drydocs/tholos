@@ -20,7 +20,9 @@ export interface Config {
    * `loadConfig`. Both is the common case (monitor both deployments from
    * one process). */
   contracts: Partial<Record<Deployment, string>>;
-  alertWebhookUrl: string;
+  /** Optional. When unset, the monitor polls and logs events but does not
+   * send alerts. */
+  alertWebhookUrl?: string;
   stateFilePath: string;
   alertMinSeverity: Severity;
   /** Consecutive failed runs (this is a scheduled script re-invoked by a
@@ -97,25 +99,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const alertWebhookUrl = optionalEnv(env, "ALERT_WEBHOOK_URL");
-  if (!alertWebhookUrl) {
-    throw new ConfigError("ALERT_WEBHOOK_URL is required.");
-  }
-  try {
-    void new URL(alertWebhookUrl);
-  } catch {
-    throw new ConfigError(`ALERT_WEBHOOK_URL="${alertWebhookUrl}" is not a valid URL.`);
+  if (alertWebhookUrl !== undefined) {
+    try {
+      void new URL(alertWebhookUrl);
+    } catch {
+      throw new ConfigError(`ALERT_WEBHOOK_URL="${alertWebhookUrl}" is not a valid URL.`);
+    }
   }
 
   const contracts: Partial<Record<Deployment, string>> = {};
   if (tholos) contracts.tholos = tholos;
   if (tholosV2) contracts["tholos-v2"] = tholosV2;
 
-  return {
+  const config: Config = {
     rpcUrl: optionalEnv(env, "SOROBAN_RPC_URL") ?? DEFAULT_RPC_URL,
     networkPassphrase:
       optionalEnv(env, "NETWORK_PASSPHRASE") ?? DEFAULT_NETWORK_PASSPHRASE,
     contracts,
-    alertWebhookUrl,
     stateFilePath: optionalEnv(env, "STATE_FILE_PATH") ?? DEFAULT_STATE_FILE_PATH,
     alertMinSeverity: parseSeverity(
       optionalEnv(env, "ALERT_MIN_SEVERITY"),
@@ -142,4 +142,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       DEFAULT_ALERT_MAX_CONCURRENCY,
     ),
   };
+  if (alertWebhookUrl !== undefined) {
+    config.alertWebhookUrl = alertWebhookUrl;
+  }
+  return config;
 }

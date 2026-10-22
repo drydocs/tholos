@@ -87,6 +87,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Warn when alerts are disabled
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          if [ -z "$ALERT_WEBHOOK_URL" ]; then
+            echo "::warning::ALERT_WEBHOOK_URL is not set. The monitor will poll and log events but cannot send alerts."
+          fi
+
       - name: Run monitor
         env:
           THOLOS_V1_CONTRACT_ID: ${{ vars.THOLOS_V1_CONTRACT_ID }}
